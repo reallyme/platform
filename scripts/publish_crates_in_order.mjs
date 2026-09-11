@@ -38,7 +38,10 @@ const REQUIRED_PUBLISH_ORDER_EDGES = Object.freeze([
 const arguments_ = process.argv.slice(2);
 const mode = arguments_[0] ?? MODE_INSPECT;
 const allowDirty = arguments_.includes("--allow-dirty");
-const unknownArguments = arguments_.slice(1).filter((argument) => argument !== "--allow-dirty");
+const allowGeneratedDirty = arguments_.includes("--allow-generated-dirty");
+const unknownArguments = arguments_
+  .slice(1)
+  .filter((argument) => argument !== "--allow-dirty" && argument !== "--allow-generated-dirty");
 const releaseVersion = process.env.RELEASE_VERSION ?? "";
 
 if (
@@ -47,12 +50,25 @@ if (
 ) {
   console.error(
     `usage: node scripts/publish_crates_in_order.mjs ` +
-      `${MODE_INSPECT}|${MODE_ORDER}|${MODE_PUBLISH} [--allow-dirty]`,
+      `${MODE_INSPECT}|${MODE_ORDER}|${MODE_PUBLISH} ` +
+      "[--allow-dirty|--allow-generated-dirty]",
   );
+  process.exit(2);
+}
+if (allowDirty && allowGeneratedDirty) {
+  console.error("--allow-dirty and --allow-generated-dirty cannot be combined");
   process.exit(2);
 }
 if (allowDirty && mode === MODE_PUBLISH) {
   console.error("--allow-dirty is never supported for publication");
+  process.exit(2);
+}
+if (allowGeneratedDirty && mode !== MODE_PUBLISH) {
+  console.error("--allow-generated-dirty is supported only for publication");
+  process.exit(2);
+}
+if (allowGeneratedDirty && process.env.GITHUB_ACTIONS !== "true") {
+  console.error("--allow-generated-dirty is supported only in GitHub Actions");
   process.exit(2);
 }
 if (mode === MODE_PUBLISH && releaseVersion.length === 0) {
@@ -74,6 +90,43 @@ function run(command, commandArguments, options = {}) {
     throw result.error;
   }
   return result;
+}
+
+function verifyPublicationWorktree() {
+  for (const diffArguments of [["diff", "--quiet"], ["diff", "--cached", "--quiet"]]) {
+    const diffResult = run("git", diffArguments, { capture: true });
+    if (diffResult.status !== 0) {
+      console.error("publication requires a clean tracked worktree");
+      process.exit(1);
+    }
+  }
+
+  const untrackedResult = run("git", ["ls-files", "--others", "--exclude-standard"], {
+    capture: true,
+  });
+  if (untrackedResult.status !== 0) {
+    process.stderr.write(untrackedResult.stderr);
+    process.exit(untrackedResult.status ?? 1);
+  }
+  if (untrackedResult.stdout.trim().length !== 0) {
+    console.error("publication does not permit unignored untracked files");
+    process.exit(1);
+  }
+
+  const generatedDirectories = [
+    "apps/example/contract/src/generated",
+    "components/hephaestus/contract/src/generated",
+  ];
+  for (const generatedDirectory of generatedDirectories) {
+    if (!fs.existsSync(generatedDirectory)) {
+      console.error(`missing generated contract sources: ${generatedDirectory}`);
+      process.exit(1);
+    }
+  }
+}
+
+if (allowGeneratedDirty) {
+  verifyPublicationWorktree();
 }
 
 function sleepMilliseconds(delayMilliseconds) {
@@ -463,12 +516,17 @@ function publishPackage(pkg) {
     pkg.name,
     "--no-verify",
     "--locked",
+    ...(allowGeneratedDirty ? ["--allow-dirty"] : []),
   ]);
   if (packageResult.status !== 0) {
     process.exit(packageResult.status ?? 1);
   }
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
-    const result = run("cargo", ["publish", "-p", pkg.name, "--locked"], { capture: true });
+    const result = run(
+      "cargo",
+      ["publish", "-p", pkg.name, "--locked", ...(allowGeneratedDirty ? ["--allow-dirty"] : [])],
+      { capture: true },
+    );
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     if (result.status === 0) {
