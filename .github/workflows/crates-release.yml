@@ -166,7 +166,7 @@ jobs:
       - name: Publish crates in reviewed dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: node scripts/publish_crates_in_order.mjs publish
+        run: node scripts/publish_crates_in_order.mjs publish --allow-generated-dirty
 
       - name: Summarize crates.io publication
         run: |
