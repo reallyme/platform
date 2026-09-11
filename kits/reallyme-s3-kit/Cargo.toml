@@ -1,0 +1,42 @@
+[package]
+name = "reallyme-s3-kit"
+description = "Bounded S3-compatible storage and SigV4 primitives for native and Worker hosts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["s3", "object-storage", "sigv4", "cloudflare-workers"]
+categories = ["asynchronous", "filesystem", "web-programming"]
+publish = ["crates-io"]
+
+[features]
+default = ["native-client"]
+native-client = ["dep:futures-util", "dep:reqwest"]
+worker-client = ["dep:futures-util", "dep:worker"]
+
+[dependencies]
+futures-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["stream"] }
+secrecy = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+worker = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reallyme-crypto = { workspace = true, features = ["native", "hmac", "sha2"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reallyme-crypto = { workspace = true, features = ["wasm", "hmac", "sha2"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[dev-dependencies]
+tokio.workspace = true

@@ -1,0 +1,43 @@
+# Version-control and local assistant/editor state.
+/.git
+/.claude
+/.gitignore
+/.idea
+/.vscode
+/.DS_Store
+
+# Rust build outputs are large and must be rebuilt inside the Docker builder.
+/target
+**/target
+
+# JavaScript dependencies/build outputs are not inputs to the Rust images.
+**/node_modules
+**/.nuxt
+**/.output
+**/dist
+**/coverage
+
+# Local deployment state and mutable databases.
+**/*.redb
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
+# Local env files and secrets. Example files stay available for documentation
+# and compose validation, but real local credentials must never enter Docker
+# build context.
+**/.env
+**/.env.*
+!**/.env.example
+**/.secrets
+**/secrets/*.env
+**/*.pem
+**/*.key
+**/*.crt
+
+# Logs and local diagnostics.
+**/*.log
+**/npm-debug.log*
+**/pnpm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*

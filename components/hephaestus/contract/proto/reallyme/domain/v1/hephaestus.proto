@@ -1,0 +1,505 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.domain.v1;
+
+// HephaestusDnsDesiredState models the desired DNS records for the fleet.
+message HephaestusDnsDesiredState {
+  // Desired DNS records.
+  repeated HephaestusDnsRecord records = 1;
+}
+
+// HephaestusDnsRecord models one desired DNS record.
+message HephaestusDnsRecord {
+  // DNS record name.
+  string name = 1;
+  // DNS record kind.
+  HephaestusDnsRecordKind kind = 2;
+  // DNS record target IP.
+  string target = 3;
+  // DNS record visibility.
+  HephaestusDnsRecordVisibility visibility = 4;
+}
+
+// HephaestusRegionDefinition maps one operator-defined Region to one or more
+// Hephaestus Sites.
+message HephaestusRegionDefinition {
+  // Stable ReallyMe operational Region identifier.
+  string region_id = 1;
+  // Stable Hephaestus Site identifiers assigned to this Region.
+  repeated string site_ids = 2;
+}
+
+// HephaestusAgentReport contains one bounded server snapshot.
+message HephaestusAgentReport {
+  // Stable internal Hephaestus server identifier.
+  string server_id = 1;
+  // Provider-backed infrastructure server identifier.
+  string provider_server_id = 2;
+  // Private IP address when available.
+  string private_ip = 3;
+  // Unix timestamp when the snapshot was generated.
+  uint64 generated_at_unix_secs = 4;
+  // Host resource snapshot.
+  HephaestusHostResourceReport resources = 5;
+  // Container snapshots.
+  repeated HephaestusContainerReport containers = 6;
+  // Host-installed service snapshots.
+  repeated HephaestusHostServiceReport host_services = 7;
+  // Actual ReallyMe apps discovered on this server at report time.
+  repeated string actual_apps = 8;
+  // Tailscale identity observed locally by the agent.
+  HephaestusTailscaleReport tailscale = 9;
+  // Docker and Compose runtime versions observed locally.
+  HephaestusRuntimeVersionReport runtime_versions = 10;
+  // Host patch and reboot posture.
+  HephaestusPatchStateReport patch_state = 11;
+  // Local observability endpoint summaries.
+  HephaestusObservabilityReport observability = 12;
+  // Service-specific local probes run by the agent.
+  repeated HephaestusServiceProbeReport service_probes = 13;
+}
+
+// HephaestusAgentBootReport contains the first authenticated server report.
+message HephaestusAgentBootReport {
+  // Stable internal Hephaestus server identifier.
+  string server_id = 1;
+  // Provider-backed infrastructure server identifier.
+  string provider_server_id = 2;
+  // Stable Hephaestus site identifier.
+  string site_id = 3;
+  // Public IPv4 address when available.
+  string public_ip = 4;
+  // Private IPv4 address when available.
+  string private_ip = 5;
+  // Unix timestamp at which the node booted.
+  uint64 boot_time_unix_secs = 6;
+  // Unix timestamp when the boot report was generated.
+  uint64 generated_at_unix_secs = 7;
+}
+
+// HephaestusNodeActualState represents current server readiness data.
+message HephaestusNodeActualState {
+  // Stable internal Hephaestus server identifier.
+  string server_id = 1;
+  // Provider-backed infrastructure server identifier.
+  string provider_server_id = 2;
+  // Stable Hephaestus site identifier.
+  string site_id = 3;
+  // Public IPv4 address when available.
+  string public_ip = 4;
+  // Private IPv4 address when available.
+  string private_ip = 5;
+  // Unix timestamp at which the node booted.
+  uint64 boot_time_unix_secs = 6;
+  // Unix timestamp when the node last checked in.
+  uint64 last_seen_unix_secs = 7;
+  // Current actual state status.
+  HephaestusNodeActualStateStatus status = 8;
+  // Logical group, pool, or pod when one is assigned.
+  string cluster_id = 9;
+  // Broad server role classification.
+  HephaestusServerRole role = 10;
+  // Apps deployed on this server.
+  repeated string apps = 11;
+  // Service surfaces exposed by those apps.
+  repeated string services = 12;
+  // Infrastructure class, shape, or size identifier recorded for this server.
+  string infrastructure_class_id = 13;
+}
+
+// HephaestusServerInventoryRow is the derived dashboard row for one server.
+message HephaestusServerInventoryRow {
+  // Stable internal Hephaestus server identifier.
+  string server_id = 1;
+  // Provider-backed infrastructure server identifier.
+  string provider_server_id = 2;
+  // Stable Hephaestus site identifier.
+  string site_id = 3;
+  // Logical group, pool, or pod when one is assigned.
+  string cluster_id = 4;
+  // Broad server role classification.
+  HephaestusServerRole role = 5;
+  // Apps deployed on this server.
+  repeated string apps = 6;
+  // Service surfaces exposed by those apps.
+  repeated string services = 7;
+  // Planned pre-boot private IP when known.
+  string planned_private_ip = 8;
+  // Observed public IP when known.
+  string public_ip = 9;
+  // Observed private IP when known.
+  string private_ip = 10;
+  // Observed boot time when known.
+  uint64 boot_time_unix_secs = 11;
+  // Last-seen timestamp when known.
+  uint64 last_seen_unix_secs = 12;
+  // Current actual readiness status when known.
+  HephaestusNodeActualStateStatus actual_status = 13;
+  // Latest provisioning event when known.
+  ProvisioningEventSnapshot latest_provisioning_event = 14;
+  // DNS records currently associated with this server.
+  repeated HephaestusDnsRecord dns_records = 15;
+  // Latest bounded agent report when known.
+  HephaestusAgentReport latest_agent_report = 16;
+  // Infrastructure class, shape, or size identifier recorded for this server.
+  string infrastructure_class_id = 17;
+  // Actual ReallyMe apps discovered on this server at report time.
+  repeated string actual_apps = 18;
+  // Assigned ReallyMe operational Region when one contains this Site.
+  string assigned_region_id = 19;
+  // Broad environment safety tag for operator-visible prod/dev separation.
+  HephaestusServerEnvironmentTag environment_tag = 20;
+}
+
+// ProvisioningEventSnapshot captures the latest provisioning event for one
+// server.
+message ProvisioningEventSnapshot {
+  // Stable provisioning event kind.
+  ProvisioningEventKind kind = 1;
+  // Optional stable detail string.
+  string detail = 2;
+}
+
+// HephaestusHostResourceReport contains bounded host resource usage.
+message HephaestusHostResourceReport {
+  // CPU usage in basis points.
+  uint32 cpu_usage_basis_points = 1;
+  // Total memory in bytes.
+  uint64 memory_total_bytes = 2;
+  // Used memory in bytes.
+  uint64 memory_used_bytes = 3;
+  // Total disk in bytes.
+  uint64 disk_total_bytes = 4;
+  // Used disk in bytes.
+  uint64 disk_used_bytes = 5;
+}
+
+// HephaestusTailscaleReport contains bounded node-local tailnet identity.
+message HephaestusTailscaleReport {
+  // Tailscale hostname from local status output.
+  string hostname = 1;
+  // MagicDNS name, when Tailscale reports one.
+  string magic_dns_name = 2;
+  // Tailscale IP addresses assigned to this node.
+  repeated string ips = 3;
+  // Tailscale tags observed on this node.
+  repeated string tags = 4;
+  // Tailscale Services advertised by this node.
+  repeated string services = 5;
+}
+
+// HephaestusRuntimeVersionReport contains local runtime binary versions.
+message HephaestusRuntimeVersionReport {
+  // Docker Engine version, when available.
+  string docker_version = 1;
+  // Docker Compose plugin version, when available.
+  string docker_compose_version = 2;
+}
+
+// HephaestusPatchStateReport contains host patch/reboot posture.
+message HephaestusPatchStateReport {
+  // True when the distribution has marked the host as requiring reboot.
+  bool reboot_required = 1;
+  // Current unattended-upgrades unit health.
+  HephaestusUnattendedUpgradesState unattended_upgrades_state = 2;
+}
+
+// HephaestusObservabilityReport contains summarized local metrics endpoints.
+message HephaestusObservabilityReport {
+  // cAdvisor endpoint summary.
+  HephaestusCadvisorSummary cadvisor = 1;
+  // node-exporter endpoint summary.
+  HephaestusNodeExporterSummary node_exporter = 2;
+}
+
+// HephaestusCadvisorSummary contains bounded cAdvisor scrape facts.
+message HephaestusCadvisorSummary {
+  // Whether the cAdvisor endpoint returned a valid metrics payload.
+  bool reachable = 1;
+  // Number of cAdvisor container metric samples observed.
+  uint32 container_metric_lines = 2;
+  // Whether CPU container metrics were present.
+  bool has_cpu_metrics = 3;
+  // Whether memory container metrics were present.
+  bool has_memory_metrics = 4;
+}
+
+// HephaestusNodeExporterSummary contains bounded node-exporter scrape facts.
+message HephaestusNodeExporterSummary {
+  // Whether the node-exporter endpoint returned a valid metrics payload.
+  bool reachable = 1;
+  // Number of node-exporter metric samples observed.
+  uint32 metric_lines = 2;
+  // Whether CPU metrics were present.
+  bool has_cpu_metrics = 3;
+  // Whether memory metrics were present.
+  bool has_memory_metrics = 4;
+  // Whether filesystem metrics were present.
+  bool has_filesystem_metrics = 5;
+}
+
+// HephaestusContainerReport contains one bounded container snapshot.
+message HephaestusContainerReport {
+  // Docker container name.
+  string container_name = 1;
+  // Docker image reference.
+  string image = 2;
+  // Container lifecycle state.
+  HephaestusContainerState state = 3;
+  // Container health state.
+  HephaestusContainerHealthState health_state = 4;
+  // Recent bounded log lines.
+  repeated string recent_log_lines = 5;
+  // True when the local runtime judges the container should be restarted.
+  bool restart_required = 6;
+  // Stable reason for restart_required.
+  HephaestusContainerRestartReason restart_reason = 7;
+}
+
+// HephaestusHostServiceReport contains one bounded host-installed service
+// snapshot.
+message HephaestusHostServiceReport {
+  // Host service or systemd unit name.
+  string unit_name = 1;
+  // Host service lifecycle state.
+  HephaestusHostServiceState state = 2;
+  // Recent bounded log lines.
+  repeated string recent_log_lines = 3;
+}
+
+// HephaestusServiceProbeReport contains one bounded local service probe.
+message HephaestusServiceProbeReport {
+  // Stable probe name from the node-local config.
+  string probe_name = 1;
+  // Service or app identifier the probe belongs to.
+  string service_name = 2;
+  // Probe transport kind.
+  HephaestusServiceProbeKind kind = 3;
+  // Local target path or address, excluding secrets.
+  string target = 4;
+  // Stable probe status.
+  HephaestusServiceProbeStatus status = 5;
+  // HTTP status code, when the probe is HTTP.
+  uint32 http_status_code = 6;
+}
+
+// HephaestusDnsRecordKind mirrors the DNS record kinds Hephaestus manages.
+enum HephaestusDnsRecordKind {
+  // Unspecified DNS record kind.
+  HEPHAESTUS_DNS_RECORD_KIND_UNSPECIFIED = 0;
+  // IPv4 A record.
+  HEPHAESTUS_DNS_RECORD_KIND_A = 1;
+  // IPv6 AAAA record.
+  HEPHAESTUS_DNS_RECORD_KIND_AAAA = 2;
+}
+
+// HephaestusDnsRecordVisibility mirrors DNS record visibility classes.
+enum HephaestusDnsRecordVisibility {
+  // Unspecified DNS visibility.
+  HEPHAESTUS_DNS_RECORD_VISIBILITY_UNSPECIFIED = 0;
+  // Public DNS record.
+  HEPHAESTUS_DNS_RECORD_VISIBILITY_PUBLIC = 1;
+  // Internal/private DNS record.
+  HEPHAESTUS_DNS_RECORD_VISIBILITY_INTERNAL = 2;
+}
+
+// Stable provisioning event kinds emitted during server bring-up.
+enum ProvisioningEventKind {
+  // Unspecified provisioning event.
+  PROVISIONING_EVENT_KIND_UNSPECIFIED = 0;
+  // Provisioning was requested.
+  PROVISIONING_EVENT_KIND_REQUESTED = 1;
+  // Provider instance creation started.
+  PROVISIONING_EVENT_KIND_INSTANCE_CREATE_STARTED = 2;
+  // Provider instance creation succeeded.
+  PROVISIONING_EVENT_KIND_INSTANCE_CREATE_SUCCEEDED = 3;
+  // Provider instance creation failed.
+  PROVISIONING_EVENT_KIND_INSTANCE_CREATE_FAILED = 4;
+  // DNS reconciliation started.
+  PROVISIONING_EVENT_KIND_DNS_RECONCILE_STARTED = 5;
+  // DNS reconciliation succeeded.
+  PROVISIONING_EVENT_KIND_DNS_RECONCILE_SUCCEEDED = 6;
+  // DNS reconciliation failed.
+  PROVISIONING_EVENT_KIND_DNS_RECONCILE_FAILED = 7;
+  // Health checks started.
+  PROVISIONING_EVENT_KIND_HEALTH_CHECK_STARTED = 8;
+  // Health checks succeeded.
+  PROVISIONING_EVENT_KIND_HEALTH_CHECK_SUCCEEDED = 9;
+  // Health checks failed.
+  PROVISIONING_EVENT_KIND_HEALTH_CHECK_FAILED = 10;
+  // The node boot-reported successfully.
+  PROVISIONING_EVENT_KIND_BOOT_REPORTED = 11;
+  // The node reached ready state.
+  PROVISIONING_EVENT_KIND_READY = 12;
+}
+
+// Stable boot-report result.
+enum HephaestusAgentBootReportResult {
+  // Unspecified result.
+  HEPHAESTUS_AGENT_BOOT_REPORT_RESULT_UNSPECIFIED = 0;
+  // The boot report was accepted.
+  HEPHAESTUS_AGENT_BOOT_REPORT_RESULT_ACCEPTED = 1;
+  // No expected server state matched the report.
+  HEPHAESTUS_AGENT_BOOT_REPORT_RESULT_REJECTED_UNKNOWN_SERVER = 2;
+  // The boot secret did not match the expected state.
+  HEPHAESTUS_AGENT_BOOT_REPORT_RESULT_REJECTED_AUTHENTICATION = 3;
+}
+
+// Current actual node state status.
+enum HephaestusNodeActualStateStatus {
+  // Unspecified status.
+  HEPHAESTUS_NODE_ACTUAL_STATE_STATUS_UNSPECIFIED = 0;
+  // The node has successfully boot-reported and is ready.
+  HEPHAESTUS_NODE_ACTUAL_STATE_STATUS_READY = 1;
+  // The node has missed recent reports but has not been reconciled as gone.
+  HEPHAESTUS_NODE_ACTUAL_STATE_STATUS_STALE = 2;
+  // The node has been reconciled as unreachable, stopped, or destroyed.
+  HEPHAESTUS_NODE_ACTUAL_STATE_STATUS_OFFLINE = 3;
+}
+
+// Broad environment safety tag for server management UI and action review.
+enum HephaestusServerEnvironmentTag {
+  // Unspecified environment tag.
+  HEPHAESTUS_SERVER_ENVIRONMENT_TAG_UNSPECIFIED = 0;
+  // Development-like, lab, smoke, staging, or non-production server.
+  HEPHAESTUS_SERVER_ENVIRONMENT_TAG_DEV = 1;
+  // Production server.
+  HEPHAESTUS_SERVER_ENVIRONMENT_TAG_PROD = 2;
+}
+
+// Broad machine purpose classification.
+enum HephaestusServerRole {
+  // Unspecified role.
+  HEPHAESTUS_SERVER_ROLE_UNSPECIFIED = 0;
+  // API/application serving node.
+  HEPHAESTUS_SERVER_ROLE_API = 1;
+  // Background worker node.
+  HEPHAESTUS_SERVER_ROLE_WORKER = 2;
+  // Database node.
+  HEPHAESTUS_SERVER_ROLE_DB = 3;
+  // Search/index node.
+  HEPHAESTUS_SERVER_ROLE_SEARCH = 4;
+  // Edge/ingress node.
+  HEPHAESTUS_SERVER_ROLE_EDGE = 5;
+  // Role intentionally not yet classified.
+  HEPHAESTUS_SERVER_ROLE_UNKNOWN = 6;
+}
+
+// HephaestusContainerState mirrors the bounded container lifecycle states.
+enum HephaestusContainerState {
+  // Unspecified container state.
+  HEPHAESTUS_CONTAINER_STATE_UNSPECIFIED = 0;
+  // Container was created but not started.
+  HEPHAESTUS_CONTAINER_STATE_CREATED = 1;
+  // Container is running.
+  HEPHAESTUS_CONTAINER_STATE_RUNNING = 2;
+  // Container is restarting.
+  HEPHAESTUS_CONTAINER_STATE_RESTARTING = 3;
+  // Container is being removed.
+  HEPHAESTUS_CONTAINER_STATE_REMOVING = 4;
+  // Container is paused.
+  HEPHAESTUS_CONTAINER_STATE_PAUSED = 5;
+  // Container has exited.
+  HEPHAESTUS_CONTAINER_STATE_EXITED = 6;
+  // Container is dead.
+  HEPHAESTUS_CONTAINER_STATE_DEAD = 7;
+  // Container state was unknown to Hephaestus.
+  HEPHAESTUS_CONTAINER_STATE_UNKNOWN = 8;
+}
+
+// HephaestusContainerHealthState mirrors bounded container health states.
+enum HephaestusContainerHealthState {
+  // Unspecified health state.
+  HEPHAESTUS_CONTAINER_HEALTH_STATE_UNSPECIFIED = 0;
+  // No health state is available.
+  HEPHAESTUS_CONTAINER_HEALTH_STATE_NONE = 1;
+  // Health check is starting.
+  HEPHAESTUS_CONTAINER_HEALTH_STATE_STARTING = 2;
+  // Container is healthy.
+  HEPHAESTUS_CONTAINER_HEALTH_STATE_HEALTHY = 3;
+  // Container is unhealthy.
+  HEPHAESTUS_CONTAINER_HEALTH_STATE_UNHEALTHY = 4;
+  // Container health was unknown to Hephaestus.
+  HEPHAESTUS_CONTAINER_HEALTH_STATE_UNKNOWN = 5;
+}
+
+// HephaestusContainerRestartReason explains why the agent recommends a
+// container restart.
+enum HephaestusContainerRestartReason {
+  // Unspecified restart reason.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_UNSPECIFIED = 0;
+  // No restart is currently recommended.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_NONE = 1;
+  // Container health checks are unhealthy.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_UNHEALTHY = 2;
+  // Container is in Docker's restarting state.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_RESTARTING = 3;
+  // Container has exited.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_EXITED = 4;
+  // Container is dead.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_DEAD = 5;
+  // Container health or lifecycle state is unknown.
+  HEPHAESTUS_CONTAINER_RESTART_REASON_UNKNOWN = 6;
+}
+
+// HephaestusHostServiceState mirrors bounded host-installed service states.
+enum HephaestusHostServiceState {
+  // Unspecified host service state.
+  HEPHAESTUS_HOST_SERVICE_STATE_UNSPECIFIED = 0;
+  // Service is active and running.
+  HEPHAESTUS_HOST_SERVICE_STATE_ACTIVE = 1;
+  // Service is reloading.
+  HEPHAESTUS_HOST_SERVICE_STATE_RELOADING = 2;
+  // Service is inactive.
+  HEPHAESTUS_HOST_SERVICE_STATE_INACTIVE = 3;
+  // Service has failed.
+  HEPHAESTUS_HOST_SERVICE_STATE_FAILED = 4;
+  // Service is activating.
+  HEPHAESTUS_HOST_SERVICE_STATE_ACTIVATING = 5;
+  // Service is deactivating.
+  HEPHAESTUS_HOST_SERVICE_STATE_DEACTIVATING = 6;
+  // Service state was unknown to Hephaestus.
+  HEPHAESTUS_HOST_SERVICE_STATE_UNKNOWN = 7;
+}
+
+// Stable unattended-upgrades state observed on Ubuntu hosts.
+enum HephaestusUnattendedUpgradesState {
+  // Unspecified unattended-upgrades state.
+  HEPHAESTUS_UNATTENDED_UPGRADES_STATE_UNSPECIFIED = 0;
+  // unattended-upgrades is enabled and active.
+  HEPHAESTUS_UNATTENDED_UPGRADES_STATE_ACTIVE = 1;
+  // unattended-upgrades is installed but inactive.
+  HEPHAESTUS_UNATTENDED_UPGRADES_STATE_INACTIVE = 2;
+  // unattended-upgrades has failed.
+  HEPHAESTUS_UNATTENDED_UPGRADES_STATE_FAILED = 3;
+  // unattended-upgrades is not installed or not found.
+  HEPHAESTUS_UNATTENDED_UPGRADES_STATE_NOT_INSTALLED = 4;
+  // The agent could not determine unattended-upgrades state.
+  HEPHAESTUS_UNATTENDED_UPGRADES_STATE_UNKNOWN = 5;
+}
+
+// Stable service probe kind.
+enum HephaestusServiceProbeKind {
+  // Unspecified service probe kind.
+  HEPHAESTUS_SERVICE_PROBE_KIND_UNSPECIFIED = 0;
+  // HTTP GET probe.
+  HEPHAESTUS_SERVICE_PROBE_KIND_HTTP = 1;
+  // TCP connect probe.
+  HEPHAESTUS_SERVICE_PROBE_KIND_TCP = 2;
+}
+
+// Stable service probe status.
+enum HephaestusServiceProbeStatus {
+  // Unspecified service probe status.
+  HEPHAESTUS_SERVICE_PROBE_STATUS_UNSPECIFIED = 0;
+  // Probe succeeded.
+  HEPHAESTUS_SERVICE_PROBE_STATUS_OK = 1;
+  // Probe failed.
+  HEPHAESTUS_SERVICE_PROBE_STATUS_FAILED = 2;
+  // Probe was skipped because it was not configured.
+  HEPHAESTUS_SERVICE_PROBE_STATUS_SKIPPED = 3;
+}

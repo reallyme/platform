@@ -1,0 +1,226 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.hephaestus.v1;
+
+import "reallyme/hephaestus/v1/types.proto";
+
+service FoundationDbService {
+  rpc PlanFoundationDbDeployment(PlanFoundationDbDeploymentRequest) returns (PlanFoundationDbDeploymentResponse);
+}
+
+message PlanFoundationDbDeploymentRequest {
+  FoundationDbLifecycleOperation operation = 1;
+  FoundationDbClusterIntent intent = 2;
+}
+
+message PlanFoundationDbDeploymentResponse {
+  optional FoundationDbDeploymentPlan plan = 1;
+  repeated FoundationDbValidationError errors = 2;
+}
+
+message FoundationDbClusterIntent {
+  ProvisioningEnvironment environment = 1;
+  ProvisioningDataRegion data_region = 2;
+  string cluster_id = 3;
+  string cluster_description = 4;
+  string version = 5;
+  FoundationDbDeploymentStorageEngine storage_engine = 6;
+  FoundationDbDeploymentRedundancyMode redundancy_mode = 7;
+  uint32 usable_regions = 8;
+  FoundationDbDeploymentDiskEncryptionMode disk_encryption_mode = 9;
+  uint32 listen_port = 10;
+  string data_mount_point = 11;
+  string data_dir = 12;
+  string log_dir = 13;
+  string cluster_file_path = 14;
+  string config_path = 15;
+  ProvisioningSite primary_site = 16;
+  ProvisioningSite secondary_site = 17;
+  ProvisioningSite witness_site = 18;
+  repeated FoundationDbSiteIntent sites = 19;
+  repeated string tenant_ids = 20;
+  FoundationDbBackupIntent backup = 21;
+  FoundationDbRestoreIntent restore = 22;
+  uint32 private_peer_cidr_count = 23;
+  uint32 admin_peer_cidr_count = 24;
+  repeated FoundationDbCoordinator existing_coordinators = 25;
+}
+
+enum FoundationDbLifecycleOperation {
+  FOUNDATION_DB_LIFECYCLE_OPERATION_UNSPECIFIED = 0;
+  FOUNDATION_DB_LIFECYCLE_OPERATION_CREATE_CLUSTER = 1;
+  FOUNDATION_DB_LIFECYCLE_OPERATION_ADD_NODE = 2;
+  FOUNDATION_DB_LIFECYCLE_OPERATION_RECONFIGURE_CLUSTER = 3;
+  FOUNDATION_DB_LIFECYCLE_OPERATION_STATUS = 4;
+  FOUNDATION_DB_LIFECYCLE_OPERATION_DESTROY = 5;
+}
+
+message FoundationDbSiteIntent {
+  ProvisioningSite site = 1;
+  ProvisioningFoundationDbRole role = 2;
+  InfrastructureProvider provider = 3;
+  ProvisioningInstancePlan instance_plan = 4;
+  uint32 node_count = 5;
+  string provider_location_id = 6;
+  string hostname_prefix = 7;
+}
+
+message FoundationDbBackupIntent {
+  bool enabled = 1;
+  string tag = 2;
+  string destination_name = 3;
+  string bucket_config_ref = 4;
+  ProvisioningSecretRef access_key_secret_ref = 5;
+  ProvisioningSecretRef secret_key_secret_ref = 6;
+  uint32 snapshot_interval_seconds = 7;
+  uint32 initial_snapshot_interval_seconds = 8;
+  bool server_side_encryption_enabled = 9;
+}
+
+message FoundationDbRestoreIntent {
+  FoundationDbRestoreMode mode = 1;
+  FoundationDbRestoreSelector selector = 2;
+  string source_config_ref = 3;
+  bool target_empty_confirmed = 4;
+  bool force_live_restore = 5;
+}
+
+message FoundationDbRestoreSelector {
+  optional string timestamp = 1;
+  optional uint64 version = 2;
+}
+
+enum FoundationDbRestoreMode {
+  FOUNDATION_DB_RESTORE_MODE_UNSPECIFIED = 0;
+  FOUNDATION_DB_RESTORE_MODE_DISABLED = 1;
+  FOUNDATION_DB_RESTORE_MODE_DRY_RUN = 2;
+  FOUNDATION_DB_RESTORE_MODE_EXECUTE = 3;
+}
+
+enum FoundationDbDeploymentStorageEngine {
+  FOUNDATION_DB_DEPLOYMENT_STORAGE_ENGINE_UNSPECIFIED = 0;
+  FOUNDATION_DB_DEPLOYMENT_STORAGE_ENGINE_SSD_2 = 1;
+}
+
+enum FoundationDbDeploymentRedundancyMode {
+  FOUNDATION_DB_DEPLOYMENT_REDUNDANCY_MODE_UNSPECIFIED = 0;
+  FOUNDATION_DB_DEPLOYMENT_REDUNDANCY_MODE_SINGLE = 1;
+  FOUNDATION_DB_DEPLOYMENT_REDUNDANCY_MODE_TRIPLE = 2;
+  FOUNDATION_DB_DEPLOYMENT_REDUNDANCY_MODE_DOUBLE = 3;
+}
+
+enum FoundationDbDeploymentDiskEncryptionMode {
+  FOUNDATION_DB_DEPLOYMENT_DISK_ENCRYPTION_MODE_UNSPECIFIED = 0;
+  FOUNDATION_DB_DEPLOYMENT_DISK_ENCRYPTION_MODE_PROVIDER = 1;
+  FOUNDATION_DB_DEPLOYMENT_DISK_ENCRYPTION_MODE_LUKS_MANUAL_UNLOCK = 2;
+  FOUNDATION_DB_DEPLOYMENT_DISK_ENCRYPTION_MODE_LUKS_KEYFILE = 3;
+  FOUNDATION_DB_DEPLOYMENT_DISK_ENCRYPTION_MODE_NONE = 4;
+}
+
+message FoundationDbDeploymentPlan {
+  FoundationDbRuntimeConfig runtime_config = 1;
+  repeated FoundationDbNodePlan nodes = 2;
+  repeated uint32 private_tcp_ports = 3;
+  repeated FoundationDbCoordinator coordinator_plan = 4;
+  FoundationDbBackupPlan backup_plan = 5;
+  FoundationDbRestorePlan restore_plan = 6;
+}
+
+message FoundationDbRuntimeConfig {
+  FoundationDbLifecycleOperation operation = 1;
+  ProvisioningEnvironment environment = 2;
+  ProvisioningDataRegion data_region = 3;
+  string cluster_id = 4;
+  string cluster_description = 5;
+  string version = 6;
+  FoundationDbDeploymentStorageEngine storage_engine = 7;
+  FoundationDbDeploymentRedundancyMode redundancy_mode = 8;
+  uint32 usable_regions = 9;
+  FoundationDbDeploymentDiskEncryptionMode disk_encryption_mode = 10;
+  uint32 listen_port = 11;
+  string data_mount_point = 12;
+  string data_dir = 13;
+  string log_dir = 14;
+  string cluster_file_path = 15;
+  string config_path = 16;
+  ProvisioningSite primary_site = 17;
+  ProvisioningSite secondary_site = 18;
+  ProvisioningSite witness_site = 19;
+  repeated string tenant_ids = 20;
+  repeated FoundationDbCoordinator existing_coordinators = 21;
+}
+
+message FoundationDbNodePlan {
+  string hostname = 1;
+  ProvisioningSite site = 2;
+  ProvisioningFoundationDbRole role = 3;
+  InfrastructureProvider provider = 4;
+  ProvisioningInstancePlan instance_plan = 5;
+  bool bootstrap = 6;
+  bool coordinator = 7;
+  bool data_bearing = 8;
+  FoundationDbProcessClass process_class = 9;
+  string datacenter_id = 10;
+  string zone_id = 11;
+  string machine_id = 12;
+}
+
+enum FoundationDbProcessClass {
+  FOUNDATION_DB_PROCESS_CLASS_UNSPECIFIED = 0;
+  FOUNDATION_DB_PROCESS_CLASS_STORAGE = 1;
+  FOUNDATION_DB_PROCESS_CLASS_COORDINATOR = 2;
+  FOUNDATION_DB_PROCESS_CLASS_STATELESS = 3;
+}
+
+message FoundationDbCoordinator {
+  string hostname = 1;
+  ProvisioningSite site = 2;
+  string address_ref = 3;
+}
+
+message FoundationDbBackupPlan {
+  bool enabled = 1;
+  string tag = 2;
+  string destination_name = 3;
+  string bucket_config_ref = 4;
+  ProvisioningSecretRef access_key_secret_ref = 5;
+  ProvisioningSecretRef secret_key_secret_ref = 6;
+  uint32 snapshot_interval_seconds = 7;
+  uint32 initial_snapshot_interval_seconds = 8;
+  bool server_side_encryption_enabled = 9;
+}
+
+message FoundationDbRestorePlan {
+  FoundationDbRestoreMode mode = 1;
+  FoundationDbRestoreSelector selector = 2;
+  string source_config_ref = 3;
+  bool target_empty_confirmed = 4;
+  bool force_live_restore = 5;
+}
+
+message FoundationDbValidationError {
+  FoundationDbValidationErrorReason reason = 1;
+}
+
+enum FoundationDbValidationErrorReason {
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_UNSPECIFIED = 0;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_ACTION = 1;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_ROLE = 2;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_IDENTIFIER = 3;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_PORT = 4;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_PATH = 5;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_MISSING_SITE_BINDING = 6;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_MISSING_REQUIRED_ROLE = 7;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_MISSING_PEER_CIDRS = 8;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_MISSING_SECRET_REF = 9;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_MISSING_BACKUP_CONFIG = 10;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_BACKUP_CONFIG = 11;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_RESTORE_INTENT = 12;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_TOPOLOGY = 13;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_MISSING_EXISTING_CLUSTER = 14;
+  FOUNDATION_DB_VALIDATION_ERROR_REASON_INVALID_COORDINATOR_SET = 15;
+}

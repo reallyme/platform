@@ -1,0 +1,162 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.hephaestus.v1;
+
+import "reallyme/hephaestus/v1/types.proto";
+
+// DockerService plans provider-neutral Docker host/service runtime intent before
+// adapters render Ansible vars, Compose files, image archives, or registry auth.
+service DockerService {
+  rpc PlanDockerDeployment(PlanDockerDeploymentRequest) returns (PlanDockerDeploymentResponse);
+}
+
+message PlanDockerDeploymentRequest {
+  DockerDeploymentIntent intent = 1;
+}
+
+message PlanDockerDeploymentResponse {
+  optional DockerDeploymentPlan plan = 1;
+  repeated DockerValidationError errors = 2;
+}
+
+message DockerDeploymentIntent {
+  uint32 schema_version = 1;
+  ProvisioningLifecycleAction action = 2;
+  ProvisioningService service = 3;
+  repeated ProvisioningWorkloadRole workload_roles = 4;
+  ProvisioningRuntime runtime = 5;
+  ContainerImageRef image = 6;
+  string container_name = 8;
+  string compose_project_name = 9;
+  DockerNetworkMode network_mode = 10;
+  DockerRestartPolicy restart_policy = 11;
+  repeated DockerPortIntent ports = 12;
+  repeated DockerVolumeIntent volumes = 13;
+  repeated DockerSecretMountIntent secrets = 14;
+  repeated DockerEnvironmentBinding environment = 15;
+  repeated DockerHealthProbeIntent probes = 16;
+  bool allow_public_ingress = 17;
+  bool read_only_root_filesystem = 18;
+  bool no_new_privileges = 19;
+}
+
+message DockerDeploymentPlan {
+  DockerRuntimeConfig runtime_config = 1;
+  DockerImagePlan image = 2;
+  repeated uint32 private_tcp_ports = 3;
+  repeated uint32 public_tcp_ports = 4;
+  repeated DockerSecretMountIntent secret_mounts = 5;
+  repeated DockerHealthProbeIntent probes = 6;
+  repeated DockerPlannedOperation operations = 7;
+}
+
+message DockerRuntimeConfig {
+  ProvisioningService service = 1;
+  repeated ProvisioningWorkloadRole workload_roles = 2;
+  ProvisioningRuntime runtime = 3;
+  string container_name = 4;
+  string compose_project_name = 5;
+  DockerNetworkMode network_mode = 6;
+  DockerRestartPolicy restart_policy = 7;
+  repeated DockerPortIntent ports = 8;
+  repeated DockerVolumeIntent volumes = 9;
+  repeated DockerEnvironmentBinding environment = 10;
+  bool read_only_root_filesystem = 11;
+  bool no_new_privileges = 12;
+}
+
+message DockerImagePlan {
+  ContainerImageRef image = 1;
+  bool requires_registry_auth = 3;
+  bool requires_local_archive_sync = 4;
+}
+
+message DockerPortIntent {
+  string name = 1;
+  uint32 container_port = 2;
+  optional uint32 host_port = 3;
+  DockerPortProtocol protocol = 4;
+  bool public = 5;
+}
+
+message DockerVolumeIntent {
+  string source = 1;
+  string target = 2;
+  bool read_only = 3;
+}
+
+message DockerSecretMountIntent {
+  ProvisioningSecretRef secret_ref = 1;
+  string target_path = 2;
+  optional string env_name = 3;
+}
+
+message DockerEnvironmentBinding {
+  string name = 1;
+  string value = 2;
+}
+
+message DockerHealthProbeIntent {
+  string name = 1;
+  DockerHealthProbeKind kind = 2;
+  uint32 port = 3;
+  optional string path = 4;
+  optional string required_body_fragment = 5;
+  bool requires_secret = 6;
+}
+
+message DockerPlannedOperation {
+  ProvisioningLifecycleAction action = 1;
+  string phase = 2;
+}
+
+enum DockerNetworkMode {
+  DOCKER_NETWORK_MODE_UNSPECIFIED = 0;
+  DOCKER_NETWORK_MODE_BRIDGE = 1;
+  DOCKER_NETWORK_MODE_HOST = 2;
+}
+
+enum DockerRestartPolicy {
+  DOCKER_RESTART_POLICY_UNSPECIFIED = 0;
+  DOCKER_RESTART_POLICY_NO = 1;
+  DOCKER_RESTART_POLICY_UNLESS_STOPPED = 2;
+  DOCKER_RESTART_POLICY_ALWAYS = 3;
+}
+
+enum DockerPortProtocol {
+  DOCKER_PORT_PROTOCOL_UNSPECIFIED = 0;
+  DOCKER_PORT_PROTOCOL_TCP = 1;
+  DOCKER_PORT_PROTOCOL_UDP = 2;
+}
+
+enum DockerHealthProbeKind {
+  DOCKER_HEALTH_PROBE_KIND_UNSPECIFIED = 0;
+  DOCKER_HEALTH_PROBE_KIND_HTTP = 1;
+  DOCKER_HEALTH_PROBE_KIND_TCP = 2;
+  DOCKER_HEALTH_PROBE_KIND_COMMAND = 3;
+  DOCKER_HEALTH_PROBE_KIND_METRICS = 4;
+}
+
+message DockerValidationError {
+  DockerValidationErrorReason reason = 1;
+}
+
+enum DockerValidationErrorReason {
+  DOCKER_VALIDATION_ERROR_REASON_UNSPECIFIED = 0;
+  DOCKER_VALIDATION_ERROR_REASON_UNSUPPORTED_SCHEMA_VERSION = 1;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_ACTION = 2;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_RUNTIME = 3;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_IMAGE = 4;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_CONTAINER_NAME = 5;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_PORT = 6;
+  DOCKER_VALIDATION_ERROR_REASON_DUPLICATE_PORT = 7;
+  DOCKER_VALIDATION_ERROR_REASON_PUBLIC_PORT_REQUIRES_PUBLIC_INGRESS = 8;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_PATH = 9;
+  DOCKER_VALIDATION_ERROR_REASON_MISSING_SECRET_REF = 10;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_ENVIRONMENT = 11;
+  DOCKER_VALIDATION_ERROR_REASON_INVALID_HEALTH_PROBE = 12;
+}

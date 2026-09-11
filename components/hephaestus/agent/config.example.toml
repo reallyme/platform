@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+controller_base_url = "https://heph.example.ts.net"
+server_id = "prod-nats-regional-ams-01"
+provider_server_id = "vultr-instance-id"
+site_id = "ams"
+bootstrap_token_path = "/etc/reallyme/hephaestus-agent/bootstrap-token"
+full_report_interval_seconds = 30
+action_poll_interval_seconds = 2
+command_timeout_seconds = 10
+state_dir = "/var/lib/reallyme/hephaestus-agent"
+audit_log_path = "/var/lib/reallyme/hephaestus-agent/action-audit.jsonl"
+cadvisor_metrics_url = "http://127.0.0.1:8080/metrics"
+node_exporter_metrics_url = "http://127.0.0.1:9100/metrics"
+observed_systemd_units = ["docker.service", "tailscaled.service", "cadvisor.service", "node-exporter.service"]
+observed_apps = ["nats"]
+
+[[service_probes]]
+name = "nats-health"
+service_name = "nats"
+kind = "http"
+target = "http://127.0.0.1:8222/healthz"
+
+[[service_probes]]
+name = "nats-client-port"
+service_name = "nats"
+kind = "tcp"
+target = "127.0.0.1:4222"

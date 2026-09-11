@@ -1,0 +1,22 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.example.v1;
+
+// ExampleService is the canonical RPC contract for the example app.
+service ExampleService {
+  // Hello exercises a minimal unary RPC shape without product behavior.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+}
+
+// HelloRequest intentionally carries no fields; example app behavior remains static.
+message HelloRequest {}
+
+// HelloResponse carries the example greeting returned by the app core.
+message HelloResponse {
+  // Human-readable greeting for local smoke validation.
+  string message = 1;
+}

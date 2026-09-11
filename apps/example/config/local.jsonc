@@ -1,0 +1,16 @@
+{
+  "public_base_url": "http://localhost:8080",
+
+  "cors": {
+    "allowed_origins": [
+      "http://localhost:3000"
+    ]
+  },
+
+  "reflection_enabled": false,
+
+  "downstream": {},
+
+  "hello_enabled": true,
+  "example_custom_property": "local"
+}

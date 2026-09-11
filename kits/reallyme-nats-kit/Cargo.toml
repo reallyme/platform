@@ -1,0 +1,31 @@
+[package]
+name = "reallyme-nats-kit"
+description = "Production NATS and JetStream transport primitives for ReallyMe Platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["nats", "jetstream", "messaging", "queue", "transport"]
+categories = ["asynchronous", "network-programming"]
+publish = ["crates-io"]
+
+[dependencies]
+metrics.workspace = true
+async-nats = { workspace = true, features = ["jetstream", "nuid", "ring", "nkeys"] }
+futures-util.workspace = true
+bytes.workspace = true
+nkeys.workspace = true
+secrecy.workspace = true
+reallyme-crypto.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"

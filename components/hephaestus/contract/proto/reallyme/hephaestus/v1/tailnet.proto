@@ -1,0 +1,100 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.hephaestus.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// TailnetOverview is the read model for the dashboard's Tailscale network tab.
+// It is intentionally view-oriented: mutation workflows should use separate
+// request/approval messages so route, tag, and policy changes remain auditable.
+message TailnetOverview {
+  uint32 schema_version = 1;
+  string tailnet = 2;
+  google.protobuf.Timestamp collected_at = 3;
+  repeated TailnetDevice devices = 4;
+  repeated TailnetTag tags = 5;
+  repeated TailnetService services = 6;
+  TailnetPolicySummary policy = 7;
+  repeated TailnetDriftFinding drift_findings = 8;
+}
+
+message TailnetDevice {
+  string hostname = 1;
+  optional string device_id = 2;
+  optional string magic_dns_name = 3;
+  repeated string addresses = 4;
+  repeated string tags = 5;
+  optional bool online = 6;
+  optional string last_seen = 7;
+  optional string os = 8;
+  optional string client_version = 9;
+  repeated TailnetRoute advertised_routes = 10;
+  repeated TailnetRoute approved_routes = 11;
+  optional string key_expires = 12;
+  optional string desired_node_id = 13;
+  TailnetDeviceDriftStatus drift_status = 14;
+}
+
+message TailnetRoute {
+  string cidr = 1;
+  bool approved = 2;
+  bool primary = 3;
+}
+
+enum TailnetDeviceDriftStatus {
+  TAILNET_DEVICE_DRIFT_STATUS_UNSPECIFIED = 0;
+  TAILNET_DEVICE_DRIFT_STATUS_UNKNOWN = 1;
+  TAILNET_DEVICE_DRIFT_STATUS_IN_SYNC = 2;
+  TAILNET_DEVICE_DRIFT_STATUS_MISSING = 3;
+  TAILNET_DEVICE_DRIFT_STATUS_TAG_DRIFT = 4;
+  TAILNET_DEVICE_DRIFT_STATUS_STALE_COLLISION = 5;
+}
+
+message TailnetTag {
+  string tag = 1;
+  repeated string owners = 2;
+  repeated string device_hostnames = 3;
+  bool declared_in_policy = 4;
+}
+
+message TailnetService {
+  string service_name = 1;
+  repeated string magic_dns_names = 2;
+  repeated TailnetServiceHost hosts = 3;
+}
+
+message TailnetServiceHost {
+  string hostname = 1;
+  optional string device_id = 2;
+  bool advertised = 3;
+  bool approved = 4;
+}
+
+message TailnetPolicySummary {
+  optional string source_path = 1;
+  optional string etag = 2;
+  optional string sha256 = 3;
+  uint32 tag_owner_count = 4;
+  uint32 grant_count = 5;
+  uint32 acl_count = 6;
+  uint32 ssh_rule_count = 7;
+  uint32 auto_approver_count = 8;
+  bool uses_grants = 9;
+}
+
+message TailnetDriftFinding {
+  TailnetDriftSeverity severity = 1;
+  string subject = 2;
+  string summary = 3;
+}
+
+enum TailnetDriftSeverity {
+  TAILNET_DRIFT_SEVERITY_UNSPECIFIED = 0;
+  TAILNET_DRIFT_SEVERITY_INFO = 1;
+  TAILNET_DRIFT_SEVERITY_WARNING = 2;
+  TAILNET_DRIFT_SEVERITY_CRITICAL = 3;
+}

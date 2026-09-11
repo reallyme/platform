@@ -1,0 +1,24 @@
+[package]
+name = "reallyme-hephaestus-contract"
+description = "Connect RPC and protobuf contracts for the ReallyMe Hephaestus control plane"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["infrastructure", "connect-rpc", "protobuf", "control-plane"]
+categories = ["network-programming"]
+publish = ["crates-io"]
+include = ["/buf.gen.rust.yaml", "/buf.yaml", "/proto/**/*.proto", "/src/**/*.rs"]
+
+[features]
+default = []
+generated = ["dep:buffa", "dep:buffa-types", "dep:connectrpc"]
+
+[dependencies]
+buffa = { workspace = true, optional = true }
+buffa-types = { workspace = true, optional = true }
+connectrpc = { workspace = true, optional = true }
+reallyme-app-kit.workspace = true
+reallyme-hephaestus-domain.workspace = true
+serde.workspace = true

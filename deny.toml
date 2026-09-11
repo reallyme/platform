@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# cargo-deny policy for the ReallyMe Rust workspace.
+#
+# This configuration is intentionally conservative. Dependency policy changes
+# should be reviewed like code changes because this repository is expected to
+# host long-lived, security-sensitive backend infrastructure.
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+ignore = []
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    # `xxhash-rust` is a transitive dependency of Redis and uses the
+    # OSI-approved Boost Software License 1.0.
+    "BSL-1.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+exceptions = []
+
+[licenses.private]
+ignore = true
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+# Do not list `anyhow`, `log`, or similar broad crates here unless we are
+# prepared to ban transitive use as well. Some upstream framework crates use
+# them internally. Direct use in ReallyMe library code is prohibited by the
+# engineering standards and should be caught in review/clippy/source audits.
+deny = []
+skip = [
+    { crate = "getrandom@0.2.17", reason = "Transitive via rand_core 0.6 until upstream web/runtime crates converge on getrandom 0.4." },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

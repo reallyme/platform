@@ -1,0 +1,197 @@
+# SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+
+name: Crates Package Preflight
+
+run-name: Crates package preflight ${{ inputs.version }} @ ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without a leading v
+        required: true
+        type: string
+        default: 0.1.0
+
+concurrency:
+  group: crates-package-preflight-${{ inputs.version }}-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  BUFFA_VERSION: 0.9.2
+  BUF_VERSION: 1.72.0
+  CONNECTRPC_CODEGEN_VERSION: 0.9.0
+  CARGO_AUDIT_VERSION: 0.22.2
+  CARGO_DENY_VERSION: 0.20.2
+  CARGO_MACHETE_VERSION: 0.9.2
+  BUF_LINUX_X86_64_SHA256: 8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
+  FDB_CLIENT_SHA256: b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254
+  FDB_VERSION: 7.3.77
+
+jobs:
+  verify-source-sha:
+    name: Verify release source
+    runs-on: ubuntu-24.04
+    outputs:
+      release_sha: ${{ steps.verify-source.outputs.release_sha }}
+      release_version: ${{ steps.verify-source.outputs.release_version }}
+    steps:
+      - name: Checkout requested release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Match workflow head, current main, and public crate versions
+        id: verify-source
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_SOURCE_WRITE_GITHUB_OUTPUT: "1"
+        run: node scripts/verify_release_source.mjs
+
+  crates-package:
+    name: Review crates.io packages
+    needs: verify-source-sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout certified release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify-source-sha.outputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt,clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install Buf
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/buf/bin"
+          mkdir -p "$install_dir"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            --output "$install_dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          printf '%s  %s\n' "$BUF_LINUX_X86_64_SHA256" "$install_dir/buf" \
+            | sha256sum --check --strict
+          chmod 0755 "$install_dir/buf"
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/buf" --version
+
+      - name: Install FoundationDB client
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            --output "$package" \
+            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${package}"
+          printf '%s  %s\n' "$FDB_CLIENT_SHA256" "$package" \
+            | sha256sum --check --strict
+          sudo dpkg -i "$package"
+
+      - name: Install Ripgrep for repository policy checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+          rg --version
+
+      - name: Install pinned Rust protobuf generators
+        run: |
+          cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
+          cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked
+          cargo install connectrpc-codegen --version "$CONNECTRPC_CODEGEN_VERSION" --locked
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-machete@${{ env.CARGO_MACHETE_VERSION }}
+
+      - name: Generate Rust contracts
+        run: scripts/generate-rust-contracts.sh
+
+      - name: Verify minimum supported Rust version
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          cargo +1.96.0 check --locked --workspace --all-features
+
+      - name: Run repository release gates
+        run: scripts/local-audit.sh --contracts-generated
+
+      - name: Check release version and publish order
+        env:
+          RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+        run: node scripts/publish_crates_in_order.mjs order
+
+      - name: Inspect normalized crate archives and dry-run publication
+        env:
+          RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+        # Contract generation produces ignored Rust sources that must be present
+        # in the inspected archives. Publication itself never permits dirty input.
+        run: node scripts/publish_crates_in_order.mjs inspect --allow-dirty
+
+      - name: Write reviewed package attestation
+        env:
+          RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
+          RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+        run: node scripts/write_release_attestation.mjs
+
+      - name: Upload reviewed package attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reallyme-platform-crates-preflight-${{ inputs.version }}-${{ github.sha }}
+          path: release-attestation/crates-preflight.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summarize reviewed release
+        env:
+          RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
+          RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+        run: |
+          {
+            echo '## Crates package preflight passed'
+            echo
+            echo "- Distribution: ReallyMe Platform ${RELEASE_VERSION}"
+            echo "- Commit: \`${RELEASE_SHA}\`"
+            echo '- Public crates: 11'
+            echo "- Attestation run ID: \`${GITHUB_RUN_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

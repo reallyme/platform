@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "reallyme-hephaestus-domain"
+description = "Domain types and validation rules for the ReallyMe Hephaestus infrastructure plane"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["infrastructure", "orchestration", "deployment", "control-plane"]
+categories = ["development-tools"]
+publish = ["crates-io"]
+
+[dependencies]
+serde.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

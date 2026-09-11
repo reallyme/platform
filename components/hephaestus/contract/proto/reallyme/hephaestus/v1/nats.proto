@@ -1,0 +1,140 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.hephaestus.v1;
+
+import "reallyme/hephaestus/v1/types.proto";
+
+service NatsService {
+  rpc PlanNatsDeployment(PlanNatsDeploymentRequest) returns (PlanNatsDeploymentResponse);
+}
+
+message PlanNatsDeploymentRequest {
+  NatsNodeDeploymentIntent intent = 1;
+}
+
+message PlanNatsDeploymentResponse {
+  optional NatsDeploymentPlan plan = 1;
+  repeated NatsValidationError errors = 2;
+}
+
+message NatsSuperclusterServiceSpec {
+  repeated NatsClusterDefinition clusters = 1;
+  repeated JetstreamDomainDefinition jetstream_domains = 2;
+}
+
+message NatsClusterDefinition {
+  string cluster_id = 1;
+  ProvisioningDataRegion data_region = 2;
+  repeated ProvisioningSite sites = 3;
+  uint32 node_count = 4;
+}
+
+message JetstreamDomainDefinition {
+  string domain_id = 1;
+  ProvisioningDataRegion data_region = 2;
+  repeated string cluster_ids = 3;
+}
+
+message NatsNodeDeploymentIntent {
+  ProvisioningNatsRole role = 1;
+  string server_name = 2;
+  optional string cluster_name = 3;
+  repeated NatsRouteTarget cluster_routes = 4;
+  uint32 cluster_peer_count = 5;
+  optional string gateway_name = 6;
+  repeated NatsGatewayRemote gateway_remotes = 7;
+  bool leafnode_listen_enabled = 8;
+  repeated NatsRouteTarget leafnode_remotes = 9;
+  bool jetstream_enabled = 10;
+  optional string jetstream_domain = 11;
+  string store_dir = 12;
+  bool tls_enabled = 13;
+  bool exporter_enabled = 14;
+  uint32 private_peer_cidr_count = 15;
+  uint32 admin_peer_cidr_count = 16;
+  NatsPortSet ports = 17;
+}
+
+message NatsGatewayRemote {
+  string name = 1;
+  repeated NatsRouteTarget urls = 2;
+}
+
+message NatsRouteTarget {
+  NatsRouteScheme scheme = 1;
+  string host = 2;
+  uint32 port = 3;
+}
+
+enum NatsRouteScheme {
+  NATS_ROUTE_SCHEME_UNSPECIFIED = 0;
+  NATS_ROUTE_SCHEME_NATS = 1;
+  NATS_ROUTE_SCHEME_TLS = 2;
+}
+
+message NatsPortSet {
+  uint32 client = 1;
+  uint32 cluster = 2;
+  uint32 gateway = 3;
+  uint32 leafnode = 4;
+  uint32 monitor = 5;
+  uint32 exporter = 6;
+}
+
+message NatsDeploymentPlan {
+  NatsRuntimeConfig runtime_config = 1;
+  repeated uint32 private_tcp_ports = 2;
+  NatsHttpProbe health_probe = 3;
+  optional NatsHttpProbe exporter_probe = 4;
+}
+
+message NatsRuntimeConfig {
+  ProvisioningNatsRole role = 1;
+  string server_name = 2;
+  optional string cluster_name = 3;
+  repeated NatsRouteTarget cluster_routes = 4;
+  optional string gateway_name = 5;
+  repeated NatsGatewayRemote gateway_remotes = 6;
+  bool leafnode_listen_enabled = 7;
+  repeated NatsRouteTarget leafnode_remotes = 8;
+  bool jetstream_enabled = 9;
+  optional string jetstream_domain = 10;
+  string store_dir = 11;
+  NatsPortSet ports = 12;
+}
+
+message NatsHttpProbe {
+  uint32 port = 1;
+  NatsProbeKind kind = 2;
+}
+
+enum NatsProbeKind {
+  NATS_PROBE_KIND_UNSPECIFIED = 0;
+  NATS_PROBE_KIND_HEALTHZ = 1;
+  NATS_PROBE_KIND_JETSTREAM_HEALTHZ = 2;
+  NATS_PROBE_KIND_EXPORTER_METRICS = 3;
+}
+
+message NatsValidationError {
+  NatsValidationErrorReason reason = 1;
+}
+
+enum NatsValidationErrorReason {
+  NATS_VALIDATION_ERROR_REASON_UNSPECIFIED = 0;
+  NATS_VALIDATION_ERROR_REASON_INVALID_IDENTIFIER = 1;
+  NATS_VALIDATION_ERROR_REASON_INVALID_PORT = 2;
+  NATS_VALIDATION_ERROR_REASON_DUPLICATE_PORT = 3;
+  NATS_VALIDATION_ERROR_REASON_INVALID_PATH = 4;
+  NATS_VALIDATION_ERROR_REASON_INVALID_ROUTE_URL = 5;
+  NATS_VALIDATION_ERROR_REASON_TLS_ROUTE_REQUIRED = 6;
+  NATS_VALIDATION_ERROR_REASON_MISSING_PEER_CIDRS = 7;
+  NATS_VALIDATION_ERROR_REASON_MISSING_CLUSTER_NAME = 8;
+  NATS_VALIDATION_ERROR_REASON_MISSING_CLUSTER_ROUTES = 9;
+  NATS_VALIDATION_ERROR_REASON_MISSING_GATEWAY_REMOTES = 10;
+  NATS_VALIDATION_ERROR_REASON_MISSING_GATEWAY_REMOTE_URLS = 11;
+  NATS_VALIDATION_ERROR_REASON_MISSING_LEAFNODE_REMOTES = 12;
+}

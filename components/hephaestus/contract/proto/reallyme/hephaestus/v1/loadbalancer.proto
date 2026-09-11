@@ -1,0 +1,501 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.hephaestus.v1;
+
+import "google/protobuf/timestamp.proto";
+import "reallyme/hephaestus/v1/hephaestus.proto";
+import "reallyme/hephaestus/v1/types.proto";
+
+// LoadBalancerService is the provider-managed load-balancer orchestration
+// boundary. It models desired state independently from the OpenTofu or Ansible
+// adapter that will later execute it.
+service LoadBalancerService {
+  rpc PlanLoadBalancer(PlanLoadBalancerRequest) returns (PlanLoadBalancerResponse);
+  rpc ApplyLoadBalancer(ApplyLoadBalancerRequest) returns (ApplyLoadBalancerResponse);
+  rpc DestroyLoadBalancer(DestroyLoadBalancerRequest) returns (DestroyLoadBalancerResponse);
+  rpc GetLoadBalancerStatus(GetLoadBalancerStatusRequest) returns (GetLoadBalancerStatusResponse);
+}
+
+message PlanLoadBalancerRequest {
+  LoadBalancerDeploymentIntent intent = 1;
+  WorkflowActor requested_by = 2;
+  bool refresh_provider_state = 3;
+  optional string expected_git_commit = 4;
+}
+
+message PlanLoadBalancerResponse {
+  optional LoadBalancerDeploymentPlan plan = 1;
+  repeated LoadBalancerValidationError errors = 2;
+}
+
+message ApplyLoadBalancerRequest {
+  LoadBalancerDeploymentIntent intent = 1;
+  WorkflowActor approved_by = 2;
+  optional string plan_run_id = 3;
+  optional string expected_git_commit = 4;
+  bool dry_run = 5;
+}
+
+message ApplyLoadBalancerResponse {
+  WorkflowRun run = 1;
+  optional LoadBalancerObservedState observed_state = 2;
+}
+
+message DestroyLoadBalancerRequest {
+  LoadBalancerProviderResourceRef target = 1;
+  WorkflowActor approved_by = 2;
+  optional string expected_git_commit = 3;
+  LoadBalancerDestroyPolicy destroy_policy = 4;
+  bool dry_run = 5;
+}
+
+message DestroyLoadBalancerResponse {
+  WorkflowRun run = 1;
+}
+
+message GetLoadBalancerStatusRequest {
+  LoadBalancerProviderResourceRef target = 1;
+  bool include_provider_payload_summary = 2;
+}
+
+message GetLoadBalancerStatusResponse {
+  LoadBalancerObservedState observed_state = 1;
+}
+
+message LoadBalancerDeploymentIntent {
+  uint32 schema_version = 1;
+  string request_id = 2;
+  string environment_id = 3;
+  string display_name = 4;
+  InfrastructureProvider provider = 5;
+  LoadBalancerLifecycleAction action = 6;
+  LoadBalancerDefinition definition = 7;
+  LoadBalancerExecutionBinding execution = 8;
+  repeated ProvisioningSecretRef secret_refs = 9;
+  ProvisioningEnvironment environment = 10;
+  ProvisioningDataRegion data_region = 11;
+  ProvisioningSite site = 12;
+  ProvisioningIngressMode ingress_mode = 13;
+  ProvisioningPlacementKind placement_kind = 14;
+}
+
+enum LoadBalancerLifecycleAction {
+  LOAD_BALANCER_LIFECYCLE_ACTION_UNSPECIFIED = 0;
+  LOAD_BALANCER_LIFECYCLE_ACTION_PLAN = 1;
+  LOAD_BALANCER_LIFECYCLE_ACTION_APPLY = 2;
+  LOAD_BALANCER_LIFECYCLE_ACTION_DESTROY = 3;
+  LOAD_BALANCER_LIFECYCLE_ACTION_STATUS = 4;
+}
+
+message LoadBalancerDefinition {
+  string logical_id = 1;
+  string name = 2;
+  LoadBalancerScope scope = 3;
+  LoadBalancerAlgorithm algorithm = 4;
+  repeated LoadBalancerBackendTarget backend_targets = 5;
+  repeated LoadBalancerListener listeners = 6;
+  repeated LoadBalancerNetworkAttachment network_attachments = 7;
+  LoadBalancerTlsPolicy tls_policy = 8;
+  LoadBalancerProviderConfig provider_config = 9;
+  map<string, string> labels = 10;
+  bool public_ingress_allowed = 11;
+  bool delete_protection = 12;
+}
+
+enum LoadBalancerScope {
+  LOAD_BALANCER_SCOPE_UNSPECIFIED = 0;
+  LOAD_BALANCER_SCOPE_REGIONAL = 1;
+  LOAD_BALANCER_SCOPE_GLOBAL = 2;
+}
+
+enum LoadBalancerAlgorithm {
+  LOAD_BALANCER_ALGORITHM_UNSPECIFIED = 0;
+  LOAD_BALANCER_ALGORITHM_ROUND_ROBIN = 1;
+  LOAD_BALANCER_ALGORITHM_LEAST_CONNECTIONS = 2;
+}
+
+message LoadBalancerProviderConfig {
+  oneof provider {
+    VultrLoadBalancerConfig vultr = 1;
+    HetznerLoadBalancerConfig hetzner = 2;
+  }
+}
+
+message VultrLoadBalancerConfig {
+  ProvisioningSite site = 1;
+  optional string vpc_id = 2;
+  repeated ProvisioningSite global_sites = 3;
+  bool proxy_protocol = 4;
+  bool ssl_redirect = 5;
+  VultrHttpVersion http_version = 6;
+  optional string sticky_cookie_name = 7;
+  repeated string attached_instance_ids = 8;
+  optional string auto_ssl_domain = 9;
+  optional LoadBalancerManualTlsSecretRefs manual_tls = 10;
+}
+
+enum VultrHttpVersion {
+  VULTR_HTTP_VERSION_UNSPECIFIED = 0;
+  VULTR_HTTP_VERSION_HTTP2 = 2;
+  VULTR_HTTP_VERSION_HTTP2_AND_HTTP3 = 3;
+}
+
+message HetznerLoadBalancerConfig {
+  HetznerLoadBalancerType load_balancer_type = 1;
+  ProvisioningSite site = 2;
+  HetznerNetworkZone network_zone = 3;
+  repeated HetznerLoadBalancerService services = 4;
+  repeated HetznerLoadBalancerTarget targets = 5;
+  repeated HetznerLoadBalancerNetwork networks = 6;
+}
+
+enum HetznerLoadBalancerType {
+  HETZNER_LOAD_BALANCER_TYPE_UNSPECIFIED = 0;
+  HETZNER_LOAD_BALANCER_TYPE_LB11 = 1;
+  HETZNER_LOAD_BALANCER_TYPE_LB21 = 2;
+  HETZNER_LOAD_BALANCER_TYPE_LB31 = 3;
+}
+
+enum HetznerNetworkZone {
+  HETZNER_NETWORK_ZONE_UNSPECIFIED = 0;
+  HETZNER_NETWORK_ZONE_EU_CENTRAL = 1;
+  HETZNER_NETWORK_ZONE_US_EAST = 2;
+  HETZNER_NETWORK_ZONE_US_WEST = 3;
+}
+
+message LoadBalancerBackendTarget {
+  string target_id = 1;
+  LoadBalancerBackendTargetKind kind = 2;
+  string provider_resource_id = 3;
+  optional string address = 4;
+  optional string label_selector = 5;
+  bool use_private_ip = 6;
+  bool enabled = 7;
+}
+
+enum LoadBalancerBackendTargetKind {
+  LOAD_BALANCER_BACKEND_TARGET_KIND_UNSPECIFIED = 0;
+  LOAD_BALANCER_BACKEND_TARGET_KIND_PROVIDER_INSTANCE = 1;
+  LOAD_BALANCER_BACKEND_TARGET_KIND_LABEL_SELECTOR = 2;
+  LOAD_BALANCER_BACKEND_TARGET_KIND_IP_ADDRESS = 3;
+}
+
+message LoadBalancerListener {
+  string listener_id = 1;
+  LoadBalancerProtocol frontend_protocol = 2;
+  uint32 frontend_port = 3;
+  LoadBalancerProtocol backend_protocol = 4;
+  uint32 backend_port = 5;
+  optional LoadBalancerHealthCheck health_check = 6;
+  repeated LoadBalancerFirewallRule firewall_rules = 7;
+  optional LoadBalancerHttpOptions http_options = 8;
+  bool proxy_protocol = 9;
+}
+
+enum LoadBalancerProtocol {
+  LOAD_BALANCER_PROTOCOL_UNSPECIFIED = 0;
+  LOAD_BALANCER_PROTOCOL_TCP = 1;
+  LOAD_BALANCER_PROTOCOL_HTTP = 2;
+  LOAD_BALANCER_PROTOCOL_HTTPS = 3;
+}
+
+message LoadBalancerHealthCheck {
+  LoadBalancerProtocol protocol = 1;
+  uint32 port = 2;
+  string path = 3;
+  uint32 interval_seconds = 4;
+  uint32 timeout_seconds = 5;
+  uint32 unhealthy_threshold = 6;
+  uint32 healthy_threshold = 7;
+  repeated string expected_status_codes = 8;
+  optional string expected_response_fragment = 9;
+  optional string host_header = 10;
+  bool tls_verify = 11;
+}
+
+message LoadBalancerFirewallRule {
+  uint32 frontend_port = 1;
+  LoadBalancerIpFamily ip_family = 2;
+  LoadBalancerFirewallSourceKind source_kind = 3;
+  optional string source_cidr = 4;
+}
+
+enum LoadBalancerIpFamily {
+  LOAD_BALANCER_IP_FAMILY_UNSPECIFIED = 0;
+  LOAD_BALANCER_IP_FAMILY_IPV4 = 1;
+  LOAD_BALANCER_IP_FAMILY_IPV6 = 2;
+  LOAD_BALANCER_IP_FAMILY_CLOUDFLARE = 3;
+}
+
+enum LoadBalancerFirewallSourceKind {
+  LOAD_BALANCER_FIREWALL_SOURCE_KIND_UNSPECIFIED = 0;
+  LOAD_BALANCER_FIREWALL_SOURCE_KIND_CIDR = 1;
+  LOAD_BALANCER_FIREWALL_SOURCE_KIND_CLOUDFLARE_MANAGED = 2;
+}
+
+message LoadBalancerHttpOptions {
+  bool sticky_sessions = 1;
+  optional string cookie_name = 2;
+  optional uint32 cookie_lifetime_seconds = 3;
+  bool redirect_http_to_https = 4;
+  repeated string certificate_refs = 5;
+}
+
+message LoadBalancerTlsPolicy {
+  LoadBalancerTlsMode mode = 1;
+  optional string auto_certificate_domain = 2;
+  optional LoadBalancerManualTlsSecretRefs manual_tls = 3;
+}
+
+enum LoadBalancerTlsMode {
+  LOAD_BALANCER_TLS_MODE_UNSPECIFIED = 0;
+  LOAD_BALANCER_TLS_MODE_PASSTHROUGH = 1;
+  LOAD_BALANCER_TLS_MODE_PROVIDER_MANAGED = 2;
+  LOAD_BALANCER_TLS_MODE_MANUAL_TERMINATION = 3;
+}
+
+message LoadBalancerManualTlsSecretRefs {
+  ProvisioningSecretRef certificate = 1;
+  ProvisioningSecretRef private_key = 2;
+  optional ProvisioningSecretRef chain = 3;
+}
+
+message LoadBalancerNetworkAttachment {
+  string attachment_id = 1;
+  optional string network_id = 2;
+  optional string subnet_id = 3;
+  optional string requested_private_ip = 4;
+  bool public_interface_enabled = 5;
+}
+
+message HetznerLoadBalancerService {
+  string service_id = 1;
+  LoadBalancerProtocol protocol = 2;
+  uint32 listen_port = 3;
+  uint32 destination_port = 4;
+  bool proxy_protocol = 5;
+  optional LoadBalancerHttpOptions http_options = 6;
+  optional LoadBalancerHealthCheck health_check = 7;
+}
+
+message HetznerLoadBalancerTarget {
+  string target_id = 1;
+  HetznerLoadBalancerTargetKind kind = 2;
+  optional uint64 server_id = 3;
+  optional string label_selector = 4;
+  optional string ip = 5;
+  bool use_private_ip = 6;
+}
+
+enum HetznerLoadBalancerTargetKind {
+  HETZNER_LOAD_BALANCER_TARGET_KIND_UNSPECIFIED = 0;
+  HETZNER_LOAD_BALANCER_TARGET_KIND_SERVER = 1;
+  HETZNER_LOAD_BALANCER_TARGET_KIND_LABEL_SELECTOR = 2;
+  HETZNER_LOAD_BALANCER_TARGET_KIND_IP = 3;
+}
+
+message HetznerLoadBalancerNetwork {
+  string attachment_id = 1;
+  optional uint64 network_id = 2;
+  optional string subnet_id = 3;
+  optional string ip = 4;
+  bool public_interface_enabled = 5;
+}
+
+message LoadBalancerExecutionBinding {
+  LoadBalancerExecutionEngine engine = 1;
+  string workspace_path = 2;
+  string tfvars_path = 3;
+  string plan_path = 4;
+  repeated string ansible_playbook_paths = 5;
+  LoadBalancerRetryPolicy retry_policy = 6;
+}
+
+enum LoadBalancerExecutionEngine {
+  LOAD_BALANCER_EXECUTION_ENGINE_UNSPECIFIED = 0;
+  LOAD_BALANCER_EXECUTION_ENGINE_OPENTOFU = 1;
+  LOAD_BALANCER_EXECUTION_ENGINE_ANSIBLE = 2;
+  LOAD_BALANCER_EXECUTION_ENGINE_OPENTOFU_AND_ANSIBLE = 3;
+}
+
+message LoadBalancerRetryPolicy {
+  uint32 max_attempts = 1;
+  uint32 delay_seconds = 2;
+  repeated LoadBalancerRetryReason retry_reasons = 3;
+}
+
+enum LoadBalancerRetryReason {
+  LOAD_BALANCER_RETRY_REASON_UNSPECIFIED = 0;
+  LOAD_BALANCER_RETRY_REASON_PROVIDER_NODES_ACTIVATING = 1;
+  LOAD_BALANCER_RETRY_REASON_PROVIDER_RATE_LIMITED = 2;
+  LOAD_BALANCER_RETRY_REASON_PROVIDER_EVENTUAL_CONSISTENCY = 3;
+}
+
+message LoadBalancerDeploymentPlan {
+  LoadBalancerDefinition definition = 1;
+  repeated LoadBalancerProviderVariable provider_variables = 2;
+  repeated LoadBalancerOperation operations = 3;
+  repeated LoadBalancerValidationWarning warnings = 4;
+}
+
+message LoadBalancerProviderVariable {
+  LoadBalancerProviderVariableName name = 1;
+  LoadBalancerProviderVariableKind kind = 2;
+  optional string string_value = 3;
+  repeated string list_values = 4;
+  bool sensitive = 5;
+  optional ProvisioningSecretRef secret_ref = 6;
+  optional bool bool_value = 7;
+  optional uint32 uint32_value = 8;
+  optional string json_value = 9;
+}
+
+enum LoadBalancerProviderVariableName {
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_UNSPECIFIED = 0;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_REGION = 1;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_LABEL = 2;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_BALANCING_ALGORITHM = 3;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_PROXY_PROTOCOL = 4;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_SSL_REDIRECT = 5;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HTTP_VERSION = 6;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_COOKIE_NAME = 7;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_ATTACHED_INSTANCE_IDS = 8;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_VPC_ID = 9;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_GLOBAL_REGIONS = 10;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_FORWARDING_RULES = 11;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HEALTH_CHECK = 12;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_FIREWALL_RULES = 13;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_SSL_CERTIFICATE = 14;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_SSL_PRIVATE_KEY = 15;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_SSL_CHAIN = 16;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_AUTO_SSL_DOMAIN = 17;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HETZNER_LOAD_BALANCER_TYPE = 18;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HETZNER_LOCATION = 19;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HETZNER_NETWORK_ZONE = 20;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HETZNER_SERVICES = 21;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HETZNER_TARGETS = 22;
+  LOAD_BALANCER_PROVIDER_VARIABLE_NAME_HETZNER_NETWORKS = 23;
+}
+
+enum LoadBalancerProviderVariableKind {
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_UNSPECIFIED = 0;
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_STRING = 1;
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_BOOL = 2;
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_UINT32 = 3;
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_STRING_LIST = 4;
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_JSON = 5;
+  LOAD_BALANCER_PROVIDER_VARIABLE_KIND_SECRET_REF = 6;
+}
+
+message LoadBalancerOperation {
+  LoadBalancerOperationKind kind = 1;
+  string display_name = 2;
+  LoadBalancerExecutionEngine engine = 3;
+  repeated string argv = 4;
+  bool destructive = 5;
+}
+
+enum LoadBalancerOperationKind {
+  LOAD_BALANCER_OPERATION_KIND_UNSPECIFIED = 0;
+  LOAD_BALANCER_OPERATION_KIND_RENDER_VARIABLES = 1;
+  LOAD_BALANCER_OPERATION_KIND_TOFU_PLAN = 2;
+  LOAD_BALANCER_OPERATION_KIND_TOFU_APPLY = 3;
+  LOAD_BALANCER_OPERATION_KIND_TOFU_DESTROY = 4;
+  LOAD_BALANCER_OPERATION_KIND_ANSIBLE_PLAYBOOK = 5;
+  LOAD_BALANCER_OPERATION_KIND_PROVIDER_STATUS = 6;
+}
+
+message LoadBalancerValidationWarning {
+  LoadBalancerValidationWarningReason reason = 1;
+}
+
+enum LoadBalancerValidationWarningReason {
+  LOAD_BALANCER_VALIDATION_WARNING_REASON_UNSPECIFIED = 0;
+  LOAD_BALANCER_VALIDATION_WARNING_REASON_PUBLIC_INGRESS_OPEN_TO_WORLD = 1;
+  LOAD_BALANCER_VALIDATION_WARNING_REASON_MANUAL_TLS_SECRET_REFS_REQUIRED = 2;
+  LOAD_BALANCER_VALIDATION_WARNING_REASON_PROVIDER_SPECIFIC_FIELD_IGNORED = 3;
+}
+
+message LoadBalancerValidationError {
+  LoadBalancerValidationErrorReason reason = 1;
+}
+
+enum LoadBalancerValidationErrorReason {
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_UNSPECIFIED = 0;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_INVALID_PROVIDER = 1;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_INVALID_IDENTIFIER = 2;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_INVALID_PORT = 3;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_DUPLICATE_LISTENER_PORT = 4;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_MISSING_LISTENER = 5;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_MISSING_HEALTH_CHECK = 6;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_MISSING_BACKEND_TARGET = 7;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_INVALID_PROVIDER_REGION = 8;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_INVALID_FIREWALL_SOURCE = 9;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_TLS_SECRET_REFS_INCOMPLETE = 10;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_VULTR_GLOBAL_REGION_REQUIRED = 11;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_HETZNER_LOCATION_OR_NETWORK_ZONE_REQUIRED = 12;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_HETZNER_TARGET_SELECTOR_REQUIRED = 13;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_HETZNER_SERVICE_REQUIRED = 14;
+  LOAD_BALANCER_VALIDATION_ERROR_REASON_EXECUTION_BINDING_INCOMPLETE = 15;
+}
+
+message LoadBalancerProviderResourceRef {
+  InfrastructureProvider provider = 1;
+  string environment_id = 2;
+  string resource_id = 3;
+  ProvisioningSite site = 4;
+  optional string workspace_path = 5;
+}
+
+message LoadBalancerDestroyPolicy {
+  bool require_no_backend_targets = 1;
+  bool allow_public_ip_release = 2;
+  LoadBalancerRetryPolicy retry_policy = 3;
+}
+
+message LoadBalancerObservedState {
+  LoadBalancerProviderResourceRef resource = 1;
+  LoadBalancerObservedStatus status = 2;
+  google.protobuf.Timestamp collected_at = 3;
+  optional string label = 4;
+  optional string ipv4 = 5;
+  optional string ipv6 = 6;
+  optional string private_ip = 7;
+  uint32 backend_target_count = 8;
+  uint32 listener_count = 9;
+  uint32 firewall_rule_count = 10;
+  repeated LoadBalancerHealthFact health_facts = 11;
+}
+
+enum LoadBalancerObservedStatus {
+  LOAD_BALANCER_OBSERVED_STATUS_UNSPECIFIED = 0;
+  LOAD_BALANCER_OBSERVED_STATUS_HEALTHY = 1;
+  LOAD_BALANCER_OBSERVED_STATUS_DEGRADED = 2;
+  LOAD_BALANCER_OBSERVED_STATUS_CRITICAL = 3;
+  LOAD_BALANCER_OBSERVED_STATUS_UNKNOWN = 4;
+}
+
+message LoadBalancerHealthFact {
+  LoadBalancerHealthFactKind kind = 1;
+  string value = 2;
+}
+
+enum LoadBalancerHealthFactKind {
+  LOAD_BALANCER_HEALTH_FACT_KIND_UNSPECIFIED = 0;
+  LOAD_BALANCER_HEALTH_FACT_KIND_PROVIDER_STATUS = 1;
+  LOAD_BALANCER_HEALTH_FACT_KIND_ATTACHED_INSTANCE_COUNT = 2;
+  LOAD_BALANCER_HEALTH_FACT_KIND_HEALTHY_INSTANCE_COUNT = 3;
+  LOAD_BALANCER_HEALTH_FACT_KIND_UNHEALTHY_INSTANCE_COUNT = 4;
+  LOAD_BALANCER_HEALTH_FACT_KIND_FORWARDING_RULE_COUNT = 5;
+  LOAD_BALANCER_HEALTH_FACT_KIND_FIREWALL_RULE_COUNT = 6;
+  LOAD_BALANCER_HEALTH_FACT_KIND_HEALTH_CHECK_PROTOCOL = 7;
+  LOAD_BALANCER_HEALTH_FACT_KIND_HEALTH_CHECK_PORT = 8;
+  LOAD_BALANCER_HEALTH_FACT_KIND_TLS_STATE = 9;
+  LOAD_BALANCER_HEALTH_FACT_KIND_PUBLIC_IPV4 = 10;
+  LOAD_BALANCER_HEALTH_FACT_KIND_PUBLIC_IPV6 = 11;
+  LOAD_BALANCER_HEALTH_FACT_KIND_PRIVATE_IPV4 = 12;
+}
