@@ -1,0 +1,18 @@
+[package]
+name = "reallyme-example-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+generated = ["dep:buffa", "dep:connectrpc"]
+
+[dependencies]
+buffa = { workspace = true, optional = true }
+connectrpc = { workspace = true, optional = true }
+reallyme-app-kit.workspace = true
+serde.workspace = true
+thiserror.workspace = true

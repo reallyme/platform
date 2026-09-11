@@ -1,0 +1,35 @@
+[package]
+name = "example-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["connect-axum", "native-server", "websocket"]
+testing = []
+connect = ["dep:connectrpc", "reallyme-example-contract/generated"]
+connect-axum = ["connect", "connectrpc/axum"]
+http = ["dep:axum", "dep:reallyme-server-kit", "reallyme-server-kit/http"]
+native-server = ["http", "dep:reallyme-server-kit"]
+websocket = ["http", "axum/ws", "reallyme-server-kit/websocket", "dep:tokio"]
+
+[dependencies]
+axum = { workspace = true, optional = true }
+connectrpc = { workspace = true, optional = true }
+reallyme-app-kit.workspace = true
+reallyme-example-contract.workspace = true
+reallyme-server-kit = { workspace = true, default-features = false, optional = true }
+serde.workspace = true
+tokio = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+axum-test.workspace = true
+buffa.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true

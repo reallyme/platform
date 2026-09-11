@@ -1,0 +1,41 @@
+[package]
+name = "reallyme-foundationdb-kit"
+description = "Production FoundationDB connector and tenant primitives for ReallyMe Platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["foundationdb", "database", "transactions", "tenants"]
+categories = ["asynchronous", "database"]
+publish = ["crates-io"]
+build = "build.rs"
+
+[dependencies]
+bytes = { workspace = true }
+foundationdb = { workspace = true, features = ["embedded-fdb-include", "fdb-7_3", "tenant-experimental"] }
+metrics = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+temp-env = { workspace = true }
+
+[features]
+default = []
+metrics = ["dep:metrics"]
+# Exposes tenant provisioning helpers (create/delete/list). Off by default;
+# enable only in operator/admin tooling.
+tenant-admin = []
+
+[[bin]]
+name = "fdb-tenant-admin"
+path = "src/bin/fdb-tenant-admin.rs"
+required-features = ["tenant-admin"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"

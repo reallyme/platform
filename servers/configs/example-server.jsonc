@@ -1,0 +1,10 @@
+{
+  // The server owns listener and process policy. The application owns its
+  // behavior configuration under apps/example/config/.
+  "application_profile": "local",
+  "bind_address": "127.0.0.1:8080",
+  "request_timeout_seconds": 30,
+  "request_body_limit_bytes": 1048576,
+  "metrics_idle_timeout_seconds": 30,
+  "shutdown_timeout_seconds": 10
+}

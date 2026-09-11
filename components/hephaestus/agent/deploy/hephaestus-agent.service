@@ -1,0 +1,48 @@
+[Unit]
+Description=ReallyMe Hephaestus Agent
+Documentation=https://github.com/reallyme/platform
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+ConditionFileIsExecutable=/usr/local/bin/hephaestus-agent
+ConditionPathExists=/etc/reallyme/hephaestus-agent/config.toml
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/bin/install -d -m 0700 -o root -g root /etc/reallyme/hephaestus-agent /etc/reallyme/services /etc/reallyme/secrets /var/lib/reallyme/hephaestus-agent /var/log/reallyme/hephaestus-agent
+ExecStart=/usr/local/bin/hephaestus-agent --config /etc/reallyme/hephaestus-agent/config.toml
+Restart=always
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+RuntimeDirectory=reallyme-hephaestus-agent
+RuntimeDirectoryMode=0700
+ReadWritePaths=/etc/reallyme /var/lib/reallyme /var/log/reallyme /run/tailscale
+
+[Install]
+WantedBy=multi-user.target
