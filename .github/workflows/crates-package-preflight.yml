@@ -107,14 +107,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          package_name="foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          package_path="$RUNNER_TEMP/$package_name"
           curl --fail-with-body --location --proto '=https' --tlsv1.2 \
             --retry 5 --retry-all-errors \
-            --output "$package" \
-            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${package}"
-          printf '%s  %s\n' "$FDB_CLIENT_SHA256" "$package" \
+            --output "$package_path" \
+            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${package_name}"
+          printf '%s  %s\n' "$FDB_CLIENT_SHA256" "$package_path" \
             | sha256sum --check --strict
-          sudo dpkg -i "$package"
+          sudo dpkg -i "$package_path"
 
       - name: Install Ripgrep for repository policy checks
         shell: bash
