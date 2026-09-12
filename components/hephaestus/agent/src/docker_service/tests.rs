@@ -72,6 +72,21 @@ fn sample_action() -> pb::AgentDockerServiceAction {
     }
 }
 
+fn tun_runtime_authority() -> pb::DockerRuntimeAuthority {
+    pb::DockerRuntimeAuthority {
+        schema_version: 1,
+        devices: vec![pb::DockerHostDevice::DOCKER_HOST_DEVICE_TUN.into()],
+        linux_capabilities: vec![
+            pb::DockerLinuxCapability::DOCKER_LINUX_CAPABILITY_NET_BIND_SERVICE.into(),
+            pb::DockerLinuxCapability::DOCKER_LINUX_CAPABILITY_NET_ADMIN.into(),
+        ],
+        read_only_root_filesystem: true,
+        no_new_privileges: true,
+        network_mode: pb::DockerNetworkMode::DOCKER_NETWORK_MODE_HOST.into(),
+        __buffa_unknown_fields: Default::default(),
+    }
+}
+
 #[test]
 fn renders_deterministic_compose_with_environment_block() {
     let spec = DockerServiceSpec::from_proto(sample_action())
@@ -86,6 +101,134 @@ fn renders_deterministic_compose_with_environment_block() {
     assert!(compose.contains("127.0.0.1:4222:4222/tcp"));
     assert!(compose.contains("/etc/reallyme/services/nats/config:/config:ro"));
     assert!(compose.contains("/etc/reallyme/secrets/nats:/run/secrets/reallyme:ro"));
+}
+
+#[test]
+fn renders_tun_authority_without_privileged_container_access() {
+    let mut action = sample_action();
+    action.service_id = "network-edge".to_owned();
+    action.container_name = "network-edge".to_owned();
+    action.volumes = Vec::new();
+    let authority = tun_runtime_authority();
+
+    let spec = DockerServiceSpec::from_proto_with_runtime_authority(action, Some(authority))
+        .unwrap_or_else(|error| panic!("valid TUN service: {error:?}"));
+    let compose =
+        render_compose(&spec).unwrap_or_else(|error| panic!("compose rendered: {error:?}"));
+    let parsed = serde_norway::from_str::<Value>(compose.as_str())
+        .unwrap_or_else(|error| panic!("compose parse: {error:?}"));
+    let service = parsed
+        .get("services")
+        .and_then(Value::as_mapping)
+        .and_then(|services| services.get(Value::String("network-edge".to_owned())))
+        .and_then(Value::as_mapping)
+        .unwrap_or_else(|| panic!("compose has network-edge service"));
+
+    assert_eq!(
+        service
+            .get(Value::String("devices".to_owned()))
+            .and_then(Value::as_sequence),
+        Some(&vec![Value::String(
+            "/dev/net/tun:/dev/net/tun:rwm".to_owned()
+        )])
+    );
+    assert_eq!(
+        service
+            .get(Value::String("network_mode".to_owned()))
+            .and_then(Value::as_str),
+        Some("host")
+    );
+    assert!(
+        service
+            .get(Value::String("ports".to_owned()))
+            .and_then(Value::as_sequence)
+            .is_none_or(Vec::is_empty)
+    );
+    assert_eq!(
+        service
+            .get(Value::String("read_only".to_owned()))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        service
+            .get(Value::String("cap_add".to_owned()))
+            .and_then(Value::as_sequence),
+        Some(&vec![
+            Value::String("NET_ADMIN".to_owned()),
+            Value::String("NET_BIND_SERVICE".to_owned()),
+        ])
+    );
+    assert_eq!(
+        service
+            .get(Value::String("cap_drop".to_owned()))
+            .and_then(Value::as_sequence),
+        Some(&vec![Value::String("ALL".to_owned())])
+    );
+    assert_eq!(
+        service
+            .get(Value::String("security_opt".to_owned()))
+            .and_then(Value::as_sequence),
+        Some(&vec![Value::String("no-new-privileges:true".to_owned())])
+    );
+    assert!(!service.contains_key(Value::String("privileged".to_owned())));
+}
+
+#[test]
+fn rejects_tun_device_without_net_admin() {
+    let mut authority = tun_runtime_authority();
+    authority.linux_capabilities = Vec::new();
+
+    assert!(
+        DockerServiceSpec::from_proto_with_runtime_authority(sample_action(), Some(authority))
+            .is_err()
+    );
+}
+
+#[test]
+fn rejects_duplicate_runtime_authority() {
+    let mut authority = tun_runtime_authority();
+    authority
+        .devices
+        .push(pb::DockerHostDevice::DOCKER_HOST_DEVICE_TUN.into());
+
+    assert!(
+        DockerServiceSpec::from_proto_with_runtime_authority(sample_action(), Some(authority))
+            .is_err()
+    );
+}
+
+#[test]
+fn rejects_unknown_runtime_authority_values() {
+    let mut authority = tun_runtime_authority();
+    authority.devices = vec![buffa::EnumValue::from(99_i32)];
+
+    assert!(
+        DockerServiceSpec::from_proto_with_runtime_authority(sample_action(), Some(authority))
+            .is_err()
+    );
+}
+
+#[test]
+fn rejects_unsupported_runtime_authority_schema() {
+    let mut authority = tun_runtime_authority();
+    authority.schema_version = 2;
+
+    assert!(
+        DockerServiceSpec::from_proto_with_runtime_authority(sample_action(), Some(authority))
+            .is_err()
+    );
+}
+
+#[test]
+fn rejects_unspecified_runtime_network_mode() {
+    let mut authority = tun_runtime_authority();
+    authority.network_mode = pb::DockerNetworkMode::DOCKER_NETWORK_MODE_UNSPECIFIED.into();
+
+    assert!(
+        DockerServiceSpec::from_proto_with_runtime_authority(sample_action(), Some(authority))
+            .is_err()
+    );
 }
 
 #[test]

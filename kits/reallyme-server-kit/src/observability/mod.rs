@@ -30,9 +30,11 @@ pub use logging::{
     log_no_runtime_apps_enabled, log_observability_startup_summary,
     log_runtime_app_cleanup_completed, log_runtime_app_cleanup_failed,
     log_runtime_app_cleanup_started, log_runtime_app_enabled, log_runtime_app_startup_order,
-    log_runtime_phase_transition, log_runtime_startup_check_completed,
-    log_runtime_startup_check_failed, log_runtime_startup_check_started, log_service_ready,
-    log_service_starting, log_shutdown_completed, log_shutdown_requested,
+    log_runtime_critical_task_failed, log_runtime_critical_task_ready,
+    log_runtime_critical_task_started, log_runtime_phase_transition,
+    log_runtime_startup_check_completed, log_runtime_startup_check_failed,
+    log_runtime_startup_check_started, log_service_ready, log_service_starting,
+    log_shutdown_completed, log_shutdown_requested,
 };
 #[cfg(all(feature = "http", feature = "metrics"))]
 pub(crate) use metrics::MetricRouteTemplateLabel;

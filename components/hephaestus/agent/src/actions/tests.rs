@@ -20,6 +20,8 @@ use super::{
 struct FakeActionControlPlane {
     completions: Mutex<Vec<String>>,
     fail_next_completion: Mutex<bool>,
+    runtime_authority: Option<pb::DockerRuntimeAuthority>,
+    authority_requests: Mutex<Vec<String>>,
 }
 
 impl FakeActionControlPlane {
@@ -27,6 +29,17 @@ impl FakeActionControlPlane {
         Self {
             completions: Mutex::new(Vec::new()),
             fail_next_completion: Mutex::new(true),
+            runtime_authority: None,
+            authority_requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn with_runtime_authority(authority: pb::DockerRuntimeAuthority) -> Self {
+        Self {
+            completions: Mutex::new(Vec::new()),
+            fail_next_completion: Mutex::new(false),
+            runtime_authority: Some(authority),
+            authority_requests: Mutex::new(Vec::new()),
         }
     }
 
@@ -36,9 +49,36 @@ impl FakeActionControlPlane {
             .expect("test completion lock should not be poisoned")
             .clone()
     }
+
+    fn authority_service_ids(&self) -> Vec<String> {
+        self.authority_requests
+            .lock()
+            .expect("test authority request lock should not be poisoned")
+            .clone()
+    }
 }
 
 impl AgentActionControlPlane for FakeActionControlPlane {
+    fn resolve_docker_runtime_authority<'a>(
+        &'a self,
+        _receipt: &'a AgentActionReceipt,
+        service_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = AgentResult<Option<pb::DockerRuntimeAuthority>>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.authority_requests
+                .lock()
+                .expect("test authority request lock should not be poisoned")
+                .push(service_id.to_owned());
+            Ok(self.runtime_authority.clone())
+        })
+    }
+
     fn submit_agent_report<'a>(
         &'a self,
         _report: &'a reallyme_hephaestus_domain::HephaestusAgentReport,
@@ -441,6 +481,42 @@ fn accepts_configure_docker_service_payload() {
     let result = ExecutableAgentAction::from_proto(action, "prod-nats-regional-ams-01", 1_000);
 
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn resolves_runtime_authority_for_validated_docker_service_action() {
+    let mut action = valid_action(pb::AgentActionKind::AGENT_ACTION_KIND_CONFIGURE_DOCKER_SERVICE);
+    action.docker_service = MessageField::some(pb::AgentDockerServiceAction {
+        service_id: "network-edge".to_owned(),
+        container_name: "network-edge".to_owned(),
+        image_ref: "registry.example.invalid/network-edge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        restart_policy: pb::AgentDockerRestartPolicy::AGENT_DOCKER_RESTART_POLICY_UNLESS_STOPPED
+            .into(),
+        ..Default::default()
+    });
+    let authority = pb::DockerRuntimeAuthority {
+        schema_version: 1,
+        devices: vec![pb::DockerHostDevice::DOCKER_HOST_DEVICE_TUN.into()],
+        linux_capabilities: vec![
+            pb::DockerLinuxCapability::DOCKER_LINUX_CAPABILITY_NET_ADMIN.into(),
+        ],
+        read_only_root_filesystem: true,
+        no_new_privileges: true,
+        network_mode: pb::DockerNetworkMode::DOCKER_NETWORK_MODE_HOST.into(),
+        __buffa_unknown_fields: Default::default(),
+    };
+    let client = FakeActionControlPlane::with_runtime_authority(authority);
+    let mut executable =
+        ExecutableAgentAction::from_proto(action, "prod-nats-regional-ams-01", 1_000)
+            .expect("valid docker service action");
+
+    let result = executable.apply_docker_runtime_authority(&client).await;
+
+    assert!(result.is_ok());
+    assert_eq!(
+        client.authority_service_ids(),
+        vec![String::from("network-edge")]
+    );
 }
 
 #[test]

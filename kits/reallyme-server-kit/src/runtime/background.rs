@@ -20,10 +20,11 @@ type BoxedRuntimeTaskFactory =
 /// timeout handling. Services own only the task name and cancellation-safe task
 /// body.
 ///
-/// Background tasks are not startup readiness gates. If a service must prove a
-/// dependency is available or complete initialization before receiving traffic,
-/// register a [`crate::runtime::RuntimeStartupCheck`] instead. This keeps
-/// long-running support loops separate from fail-closed startup validation.
+/// Background tasks are not startup readiness gates and may return without
+/// terminating the runtime. Use [`crate::runtime::RuntimeStartupCheck`] for
+/// finite fail-closed validation, or [`crate::runtime::RuntimeCriticalTask`]
+/// when a long-running task must both release readiness and remain active for
+/// the lifetime of the process.
 pub struct RuntimeBackgroundTask {
     task_name: TaskName,
     task: BoxedRuntimeTaskFactory,

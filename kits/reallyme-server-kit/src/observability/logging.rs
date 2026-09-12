@@ -38,7 +38,9 @@
 //! ```
 
 use crate::config::BindAddress;
-use crate::runtime::{AppName, ServerRuntimePhase};
+use crate::runtime::{
+    AppName, RuntimeCriticalTaskFailureReason, RuntimeCriticalTaskFailureStage, ServerRuntimePhase,
+};
 use crate::shutdown::ShutdownReason;
 use crate::startup::{ServerName, TaskName};
 use crate::task::TaskExecutionErrorKind;
@@ -185,6 +187,43 @@ pub fn log_runtime_startup_check_failed(
         task.name = check_name.as_str(),
         error.kind = kind.as_str(),
         "runtime startup check failed"
+    );
+}
+
+/// Emits a structured log before a critical task starts.
+pub fn log_runtime_critical_task_started(server_name: &ServerName, task_name: &TaskName) {
+    tracing::info!(
+        service.name = server_name.as_str(),
+        task.name = task_name.as_str(),
+        task.critical = true,
+        "runtime critical task started"
+    );
+}
+
+/// Emits a structured log after a critical task releases the readiness barrier.
+pub fn log_runtime_critical_task_ready(server_name: &ServerName, task_name: &TaskName) {
+    tracing::info!(
+        service.name = server_name.as_str(),
+        task.name = task_name.as_str(),
+        task.critical = true,
+        "runtime critical task ready"
+    );
+}
+
+/// Emits a structured log when a critical task forces runtime termination.
+pub fn log_runtime_critical_task_failed(
+    server_name: &ServerName,
+    task_name: &TaskName,
+    stage: RuntimeCriticalTaskFailureStage,
+    reason: RuntimeCriticalTaskFailureReason,
+) {
+    tracing::error!(
+        service.name = server_name.as_str(),
+        task.name = task_name.as_str(),
+        task.critical = true,
+        task.stage = stage.as_str(),
+        error.kind = reason.as_str(),
+        "runtime critical task terminated"
     );
 }
 

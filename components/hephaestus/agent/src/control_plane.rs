@@ -12,7 +12,8 @@ use connectrpc::ErrorCode;
 use connectrpc::client::{ClientConfig, HttpClient};
 use http::HeaderValue;
 use reallyme_hephaestus_contract::generated::connect::reallyme::hephaestus::v1::{
-    HEPHAESTUS_SERVICE_REGISTER_AGENT_SPEC, HephaestusServiceClient,
+    DockerRuntimeAuthorityServiceClient, HEPHAESTUS_SERVICE_REGISTER_AGENT_SPEC,
+    HephaestusServiceClient,
 };
 use reallyme_hephaestus_contract::generated::proto::reallyme::domain::v1::{
     HephaestusAgentBootReport as ProtoAgentBootReport, HephaestusAgentReport as ProtoAgentReport,
@@ -29,8 +30,9 @@ use reallyme_hephaestus_contract::generated::proto::reallyme::domain::v1::{
 };
 use reallyme_hephaestus_contract::generated::proto::reallyme::hephaestus::v1::__buffa::view::RegisterAgentResponseView;
 use reallyme_hephaestus_contract::generated::proto::reallyme::hephaestus::v1::{
-    CompleteAgentActionRequest, PollAgentActionsRequest, PollAgentActionsResponse,
-    RegisterAgentRequest, RegisterAgentResponse, ResolveAgentSecretRequest,
+    CompleteAgentActionRequest, DockerRuntimeAuthority, PollAgentActionsRequest,
+    PollAgentActionsResponse, RegisterAgentRequest, RegisterAgentResponse,
+    ResolveAgentDockerRuntimeAuthorityRequest, ResolveAgentSecretRequest,
     ResolveAgentSecretResponse, SubmitAgentReportRequest,
 };
 use reallyme_hephaestus_domain::{
@@ -167,6 +169,7 @@ pub struct HephaestusControlPlaneClient {
     transport: HttpClient,
     config: ClientConfig,
     client: HephaestusServiceClient<HttpClient>,
+    docker_authority_client: DockerRuntimeAuthorityServiceClient<HttpClient>,
 }
 
 impl HephaestusControlPlaneClient {
@@ -202,6 +205,10 @@ impl HephaestusControlPlaneClient {
         let transport = transport_for_url(config.controller_base_url())?;
         Ok(Self {
             client: HephaestusServiceClient::new(transport.clone(), client_config.clone()),
+            docker_authority_client: DockerRuntimeAuthorityServiceClient::new(
+                transport.clone(),
+                client_config.clone(),
+            ),
             transport,
             config: client_config,
         })
@@ -291,6 +298,38 @@ impl HephaestusControlPlaneClient {
             .await
             .map(|_response| ())
             .map_err(|error| connect_failed("complete_agent_action", &error))
+    }
+
+    /// Resolves exceptional Docker authority immediately before local use.
+    pub async fn resolve_docker_runtime_authority(
+        &self,
+        receipt: &AgentActionReceipt,
+        service_id: &str,
+    ) -> AgentResult<Option<DockerRuntimeAuthority>> {
+        let request = ResolveAgentDockerRuntimeAuthorityRequest {
+            node_id: receipt.node_id().to_owned(),
+            action_id: receipt.action_id().to_owned(),
+            idempotency_key: receipt.idempotency_key().to_owned(),
+            desired_generation: receipt.desired_generation(),
+            service_id: service_id.to_owned(),
+            __buffa_unknown_fields: Default::default(),
+        };
+        let response = match self
+            .docker_authority_client
+            .resolve_agent_docker_runtime_authority(request)
+            .await
+        {
+            Ok(response) => response.into_owned(),
+            Err(error) if error.code == ErrorCode::Unimplemented => return Ok(None),
+            Err(error) => {
+                return Err(connect_failed(
+                    "resolve_agent_docker_runtime_authority",
+                    &error,
+                ));
+            }
+        };
+        let mut authority = response.authority;
+        Ok(authority.take())
     }
 }
 

@@ -11,6 +11,7 @@ use crate::task::ShutdownToken;
 
 use super::background::RuntimeBackgroundTask;
 use super::cleanup::RuntimeCleanupHook;
+use super::critical::RuntimeCriticalTask;
 use super::error::{RuntimeAppCompositionErrorReason, ServerRuntimeError};
 use super::startup_check::RuntimeStartupCheck;
 use std::sync::Arc;
@@ -174,6 +175,7 @@ pub struct RuntimeApp {
     websocket_shutdown_consumers: Vec<Arc<dyn Fn(ShutdownToken) + Send + Sync + 'static>>,
     startup_checks: Vec<RuntimeStartupCheck>,
     background_tasks: Vec<RuntimeBackgroundTask>,
+    critical_tasks: Vec<RuntimeCriticalTask>,
     cleanup_hooks: Vec<RuntimeCleanupHook>,
 }
 
@@ -189,6 +191,7 @@ impl RuntimeApp {
             websocket_shutdown_consumers: Vec::new(),
             startup_checks: Vec::new(),
             background_tasks: Vec::new(),
+            critical_tasks: Vec::new(),
             cleanup_hooks: Vec::new(),
         }
     }
@@ -267,6 +270,12 @@ impl RuntimeApp {
         self
     }
 
+    /// Adds an app-specific critical task with a runtime readiness barrier.
+    pub fn with_critical_task(mut self, value: RuntimeCriticalTask) -> Self {
+        self.critical_tasks.push(value);
+        self
+    }
+
     /// Adds an app-owned cleanup hook executed during runtime shutdown.
     pub fn with_cleanup_hook(mut self, value: RuntimeCleanupHook) -> Self {
         self.cleanup_hooks.push(value);
@@ -281,6 +290,7 @@ impl RuntimeApp {
             websocket_shutdown_consumers: self.websocket_shutdown_consumers,
             startup_checks: self.startup_checks,
             background_tasks: self.background_tasks,
+            critical_tasks: self.critical_tasks,
             cleanup_hooks: self.cleanup_hooks,
         }
     }
@@ -294,6 +304,7 @@ pub(crate) struct RuntimeAppLocalParts {
         Vec<Arc<dyn Fn(ShutdownToken) + Send + Sync + 'static>>,
     pub(crate) startup_checks: Vec<RuntimeStartupCheck>,
     pub(crate) background_tasks: Vec<RuntimeBackgroundTask>,
+    pub(crate) critical_tasks: Vec<RuntimeCriticalTask>,
     pub(crate) cleanup_hooks: Vec<RuntimeCleanupHook>,
 }
 
@@ -304,6 +315,7 @@ pub(crate) struct RuntimeAppParts {
         Vec<Arc<dyn Fn(ShutdownToken) + Send + Sync + 'static>>,
     pub(crate) startup_checks: Vec<RuntimeStartupCheck>,
     pub(crate) background_tasks: Vec<RuntimeBackgroundTask>,
+    pub(crate) critical_tasks: Vec<RuntimeCriticalTask>,
     pub(crate) cleanup_hooks: Vec<RuntimeAppCleanup>,
 }
 
@@ -322,6 +334,7 @@ pub(crate) fn collect_apps(apps: Vec<RuntimeApp>) -> Result<RuntimeAppParts, Ser
     let mut websocket_shutdown_consumers = Vec::new();
     let mut startup_checks = Vec::new();
     let mut background_tasks = Vec::new();
+    let mut critical_tasks = Vec::new();
     let mut cleanup_hooks = Vec::new();
 
     for app in apps {
@@ -340,6 +353,7 @@ pub(crate) fn collect_apps(apps: Vec<RuntimeApp>) -> Result<RuntimeAppParts, Ser
         startup_checks.extend(parts.startup_checks);
         websocket_shutdown_consumers.extend(parts.websocket_shutdown_consumers);
         background_tasks.extend(parts.background_tasks);
+        critical_tasks.extend(parts.critical_tasks);
         cleanup_hooks.extend(
             parts
                 .cleanup_hooks
@@ -357,6 +371,7 @@ pub(crate) fn collect_apps(apps: Vec<RuntimeApp>) -> Result<RuntimeAppParts, Ser
         websocket_shutdown_consumers,
         startup_checks,
         background_tasks,
+        critical_tasks,
         cleanup_hooks,
     })
 }

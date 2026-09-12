@@ -56,7 +56,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.96.0"
 license = "MIT OR Apache-2.0"
@@ -122,18 +122,18 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Workspace-local crates use the same release version and are declared here so
 # member manifests express only their feature requirements, not path/version policy.
-example-app = { path = "apps/example", version = "0.1.0", default-features = false }
-reallyme-app-kit = { path = "kits/reallyme-app-kit", version = "0.1.0" }
-reallyme-example-contract = { path = "apps/example/contract", version = "0.1.0" }
-reallyme-foundationdb-kit = { path = "kits/reallyme-foundationdb-kit", version = "0.1.0" }
-reallyme-hephaestus-contract = { path = "components/hephaestus/contract", version = "0.1.0" }
-reallyme-hephaestus-domain = { path = "components/hephaestus/domain", version = "0.1.0" }
-reallyme-nats-kit = { path = "kits/reallyme-nats-kit", version = "0.1.0" }
-reallyme-postgres-kit = { path = "kits/reallyme-postgres-kit", version = "0.1.0" }
-reallyme-s3-kit = { path = "kits/reallyme-s3-kit", version = "0.1.0" }
-reallyme-server-kit = { path = "kits/reallyme-server-kit", version = "0.1.0", default-features = false }
-reallyme-typesense-kit = { path = "kits/reallyme-typesense-kit", version = "0.1.0" }
-reallyme-valkey-kit = { path = "kits/reallyme-valkey-kit", version = "0.1.0" }
+example-app = { path = "apps/example", version = "0.1.1", default-features = false }
+reallyme-app-kit = { path = "kits/reallyme-app-kit", version = "0.1.1" }
+reallyme-example-contract = { path = "apps/example/contract", version = "0.1.1" }
+reallyme-foundationdb-kit = { path = "kits/reallyme-foundationdb-kit", version = "0.1.1" }
+reallyme-hephaestus-contract = { path = "components/hephaestus/contract", version = "0.1.1" }
+reallyme-hephaestus-domain = { path = "components/hephaestus/domain", version = "0.1.1" }
+reallyme-nats-kit = { path = "kits/reallyme-nats-kit", version = "0.1.1" }
+reallyme-postgres-kit = { path = "kits/reallyme-postgres-kit", version = "0.1.1" }
+reallyme-s3-kit = { path = "kits/reallyme-s3-kit", version = "0.1.1" }
+reallyme-server-kit = { path = "kits/reallyme-server-kit", version = "0.1.1", default-features = false }
+reallyme-typesense-kit = { path = "kits/reallyme-typesense-kit", version = "0.1.1" }
+reallyme-valkey-kit = { path = "kits/reallyme-valkey-kit", version = "0.1.1" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
