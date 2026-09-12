@@ -13,6 +13,7 @@
 mod app;
 mod background;
 mod cleanup;
+mod critical;
 mod error;
 #[cfg(feature = "tonic-grpc")]
 mod grpc;
@@ -21,10 +22,17 @@ mod phase;
 pub(crate) mod rate_limit;
 mod server;
 mod startup_check;
+mod termination;
 
 pub use app::{AppHttpMountPath, AppName, RuntimeApp, RuntimeAppDependency, RuntimeAppHandle};
 pub use background::RuntimeBackgroundTask;
 pub use cleanup::RuntimeCleanupHook;
+pub use critical::{
+    CriticalTaskReadinessTimeout, CriticalTaskReadinessTimeoutError,
+    CriticalTaskReadinessTimeoutErrorReason, CriticalTaskReadySignal, CriticalTaskReadySignalError,
+    CriticalTaskReadySignalErrorReason, RuntimeCriticalTask, RuntimeCriticalTaskFailureReason,
+    RuntimeCriticalTaskFailureStage,
+};
 pub use error::{
     OperationalFailureSource, RetryDisposition, RuntimeAppAdapterError,
     RuntimeAppCleanupErrorReason, RuntimeAppCompositionErrorReason,

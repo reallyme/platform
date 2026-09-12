@@ -4,7 +4,6 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::Router;
 use tokio::net::TcpListener;
@@ -20,14 +19,13 @@ use crate::http::{
 use crate::observability::log_grpc_listener_started;
 use crate::observability::{
     RuntimeAppFailureOutcome, init_tracing, install_prometheus_recorder, log_http_listener_started,
-    log_no_runtime_apps_enabled, log_observability_startup_summary,
-    log_runtime_app_cleanup_completed, log_runtime_app_cleanup_failed,
-    log_runtime_app_cleanup_started, log_runtime_app_enabled, log_runtime_app_startup_order,
-    log_runtime_phase_transition, log_runtime_startup_check_completed,
-    log_runtime_startup_check_failed, log_runtime_startup_check_started, log_service_ready,
-    log_service_starting, log_shutdown_completed, log_shutdown_requested,
-    observability_startup_summary, record_readiness_state, record_runtime_app_cleanup_failure,
-    record_runtime_app_startup_failure, record_runtime_phase, record_startup_info,
+    log_no_runtime_apps_enabled, log_observability_startup_summary, log_runtime_app_enabled,
+    log_runtime_app_startup_order, log_runtime_phase_transition,
+    log_runtime_startup_check_completed, log_runtime_startup_check_failed,
+    log_runtime_startup_check_started, log_service_ready, log_service_starting,
+    log_shutdown_completed, log_shutdown_requested, observability_startup_summary,
+    record_readiness_state, record_runtime_app_startup_failure, record_runtime_phase,
+    record_startup_info,
 };
 use crate::shutdown::{
     ShutdownError, ShutdownMode, ShutdownPolicy, ShutdownReason, shutdown_signal,
@@ -38,11 +36,11 @@ use crate::version::BuildInfo;
 
 use super::app::{RuntimeApp, RuntimeAppParts, collect_apps, validate_runtime_apps};
 use super::background::RuntimeBackgroundTask;
-use super::cleanup::RuntimeCleanupResult;
+use super::cleanup::run_cleanup_hooks;
+use super::critical::{CriticalTaskStartError, RuntimeCriticalTask, start_critical_tasks};
 use super::error::{
-    RuntimeAppCleanupErrorReason, RuntimeListenerBindErrorReason,
-    RuntimeListenerCompositionErrorReason, ServerRuntimeError, ServerRuntimeRequiredField,
-    ServerRuntimeTransport,
+    RuntimeListenerBindErrorReason, RuntimeListenerCompositionErrorReason, ServerRuntimeError,
+    ServerRuntimeRequiredField, ServerRuntimeTransport,
 };
 #[cfg(feature = "tonic-grpc")]
 use super::grpc::{GrpcServePolicy, GrpcServerSpec, serve_health_grpc};
@@ -50,6 +48,10 @@ use super::http::{HttpServerSpec, serve_http};
 use super::phase::{ServerRuntimePhase, ServerRuntimePhaseReporter};
 use super::rate_limit::{RateLimitRegistry, run_rate_limit_registry_sweep_task};
 use super::startup_check::RuntimeStartupCheck;
+use super::termination::{
+    CriticalTerminationContext, RuntimeTermination, terminate_for_critical_task,
+    wait_for_runtime_termination,
+};
 
 /// Reusable runtime for a ReallyMe server process.
 pub struct ServerRuntime {
@@ -69,6 +71,7 @@ pub struct ServerRuntime {
     app_parts: RuntimeAppParts,
     startup_checks: Vec<RuntimeStartupCheck>,
     background_tasks: Vec<RuntimeBackgroundTask>,
+    critical_tasks: Vec<RuntimeCriticalTask>,
     phase_reporter: ServerRuntimePhaseReporter,
 }
 
@@ -122,6 +125,7 @@ impl ServerRuntime {
             app_parts,
             startup_checks,
             background_tasks,
+            critical_tasks,
             phase_reporter,
         } = self;
 
@@ -166,6 +170,11 @@ impl ServerRuntime {
             let mut background_tasks = background_tasks;
             background_tasks.extend(app_parts.background_tasks);
             background_tasks
+        };
+        let critical_tasks = {
+            let mut critical_tasks = critical_tasks;
+            critical_tasks.extend(app_parts.critical_tasks);
+            critical_tasks
         };
 
         let metrics = install_prometheus_recorder(&observability_config)?;
@@ -313,14 +322,55 @@ impl ServerRuntime {
                 .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
         }
 
+        let mut critical_task_monitor =
+            match start_critical_tasks(critical_tasks, &mut tasks, &server_name).await {
+                Ok(monitor) => monitor,
+                Err(CriticalTaskStartError::Registration(source)) => {
+                    return Err(ServerRuntimeError::TaskRegistration { source });
+                }
+                Err(CriticalTaskStartError::Failure(failure)) => {
+                    return Err(terminate_for_critical_task(
+                        failure,
+                        CriticalTerminationContext {
+                            server_name: &server_name,
+                            readiness: &readiness,
+                            phase_reporter: &phase_reporter,
+                            tasks: &mut tasks,
+                            cleanup_hooks: app_parts.cleanup_hooks,
+                            shutdown_timeout,
+                            cleanup_timeout,
+                        },
+                    )
+                    .await);
+                }
+            };
+
         transition_runtime_phase(&phase_reporter, &server_name, ServerRuntimePhase::Serving);
         readiness.mark_ready();
         record_readiness_state(ReadinessState::Ready);
         log_service_ready(&server_name);
 
-        let reason = shutdown_signal_future
-            .await
-            .map_err(|source| ServerRuntimeError::Shutdown { source })?;
+        let termination =
+            wait_for_runtime_termination(shutdown_signal_future, &mut critical_task_monitor)
+                .await?;
+        let reason = match termination {
+            RuntimeTermination::Shutdown(reason) => reason,
+            RuntimeTermination::CriticalTask(failure) => {
+                return Err(terminate_for_critical_task(
+                    failure,
+                    CriticalTerminationContext {
+                        server_name: &server_name,
+                        readiness: &readiness,
+                        phase_reporter: &phase_reporter,
+                        tasks: &mut tasks,
+                        cleanup_hooks: app_parts.cleanup_hooks,
+                        shutdown_timeout,
+                        cleanup_timeout,
+                    },
+                )
+                .await);
+            }
+        };
         let shutdown_mode = shutdown_policy.mode_for(reason);
         let active_shutdown_timeout = match shutdown_mode {
             ShutdownMode::Graceful => shutdown_timeout,
@@ -371,95 +421,6 @@ fn publish_runtime_phase(server_name: &ServerName, phase: ServerRuntimePhase) {
     record_runtime_phase(phase);
 }
 
-async fn run_cleanup_hooks(
-    cleanup_hooks: Vec<super::app::RuntimeAppCleanup>,
-    cleanup_timeout: ShutdownTimeout,
-    server_name: &ServerName,
-) -> Result<(), ServerRuntimeError> {
-    let mut first_error = None;
-    let cleanup_deadline = Instant::now() + cleanup_timeout.as_duration();
-
-    for cleanup in cleanup_hooks.into_iter().rev() {
-        let hook_name = cleanup.hook.name();
-
-        let now = Instant::now();
-        if now >= cleanup_deadline {
-            first_error.get_or_insert(ServerRuntimeError::AppCleanup {
-                hook_name: hook_name.clone(),
-                reason: RuntimeAppCleanupErrorReason::TimedOut,
-            });
-
-            record_runtime_app_cleanup_failure(RuntimeAppFailureOutcome::TimedOut);
-            log_runtime_app_cleanup_failed(
-                server_name,
-                &cleanup.app_name,
-                &hook_name,
-                crate::task::TaskExecutionErrorKind::Internal,
-            );
-
-            break;
-        }
-
-        let mut remaining_timeout = cleanup_deadline.duration_since(now);
-        if remaining_timeout.is_zero() {
-            remaining_timeout = std::time::Duration::from_nanos(1);
-        }
-        let remaining_timeout = match ShutdownTimeout::new(remaining_timeout) {
-            Ok(timeout) => timeout,
-            Err(_) => {
-                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
-                    hook_name: hook_name.clone(),
-                    reason: RuntimeAppCleanupErrorReason::TimedOut,
-                });
-
-                record_runtime_app_cleanup_failure(RuntimeAppFailureOutcome::TimedOut);
-                log_runtime_app_cleanup_failed(
-                    server_name,
-                    &cleanup.app_name,
-                    &hook_name,
-                    crate::task::TaskExecutionErrorKind::Internal,
-                );
-
-                break;
-            }
-        };
-
-        log_runtime_app_cleanup_started(server_name, &cleanup.app_name, &hook_name);
-
-        match cleanup.hook.run(remaining_timeout).await {
-            RuntimeCleanupResult::Completed => {
-                log_runtime_app_cleanup_completed(server_name, &cleanup.app_name, &hook_name);
-            }
-            RuntimeCleanupResult::Failed { kind } => {
-                record_runtime_app_cleanup_failure(RuntimeAppFailureOutcome::Failed);
-                log_runtime_app_cleanup_failed(server_name, &cleanup.app_name, &hook_name, kind);
-                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
-                    hook_name,
-                    reason: RuntimeAppCleanupErrorReason::Failed { kind },
-                });
-            }
-            RuntimeCleanupResult::TimedOut { timeout: _ } => {
-                record_runtime_app_cleanup_failure(RuntimeAppFailureOutcome::TimedOut);
-                log_runtime_app_cleanup_failed(
-                    server_name,
-                    &cleanup.app_name,
-                    &hook_name,
-                    crate::task::TaskExecutionErrorKind::Internal,
-                );
-                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
-                    hook_name,
-                    reason: RuntimeAppCleanupErrorReason::TimedOut,
-                });
-            }
-        }
-    }
-
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
-}
-
 /// Builder for [`ServerRuntime`].
 #[derive(Default)]
 pub struct ServerRuntimeBuilder {
@@ -479,6 +440,7 @@ pub struct ServerRuntimeBuilder {
     apps: Vec<RuntimeApp>,
     startup_checks: Vec<RuntimeStartupCheck>,
     background_tasks: Vec<RuntimeBackgroundTask>,
+    critical_tasks: Vec<RuntimeCriticalTask>,
     phase_reporter: Option<ServerRuntimePhaseReporter>,
 }
 
@@ -579,10 +541,17 @@ impl ServerRuntimeBuilder {
     /// Adds a app-specific background task.
     ///
     /// Background tasks are supervised and cancelled by the runtime, but they
-    /// do not delay readiness. Use [`RuntimeStartupCheck`] for initialization
-    /// that must complete before traffic is accepted.
+    /// neither delay readiness nor terminate the runtime when they return. Use
+    /// [`RuntimeStartupCheck`] for finite startup validation or
+    /// [`RuntimeCriticalTask`] for a long-running readiness dependency.
     pub fn background_task(mut self, value: RuntimeBackgroundTask) -> Self {
         self.background_tasks.push(value);
+        self
+    }
+
+    /// Adds a critical task that gates readiness and must remain active.
+    pub fn critical_task(mut self, value: RuntimeCriticalTask) -> Self {
+        self.critical_tasks.push(value);
         self
     }
 
@@ -632,6 +601,7 @@ impl ServerRuntimeBuilder {
             app_parts,
             startup_checks: self.startup_checks,
             background_tasks: self.background_tasks,
+            critical_tasks: self.critical_tasks,
             phase_reporter: self.phase_reporter.unwrap_or_default(),
         })
     }

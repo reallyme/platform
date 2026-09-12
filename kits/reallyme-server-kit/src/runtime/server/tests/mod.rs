@@ -4,6 +4,7 @@
 
 mod builder;
 mod cleanup;
+mod critical;
 mod fixtures;
 mod phases;
 mod shutdown;

@@ -134,7 +134,17 @@ serialized.
 payload is a typed allocation spec: service id, container name, image ref and
 optional digest, environment bindings, private port mappings, constrained
 volumes, rendered config files, runtime secret files, local health probes,
-restart policy, and Tailscale Services. The agent renders
+restart policy, and Tailscale Services. Immediately before execution, the agent
+uses `DockerRuntimeAuthorityService` to resolve exceptional host authority for
+the validated action identity and service. The authority contract currently
+permits only the TUN device and the `NET_ADMIN` and `NET_BIND_SERVICE` Linux
+capabilities. Unknown, unspecified, duplicate, or inconsistent values are
+rejected; TUN access requires `NET_ADMIN`. The agent renders explicit `devices`
+and `cap_add` entries with `cap_drop: ALL`, never `privileged: true`. Authority
+also selects a read-only root filesystem, `no-new-privileges`, and a typed
+bridge or host network mode without relying on a service-name convention. An
+older controller that does not implement the authority service grants no new
+device or capability access, preserving safe rolling upgrades. The agent renders
 `/etc/reallyme/services/{service}/compose.yml` with a Compose `environment:`
 block so YAML serialization, not a hand-written `.env` parser, owns value
 escaping. Rendered config files live under

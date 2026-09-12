@@ -3,6 +3,7 @@
 include!("reallyme.hephaestus.v1.control_surfaces.rs");
 include!("reallyme.hephaestus.v1.types.rs");
 include!("reallyme.hephaestus.v1.docker.rs");
+include!("reallyme.hephaestus.v1.docker_runtime_authority.rs");
 include!("reallyme.hephaestus.v1.foundationdb.rs");
 include!("reallyme.hephaestus.v1.nats.rs");
 include!("reallyme.hephaestus.v1.tailnet.rs");
@@ -31,6 +32,7 @@ pub mod __buffa {
         include!("reallyme.hephaestus.v1.control_surfaces.__view.rs");
         include!("reallyme.hephaestus.v1.types.__view.rs");
         include!("reallyme.hephaestus.v1.docker.__view.rs");
+        include!("reallyme.hephaestus.v1.docker_runtime_authority.__view.rs");
         include!("reallyme.hephaestus.v1.foundationdb.__view.rs");
         include!("reallyme.hephaestus.v1.nats.__view.rs");
         include!("reallyme.hephaestus.v1.tailnet.__view.rs");
@@ -76,6 +78,9 @@ pub mod __buffa {
         reg.register_json_any(super::__DOCKER_HEALTH_PROBE_INTENT_JSON_ANY);
         reg.register_json_any(super::__DOCKER_PLANNED_OPERATION_JSON_ANY);
         reg.register_json_any(super::__DOCKER_VALIDATION_ERROR_JSON_ANY);
+        reg.register_json_any(super::__RESOLVE_AGENT_DOCKER_RUNTIME_AUTHORITY_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__RESOLVE_AGENT_DOCKER_RUNTIME_AUTHORITY_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__DOCKER_RUNTIME_AUTHORITY_JSON_ANY);
         reg.register_json_any(super::__PLAN_FOUNDATION_DB_DEPLOYMENT_REQUEST_JSON_ANY);
         reg.register_json_any(super::__PLAN_FOUNDATION_DB_DEPLOYMENT_RESPONSE_JSON_ANY);
         reg.register_json_any(super::__FOUNDATION_DB_CLUSTER_INTENT_JSON_ANY);
@@ -779,6 +784,10 @@ pub use self::__buffa::view::DockerPlannedOperationView;
 pub use self::__buffa::view::DockerPortIntentOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::DockerPortIntentView;
+#[doc(inline)]
+pub use self::__buffa::view::DockerRuntimeAuthorityOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::DockerRuntimeAuthorityView;
 #[doc(inline)]
 pub use self::__buffa::view::DockerRuntimeConfigOwnedView;
 #[doc(inline)]
@@ -1679,6 +1688,14 @@ pub use self::__buffa::view::ResizeNodeRequestView;
 pub use self::__buffa::view::ResizeNodeResponseOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::ResizeNodeResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolveAgentDockerRuntimeAuthorityRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolveAgentDockerRuntimeAuthorityRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolveAgentDockerRuntimeAuthorityResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolveAgentDockerRuntimeAuthorityResponseView;
 #[doc(inline)]
 pub use self::__buffa::view::ResolveAgentSecretRequestOwnedView;
 #[doc(inline)]

@@ -4,12 +4,16 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Instant;
 
 use reallyme_app_kit::AppCleanupHookDescriptor;
 use tokio::time;
 
 use crate::startup::{StartupError, TaskName};
 use crate::task::{ShutdownTimeout, TaskExecutionError, TaskExecutionErrorKind};
+
+use super::app::RuntimeAppCleanup;
+use super::error::{RuntimeAppCleanupErrorReason, ServerRuntimeError};
 
 type BoxedCleanupFuture = Pin<Box<dyn Future<Output = Result<(), TaskExecutionError>> + Send>>;
 type BoxedCleanupHook = Box<dyn FnOnce() -> BoxedCleanupFuture + Send + 'static>;
@@ -83,6 +87,101 @@ pub(crate) enum RuntimeCleanupResult {
         /// Timeout enforced by the runtime.
         timeout: ShutdownTimeout,
     },
+}
+
+pub(crate) async fn run_cleanup_hooks(
+    cleanup_hooks: Vec<RuntimeAppCleanup>,
+    cleanup_timeout: ShutdownTimeout,
+    server_name: &crate::startup::ServerName,
+) -> Result<(), ServerRuntimeError> {
+    let mut first_error = None;
+    let cleanup_deadline = Instant::now() + cleanup_timeout.as_duration();
+
+    for cleanup in cleanup_hooks.into_iter().rev() {
+        let app_name = cleanup.app_name;
+        let hook_name = cleanup.hook.name();
+
+        let now = Instant::now();
+        if now >= cleanup_deadline {
+            first_error.get_or_insert(ServerRuntimeError::AppCleanup {
+                hook_name: hook_name.clone(),
+                reason: RuntimeAppCleanupErrorReason::TimedOut,
+            });
+            record_cleanup_failure(server_name, &app_name, &hook_name);
+            break;
+        }
+
+        let mut remaining_timeout = cleanup_deadline.duration_since(now);
+        if remaining_timeout.is_zero() {
+            remaining_timeout = std::time::Duration::from_nanos(1);
+        }
+        let remaining_timeout = match ShutdownTimeout::new(remaining_timeout) {
+            Ok(timeout) => timeout,
+            Err(_) => {
+                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
+                    hook_name: hook_name.clone(),
+                    reason: RuntimeAppCleanupErrorReason::TimedOut,
+                });
+                record_cleanup_failure(server_name, &app_name, &hook_name);
+                break;
+            }
+        };
+
+        crate::observability::log_runtime_app_cleanup_started(server_name, &app_name, &hook_name);
+
+        match cleanup.hook.run(remaining_timeout).await {
+            RuntimeCleanupResult::Completed => {
+                crate::observability::log_runtime_app_cleanup_completed(
+                    server_name,
+                    &app_name,
+                    &hook_name,
+                );
+            }
+            RuntimeCleanupResult::Failed { kind } => {
+                crate::observability::record_runtime_app_cleanup_failure(
+                    crate::observability::RuntimeAppFailureOutcome::Failed,
+                );
+                crate::observability::log_runtime_app_cleanup_failed(
+                    server_name,
+                    &app_name,
+                    &hook_name,
+                    kind,
+                );
+                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
+                    hook_name,
+                    reason: RuntimeAppCleanupErrorReason::Failed { kind },
+                });
+            }
+            RuntimeCleanupResult::TimedOut { timeout: _ } => {
+                record_cleanup_failure(server_name, &app_name, &hook_name);
+                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
+                    hook_name,
+                    reason: RuntimeAppCleanupErrorReason::TimedOut,
+                });
+            }
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn record_cleanup_failure(
+    server_name: &crate::startup::ServerName,
+    app_name: &super::app::AppName,
+    hook_name: &TaskName,
+) {
+    crate::observability::record_runtime_app_cleanup_failure(
+        crate::observability::RuntimeAppFailureOutcome::TimedOut,
+    );
+    crate::observability::log_runtime_app_cleanup_failed(
+        server_name,
+        app_name,
+        hook_name,
+        TaskExecutionErrorKind::Internal,
+    );
 }
 
 #[cfg(test)]

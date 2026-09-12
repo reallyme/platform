@@ -41,6 +41,20 @@ const ACTION_EXECUTION_TIMEOUT_MULTIPLIER: u32 = 4;
 /// Keeping this boundary small lets tests exercise partial reporting failures
 /// without substituting the full generated Connect client.
 pub trait AgentActionControlPlane: DockerServiceSecretResolver + Send + Sync {
+    /// Resolves narrowly scoped Docker host authority immediately before use.
+    ///
+    /// The empty default preserves rolling upgrades with controllers that do
+    /// not yet expose the authority service and grants no additional device or
+    /// Linux-capability access.
+    fn resolve_docker_runtime_authority<'a>(
+        &'a self,
+        _receipt: &'a AgentActionReceipt,
+        _service_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = AgentResult<Option<pb::DockerRuntimeAuthority>>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Sends an immediate host report requested by an action.
     fn submit_agent_report<'a>(
         &'a self,
@@ -56,6 +70,19 @@ pub trait AgentActionControlPlane: DockerServiceSecretResolver + Send + Sync {
 }
 
 impl AgentActionControlPlane for crate::control_plane::HephaestusControlPlaneClient {
+    fn resolve_docker_runtime_authority<'a>(
+        &'a self,
+        receipt: &'a AgentActionReceipt,
+        service_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = AgentResult<Option<pb::DockerRuntimeAuthority>>> + Send + 'a>>
+    {
+        Box::pin(
+            crate::control_plane::HephaestusControlPlaneClient::resolve_docker_runtime_authority(
+                self, receipt, service_id,
+            ),
+        )
+    }
+
     fn submit_agent_report<'a>(
         &'a self,
         report: &'a HephaestusAgentReport,
@@ -307,6 +334,30 @@ impl ExecutableAgentAction {
     /// Returns the redacted action kind label used for local audit records.
     pub const fn audit_kind(&self) -> &'static str {
         self.kind.audit_label()
+    }
+
+    async fn apply_docker_runtime_authority(
+        &mut self,
+        control_plane: &impl AgentActionControlPlane,
+    ) -> Result<(), AgentActionOutcome> {
+        let ExecutableAgentActionKind::ConfigureDockerService { service } = &mut self.kind else {
+            return Ok(());
+        };
+        let authority = control_plane
+            .resolve_docker_runtime_authority(&self.receipt, service.service_id())
+            .await
+            .map_err(|_error| {
+                AgentActionOutcome::failed(
+                    pb::AgentActionResultReason::AGENT_ACTION_RESULT_REASON_LOCAL_COMMAND_FAILED,
+                )
+            })?;
+        service
+            .apply_runtime_authority(authority)
+            .map_err(|_error| {
+                AgentActionOutcome::rejected(
+                    pb::AgentActionResultReason::AGENT_ACTION_RESULT_REASON_INVALID_ACTION,
+                )
+            })
     }
 
     /// Executes the validated action locally.
@@ -561,16 +612,22 @@ pub async fn execute_polled_actions(
         audit_log.record_received(&audit_metadata).await?;
         let rejected_receipt = rejected_receipt_from_proto(&action, config.server_id());
         match ExecutableAgentAction::from_proto(action, config.server_id(), now) {
-            Ok(executable) => {
+            Ok(mut executable) => {
                 let audit_metadata = AgentAuditActionMetadata::from_receipt(
                     executable.receipt(),
                     executable.audit_kind(),
                 );
                 audit_log.record_accepted(&audit_metadata).await?;
                 audit_log.record_started(&audit_metadata).await?;
+                let execution = async {
+                    match executable.apply_docker_runtime_authority(client).await {
+                        Ok(()) => executable.execute(config, client).await,
+                        Err(outcome) => outcome,
+                    }
+                };
                 let outcome = match timeout(
                     agent_action_execution_timeout(config.command_timeout()),
-                    executable.execute(config, client),
+                    execution,
                 )
                 .await
                 {

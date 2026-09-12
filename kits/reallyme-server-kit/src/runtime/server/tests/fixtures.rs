@@ -31,6 +31,7 @@ const STDOUT_LOCK_REGRESSION_ENV: &str = "REALLYME_SERVER_KIT_RUNTIME_STDOUT_LOC
 const STDOUT_LOCK_REGRESSION_PORT_ENV: &str =
     "REALLYME_SERVER_KIT_RUNTIME_STDOUT_LOCK_REGRESSION_PORT";
 const PHASE_REGRESSION_ENV: &str = "REALLYME_SERVER_KIT_RUNTIME_PHASE_REGRESSION";
+const CRITICAL_TASK_REGRESSION_ENV: &str = "REALLYME_SERVER_KIT_RUNTIME_CRITICAL_TASK_REGRESSION";
 
 pub(super) fn observability_config() -> ObservabilityConfig {
     ObservabilityConfig::new(
@@ -180,6 +181,22 @@ pub(super) fn stdout_lock_regression_port() -> u16 {
 
 pub(super) fn phase_regression_action() -> Option<std::ffi::OsString> {
     std::env::var_os(PHASE_REGRESSION_ENV)
+}
+
+pub(super) fn spawn_critical_task_regression_worker(action: &'static str) -> std::process::Output {
+    let current_exe = std::env::current_exe().expect("current test binary path should resolve");
+
+    Command::new(current_exe)
+        .arg("--exact")
+        .arg("runtime::server::tests::critical::critical_task_regression_subprocess_worker")
+        .env_clear()
+        .env(CRITICAL_TASK_REGRESSION_ENV, action)
+        .output()
+        .expect("critical task regression subprocess should launch")
+}
+
+pub(super) fn critical_task_regression_action() -> Option<std::ffi::OsString> {
+    std::env::var_os(CRITICAL_TASK_REGRESSION_ENV)
 }
 
 pub(super) fn wait_for_http_response(
