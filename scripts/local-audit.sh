@@ -35,6 +35,7 @@ scripts/verify-server-kit-feature-separation.sh
 scripts/verify-workspace-standards.sh
 node --test scripts/*.test.mjs
 node scripts/publish_crates_in_order.mjs order
+cargo check --locked -p reallyme-platform --no-default-features
 cargo check --locked --workspace --all-features
 cargo test --locked --workspace --all-features
 cargo test --locked --workspace --all-features --doc

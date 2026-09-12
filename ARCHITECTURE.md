@@ -70,6 +70,7 @@ components, and reference hosts:
 
 ```text
 platform/
+├── src/                  # The reallyme-platform facade crate
 ├── kits/
 │   ├── reallyme-app-kit/
 │   ├── reallyme-server-kit/
@@ -95,6 +96,12 @@ platform/
 
 Private applications are not members of this workspace. They consume Platform
 as versioned dependencies and remain outside its public surface.
+
+The root `reallyme-platform` package is a thin facade. It re-exports the
+host-neutral application kit, enables the native server kit by default, and
+exposes infrastructure and Hephaestus kits through opt-in features. It does not
+wrap or replace the underlying crate types, and each kit remains independently
+usable.
 
 ## Application Boundary
 

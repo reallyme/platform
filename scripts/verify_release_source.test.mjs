@@ -19,6 +19,7 @@ const names = [
   "reallyme-hephaestus-contract",
   "reallyme-hephaestus-domain",
   "reallyme-nats-kit",
+  "reallyme-platform",
   "reallyme-postgres-kit",
   "reallyme-s3-kit",
   "reallyme-server-kit",

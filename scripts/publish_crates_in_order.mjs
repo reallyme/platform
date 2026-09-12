@@ -23,6 +23,7 @@ const EXPECTED_PUBLISHABLE_PACKAGES = Object.freeze([
   "reallyme-hephaestus-contract",
   "reallyme-hephaestus-domain",
   "reallyme-nats-kit",
+  "reallyme-platform",
   "reallyme-postgres-kit",
   "reallyme-s3-kit",
   "reallyme-server-kit",
@@ -35,6 +36,16 @@ const REQUIRED_PUBLISH_ORDER_EDGES = Object.freeze([
   ["reallyme-hephaestus-domain", "reallyme-hephaestus-contract"],
   ["reallyme-hephaestus-domain", "hephaestus-agent"],
   ["reallyme-hephaestus-contract", "hephaestus-agent"],
+  ["reallyme-app-kit", "reallyme-platform"],
+  ["reallyme-foundationdb-kit", "reallyme-platform"],
+  ["reallyme-hephaestus-contract", "reallyme-platform"],
+  ["reallyme-hephaestus-domain", "reallyme-platform"],
+  ["reallyme-nats-kit", "reallyme-platform"],
+  ["reallyme-postgres-kit", "reallyme-platform"],
+  ["reallyme-s3-kit", "reallyme-platform"],
+  ["reallyme-server-kit", "reallyme-platform"],
+  ["reallyme-typesense-kit", "reallyme-platform"],
+  ["reallyme-valkey-kit", "reallyme-platform"],
 ]);
 // These three crates were published from clean commit
 // 7de3d0e1b94c8553e90afe83a50b51a63f364c96 before the remaining 0.1.0 release

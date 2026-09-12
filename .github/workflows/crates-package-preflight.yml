@@ -197,6 +197,6 @@ jobs:
             echo
             echo "- Distribution: ReallyMe Platform ${RELEASE_VERSION}"
             echo "- Commit: \`${RELEASE_SHA}\`"
-            echo '- Public crates: 11'
+            echo '- Public crates: 12'
             echo "- Attestation run ID: \`${GITHUB_RUN_ID}\`"
           } >> "$GITHUB_STEP_SUMMARY"
