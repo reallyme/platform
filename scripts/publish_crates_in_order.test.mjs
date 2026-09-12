@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -13,9 +13,19 @@ import test from "node:test";
 
 const script = fileURLToPath(new URL("./publish_crates_in_order.mjs", import.meta.url));
 
-function runFixture({ mode = "publish", scenario = "success", requirement = "^0.1.0" } = {}) {
+function runFixture({
+  mode = "publish",
+  scenario = "success",
+  requirement = "^0.1.0",
+  alreadyPublishedNames = [],
+  dirtyWorktree = false,
+} = {}) {
   const directory = mkdtempSync(join(tmpdir(), "platform-publish-test-"));
   try {
+    mkdirSync(join(directory, "apps/example/contract/src/generated"), { recursive: true });
+    mkdirSync(join(directory, "components/hephaestus/contract/src/generated"), {
+      recursive: true,
+    });
     const callsPath = join(directory, "calls.json");
     const preload = join(directory, "mock.mjs");
     writeFileSync(
@@ -23,9 +33,11 @@ function runFixture({ mode = "publish", scenario = "success", requirement = "^0.
       `
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 const calls = [];
 const scenario = ${JSON.stringify(scenario)};
+const alreadyPublishedNames = new Set(${JSON.stringify(alreadyPublishedNames)});
+const dirtyWorktree = ${JSON.stringify(dirtyWorktree)};
 let attempts = 0;
 const publicMetadata = (name, dependencies = []) => ({
   name,
@@ -52,6 +64,14 @@ childProcess.spawnSync = (command, args) => {
   calls.push([command, ...args]);
   writeFileSync(${JSON.stringify(callsPath)}, JSON.stringify(calls));
   const ok = { status: 0, stdout: "", stderr: "" };
+  if (command === "git" && args[0] === "status") {
+    return { ...ok, stdout: dirtyWorktree ? " M Cargo.toml\\n" : "" };
+  }
+  if (command === "curl") {
+    const outputPath = args[args.indexOf("--output") + 1];
+    writeFileSync(outputPath, scenario === "published-mismatch" ? "different" : "archive");
+    return ok;
+  }
   if (command !== "cargo") return { ...ok, status: 99 };
   if (args[0] === "metadata") return { ...ok, stdout: JSON.stringify({
     target_directory: ${JSON.stringify(directory)},
@@ -77,8 +97,20 @@ childProcess.spawnSync = (command, args) => {
       publicMetadata("reallyme-s3-kit"),
     ],
   }) };
-  if (args[0] === "package") return ok;
+  if (args[0] === "package") {
+    const packageName = args[args.indexOf("-p") + 1];
+    if (packageName !== undefined) {
+      const packageDirectory = ${JSON.stringify(directory)} + "/package";
+      mkdirSync(packageDirectory, { recursive: true });
+      writeFileSync(packageDirectory + "/" + packageName + "-0.1.0.crate", "archive");
+    }
+    return ok;
+  }
   if (args[0] !== "publish") return { ...ok, status: 99 };
+  const packageName = args[args.indexOf("-p") + 1];
+  if (alreadyPublishedNames.has(packageName)) {
+    return { ...ok, status: 101, stderr: "crate version already uploaded" };
+  }
   attempts += 1;
   if (scenario === "exhausted" || (scenario === "retry" && attempts === 1)) {
     return { ...ok, status: 101, stderr: "too many requests" };
@@ -136,6 +168,41 @@ test("transient rate limits retry the current crate", () => {
   const result = runFixture({ scenario: "retry" });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.calls.filter((call) => call[0] === "wait"), [["wait", 60_000]]);
+});
+
+test("existing uploads are skipped while later crates continue publishing", () => {
+  const result = runFixture({
+    alreadyPublishedNames: [
+      "reallyme-app-kit",
+      "reallyme-server-kit",
+      "reallyme-hephaestus-domain",
+    ],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const published = result.calls
+    .filter((call) => call[1] === "publish")
+    .map((call) => call[3]);
+  assert.ok(published.includes("reallyme-hephaestus-contract"));
+  assert.ok(published.includes("hephaestus-agent"));
+  assert.equal(published.length, 11);
+  assert.equal(result.calls.filter((call) => call[0] === "curl").length, 3);
+});
+
+test("an existing upload from different source bytes fails closed", () => {
+  const result = runFixture({
+    scenario: "published-mismatch",
+    alreadyPublishedNames: ["reallyme-app-kit"],
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /different source bytes/u);
+  assert.equal(result.calls.filter((call) => call[1] === "publish").length, 1);
+});
+
+test("publication refuses a dirty worktree before reading Cargo metadata", () => {
+  const result = runFixture({ dirtyWorktree: true });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /completely clean Git worktree/u);
+  assert.equal(result.calls.filter((call) => call[0] === "cargo").length, 0);
 });
 
 test("non-retryable publication errors fail immediately", () => {

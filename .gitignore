@@ -76,11 +76,18 @@ proptest-regressions/
 
 # Claude review ignore rules are defined in .claudeignore
 
-# Keep generated Rust/build artifacts out of git tooling and local commits
+# Keep generated Rust/build artifacts out of git tooling and local commits.
+# The two checked-in contract crates below are an intentional exception: their
+# generated API surface is reviewed together with the schema and distributed
+# wherever the contract crate is packaged.
 **/generated
 **/generated/**
 **/src/generated
 **/src/generated/**
+!apps/example/contract/src/generated/
+!apps/example/contract/src/generated/**
+!components/hephaestus/contract/src/generated/
+!components/hephaestus/contract/src/generated/**
 **/src/pb
 **/src/pb/**
 **/src/prost

@@ -20,6 +20,14 @@ cargo fmt --all -- --check
 if [[ "${contracts_are_generated}" != true ]]; then
   scripts/generate-rust-contracts.sh
 fi
+generated_status="$(git status --porcelain=v1 --untracked-files=all -- \
+  apps/example/contract/src/generated \
+  components/hephaestus/contract/src/generated)"
+if [[ -n "${generated_status}" ]]; then
+  printf '%s\n' "${generated_status}" >&2
+  printf 'committed generated contract sources are stale; regenerate and commit the result\n' >&2
+  exit 1
+fi
 scripts/verify-contract-boundaries.sh
 scripts/verify-crypto-policy.sh
 scripts/verify-example-app-feature-separation.sh

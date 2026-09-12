@@ -12,12 +12,25 @@ temporary_dir="$(mktemp -d)"
 readonly temporary_dir
 trap 'rm -rf "${temporary_dir}"' EXIT
 
-generated_paths_file="${temporary_dir}/generated-tracked.txt"
-if git ls-files | rg '/src/generated/|/generated/(buffa|connect|grpc)/' >"${generated_paths_file}"; then
-  cat "${generated_paths_file}" >&2
-  printf 'generated Rust contract output must not be tracked\n' >&2
-  status=1
-fi
+while IFS= read -r generated_path; do
+  case "${generated_path}" in
+    apps/example/contract/src/generated/* | components/hephaestus/contract/src/generated/*) ;;
+    *)
+      printf 'generated Rust source is outside an approved contract: %s\n' \
+        "${generated_path}" >&2
+      status=1
+      ;;
+  esac
+done < <(git ls-files | rg '/src/generated/|/generated/(buffa|connect|grpc)/')
+
+for generated_directory in \
+  apps/example/contract/src/generated \
+  components/hephaestus/contract/src/generated; do
+  if ! git ls-files -- "${generated_directory}" | rg -q .; then
+    printf 'contract generated source must be tracked: %s\n' "${generated_directory}" >&2
+    status=1
+  fi
+done
 
 while IFS= read -r rust_file; do
   # `git ls-files` retains paths deleted by an unstaged crate extraction. There
