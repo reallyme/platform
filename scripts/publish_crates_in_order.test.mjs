@@ -95,6 +95,18 @@ childProcess.spawnSync = (command, args) => {
       publicMetadata("reallyme-typesense-kit"),
       publicMetadata("reallyme-valkey-kit"),
       publicMetadata("reallyme-s3-kit"),
+      publicMetadata("reallyme-platform", [
+        localDependency("reallyme-app-kit"),
+        localDependency("reallyme-server-kit"),
+        localDependency("reallyme-hephaestus-domain"),
+        localDependency("reallyme-hephaestus-contract"),
+        localDependency("reallyme-foundationdb-kit"),
+        localDependency("reallyme-postgres-kit"),
+        localDependency("reallyme-nats-kit"),
+        localDependency("reallyme-typesense-kit"),
+        localDependency("reallyme-valkey-kit"),
+        localDependency("reallyme-s3-kit"),
+      ]),
     ],
   }) };
   if (args[0] === "package") {
@@ -152,7 +164,10 @@ test("successful publication respects every local dependency edge", () => {
   assert.ok(indexOf("reallyme-app-kit") < indexOf("reallyme-hephaestus-contract"));
   assert.ok(indexOf("reallyme-hephaestus-domain") < indexOf("reallyme-hephaestus-contract"));
   assert.ok(indexOf("reallyme-hephaestus-contract") < indexOf("hephaestus-agent"));
-  assert.equal(published.length, 11);
+  assert.ok(indexOf("reallyme-app-kit") < indexOf("reallyme-platform"));
+  assert.ok(indexOf("reallyme-server-kit") < indexOf("reallyme-platform"));
+  assert.ok(indexOf("reallyme-s3-kit") < indexOf("reallyme-platform"));
+  assert.equal(published.length, 12);
 });
 
 test("rate-limit exhaustion stops before dependent publication", () => {
@@ -184,7 +199,8 @@ test("existing uploads are skipped while later crates continue publishing", () =
     .map((call) => call[3]);
   assert.ok(published.includes("reallyme-hephaestus-contract"));
   assert.ok(published.includes("hephaestus-agent"));
-  assert.equal(published.length, 11);
+  assert.ok(published.includes("reallyme-platform"));
+  assert.equal(published.length, 12);
   assert.equal(result.calls.filter((call) => call[0] === "curl").length, 3);
 });
 

@@ -3846,6 +3846,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "reallyme-platform"
+version = "0.1.0"
+dependencies = [
+ "reallyme-app-kit",
+ "reallyme-foundationdb-kit",
+ "reallyme-hephaestus-contract",
+ "reallyme-hephaestus-domain",
+ "reallyme-nats-kit",
+ "reallyme-postgres-kit",
+ "reallyme-s3-kit",
+ "reallyme-server-kit",
+ "reallyme-typesense-kit",
+ "reallyme-valkey-kit",
+]
+
+[[package]]
 name = "reallyme-postgres-kit"
 version = "0.1.0"
 dependencies = [

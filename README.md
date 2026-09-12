@@ -79,6 +79,19 @@ same application core under the host platform's lifecycle.
 
 ## Getting started
 
+Add the facade crate to use Platform's host-neutral application contracts and
+native server runtime:
+
+```console
+cargo add reallyme-platform
+```
+
+Infrastructure integrations are opt-in features:
+
+```console
+cargo add reallyme-platform --features postgres,nats
+```
+
 Clone the repository and run the reference native server:
 
 ```console
@@ -221,6 +234,7 @@ The public repository is organized around reusable kits, first-party components,
 
 ```text
 platform/
+├── src/                  # The reallyme-platform facade crate
 ├── kits/
 │   ├── reallyme-app-kit/
 │   ├── reallyme-server-kit/
@@ -258,6 +272,7 @@ own their schemas, payloads, tenant policy, and business behavior.
 
 | Kit | Provides |
 | --- | --- |
+| [`reallyme-platform`](Cargo.toml) | Facade over the application kit, the default native server runtime, and opt-in infrastructure and Hephaestus kits. |
 | [`reallyme-app-kit`](kits/reallyme-app-kit/) | Host-neutral application metadata, configuration, health, lifecycle contributions, permissions, metrics naming, and adapter conventions. |
 | [`reallyme-server-kit`](kits/reallyme-server-kit/) | Native listeners, startup and shutdown, readiness, tracing, metrics, task supervision, HTTP, Connect RPC, optional gRPC, and WebSockets. |
 

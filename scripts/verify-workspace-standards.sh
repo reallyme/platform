@@ -58,7 +58,8 @@ fi
 
 is_public_manifest() {
   case "$1" in
-    ./components/hephaestus/agent/Cargo.toml | \
+    ./Cargo.toml | \
+      ./components/hephaestus/agent/Cargo.toml | \
       ./components/hephaestus/contract/Cargo.toml | \
       ./components/hephaestus/domain/Cargo.toml | \
       ./kits/reallyme-app-kit/Cargo.toml | \
@@ -94,7 +95,7 @@ while IFS= read -r cargo_file; do
     printf 'unapproved workspace crate must remain private: %s\n' "${cargo_file}" >&2
     status=1
   fi
-done < <(find . -name Cargo.toml -not -path './target/*' -not -path './Cargo.toml' | sort)
+done < <(find . -name Cargo.toml -not -path './target/*' | sort)
 
 if ! scripts/verify-crypto-policy.sh; then
   status=1
