@@ -48,11 +48,11 @@ const run = (command, arguments_, { capture = true } = {}) => {
   return capture && typeof result.stdout === "string" ? result.stdout.trim() : "";
 };
 
-const readPublishablePackages = () => {
+const readPublishablePackages = (commandRunner) => {
   let metadata;
   try {
     metadata = JSON.parse(
-      run("cargo", ["metadata", "--locked", "--format-version", "1", "--no-deps"]),
+      commandRunner("cargo", ["metadata", "--locked", "--format-version", "1", "--no-deps"]),
     );
   } catch (error) {
     if (error instanceof ReleaseSourceError) {
@@ -100,7 +100,7 @@ export const resolveReleaseVersion = ({ derivesVersion, packages, requestedVersi
   return derivesVersion ? derivedVersion : requestedVersion;
 };
 
-export const verifyReleaseSource = ({ env = process.env } = {}) => {
+export const verifyReleaseSource = ({ env = process.env, commandRunner = run } = {}) => {
   const releaseSha = env.RELEASE_SHA;
   if (typeof releaseSha !== "string" || !FULL_SHA_PATTERN.test(releaseSha)) {
     fail("invalid-release-sha");
@@ -108,20 +108,25 @@ export const verifyReleaseSource = ({ env = process.env } = {}) => {
   if (env.GITHUB_SHA !== undefined && env.GITHUB_SHA !== releaseSha) {
     fail("workflow-head-mismatch");
   }
-  if (run("git", ["rev-parse", "HEAD"]) !== releaseSha) {
+  if (commandRunner("git", ["rev-parse", "HEAD"]) !== releaseSha) {
     fail("checkout-mismatch");
   }
-  run(
+  if (
+    commandRunner("git", ["status", "--porcelain=v1", "--untracked-files=all"]).length !== 0
+  ) {
+    fail("dirty-release-worktree");
+  }
+  commandRunner(
     "git",
     ["fetch", "--force", "--no-tags", "origin", "main:refs/remotes/origin/main"],
     { capture: false },
   );
-  if (run("git", ["rev-parse", "refs/remotes/origin/main"]) !== releaseSha) {
+  if (commandRunner("git", ["rev-parse", "refs/remotes/origin/main"]) !== releaseSha) {
     fail("origin-main-mismatch");
   }
   const releaseVersion = resolveReleaseVersion({
     derivesVersion: env.RELEASE_SOURCE_DERIVE_VERSION === "1",
-    packages: readPublishablePackages(),
+    packages: readPublishablePackages(commandRunner),
     requestedVersion: env.RELEASE_VERSION,
   });
   return { releaseSha, releaseVersion };

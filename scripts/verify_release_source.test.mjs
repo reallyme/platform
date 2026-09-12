@@ -6,7 +6,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ReleaseSourceError, resolveReleaseVersion } from "./verify_release_source.mjs";
+import {
+  ReleaseSourceError,
+  resolveReleaseVersion,
+  verifyReleaseSource,
+} from "./verify_release_source.mjs";
 
 const names = [
   "hephaestus-agent",
@@ -22,6 +26,26 @@ const names = [
   "reallyme-valkey-kit",
 ];
 const packages = (version = "0.1.0") => names.map((name) => ({ name, version }));
+
+function releaseSourceRunner({ dirty = false, releaseSha }) {
+  return (command, arguments_) => {
+    if (command === "git" && arguments_[0] === "rev-parse") {
+      return releaseSha;
+    }
+    if (command === "git" && arguments_[0] === "status") {
+      return dirty ? " M Cargo.toml" : "";
+    }
+    if (command === "git" && arguments_[0] === "fetch") {
+      return "";
+    }
+    if (command === "cargo" && arguments_[0] === "metadata") {
+      return JSON.stringify({
+        packages: packages().map((pkg) => ({ ...pkg, publish: ["crates-io"] })),
+      });
+    }
+    throw new Error("unexpected fixture command");
+  };
+}
 
 test("release version is derived only when every public crate agrees", () => {
   assert.equal(
@@ -85,5 +109,29 @@ test("an unexpected public or private package fails closed", () => {
         requestedVersion: undefined,
       }),
     ReleaseSourceError,
+  );
+});
+
+test("release source verification accepts only a clean exact checkout", () => {
+  const releaseSha = "a".repeat(40);
+  const env = {
+    GITHUB_SHA: releaseSha,
+    RELEASE_SHA: releaseSha,
+    RELEASE_SOURCE_DERIVE_VERSION: "1",
+  };
+  assert.deepEqual(
+    verifyReleaseSource({
+      commandRunner: releaseSourceRunner({ releaseSha }),
+      env,
+    }),
+    { releaseSha, releaseVersion: "0.1.0" },
+  );
+  assert.throws(
+    () =>
+      verifyReleaseSource({
+        commandRunner: releaseSourceRunner({ dirty: true, releaseSha }),
+        env,
+      }),
+    (error) => error instanceof ReleaseSourceError && error.code === "dirty-release-worktree",
   );
 });

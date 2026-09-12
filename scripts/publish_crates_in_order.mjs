@@ -8,6 +8,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { CratePayloadError, compareCratePayloads } from "./compare_crate_payloads.mjs";
+
 const MODE_INSPECT = "inspect";
 const MODE_ORDER = "order";
 const MODE_PUBLISH = "publish";
@@ -34,14 +36,27 @@ const REQUIRED_PUBLISH_ORDER_EDGES = Object.freeze([
   ["reallyme-hephaestus-domain", "hephaestus-agent"],
   ["reallyme-hephaestus-contract", "hephaestus-agent"],
 ]);
+// These three crates were published from clean commit
+// 7de3d0e1b94c8553e90afe83a50b51a63f364c96 before the remaining 0.1.0 release
+// was completed. Cargo embeds the packaging commit in every archive, so a later
+// clean commit cannot reproduce their archive bytes.
+// Pinning the immutable crates.io checksums confines source-payload comparison
+// to this known partial release rather than accepting an arbitrary prior upload.
+const KNOWN_PARTIAL_RELEASE_ARCHIVES = Object.freeze({
+  "reallyme-app-kit@0.1.0":
+    "b8ac30887a265bd250e5f59fe6f3e4326855d9745c3b64bffa53c1b563a9e39d",
+  "reallyme-hephaestus-domain@0.1.0":
+    "720e355cce4a6175e9bac1a75a327e96b693efc4595edadd31c4a466dee44980",
+  "reallyme-server-kit@0.1.0":
+    "20a28767e6aecbb865d3e8f2f69234789ec5a780b014f6828d3adc32235f87f9",
+});
 
 const arguments_ = process.argv.slice(2);
 const mode = arguments_[0] ?? MODE_INSPECT;
 const allowDirty = arguments_.includes("--allow-dirty");
-const allowGeneratedDirty = arguments_.includes("--allow-generated-dirty");
 const unknownArguments = arguments_
   .slice(1)
-  .filter((argument) => argument !== "--allow-dirty" && argument !== "--allow-generated-dirty");
+  .filter((argument) => argument !== "--allow-dirty");
 const releaseVersion = process.env.RELEASE_VERSION ?? "";
 
 if (
@@ -51,24 +66,12 @@ if (
   console.error(
     `usage: node scripts/publish_crates_in_order.mjs ` +
       `${MODE_INSPECT}|${MODE_ORDER}|${MODE_PUBLISH} ` +
-      "[--allow-dirty|--allow-generated-dirty]",
+      "[--allow-dirty]",
   );
-  process.exit(2);
-}
-if (allowDirty && allowGeneratedDirty) {
-  console.error("--allow-dirty and --allow-generated-dirty cannot be combined");
   process.exit(2);
 }
 if (allowDirty && mode === MODE_PUBLISH) {
   console.error("--allow-dirty is never supported for publication");
-  process.exit(2);
-}
-if (allowGeneratedDirty && mode !== MODE_PUBLISH) {
-  console.error("--allow-generated-dirty is supported only for publication");
-  process.exit(2);
-}
-if (allowGeneratedDirty && process.env.GITHUB_ACTIONS !== "true") {
-  console.error("--allow-generated-dirty is supported only in GitHub Actions");
   process.exit(2);
 }
 if (mode === MODE_PUBLISH && releaseVersion.length === 0) {
@@ -93,39 +96,32 @@ function run(command, commandArguments, options = {}) {
 }
 
 function verifyPublicationWorktree() {
-  for (const diffArguments of [["diff", "--quiet"], ["diff", "--cached", "--quiet"]]) {
-    const diffResult = run("git", diffArguments, { capture: true });
-    if (diffResult.status !== 0) {
-      console.error("publication requires a clean tracked worktree");
-      process.exit(1);
-    }
+  const statusResult = run(
+    "git",
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    { capture: true },
+  );
+  if (statusResult.status !== 0) {
+    process.stderr.write(statusResult.stderr);
+    process.exit(statusResult.status ?? 1);
   }
-
-  const untrackedResult = run("git", ["ls-files", "--others", "--exclude-standard"], {
-    capture: true,
-  });
-  if (untrackedResult.status !== 0) {
-    process.stderr.write(untrackedResult.stderr);
-    process.exit(untrackedResult.status ?? 1);
-  }
-  if (untrackedResult.stdout.trim().length !== 0) {
-    console.error("publication does not permit unignored untracked files");
+  if (statusResult.stdout.length !== 0) {
+    console.error("publication requires a completely clean Git worktree");
     process.exit(1);
   }
 
-  const generatedDirectories = [
+  for (const generatedDirectory of [
     "apps/example/contract/src/generated",
     "components/hephaestus/contract/src/generated",
-  ];
-  for (const generatedDirectory of generatedDirectories) {
+  ]) {
     if (!fs.existsSync(generatedDirectory)) {
-      console.error(`missing generated contract sources: ${generatedDirectory}`);
+      console.error(`missing committed contract sources: ${generatedDirectory}`);
       process.exit(1);
     }
   }
 }
 
-if (allowGeneratedDirty) {
+if (mode === MODE_PUBLISH) {
   verifyPublicationWorktree();
 }
 
@@ -466,6 +462,7 @@ function verifyPublishedPackageMatches(pkg) {
     console.error(`${pkg.name} ${pkg.version} local package archive is missing`);
     process.exit(1);
   }
+
   const comparisonDirectory = fs.mkdtempSync(path.join(packageDirectory, "published-"));
   const publishedArchive = path.join(comparisonDirectory, `${pkg.name}-${pkg.version}.crate`);
   const encodedName = encodeURIComponent(pkg.name);
@@ -473,6 +470,7 @@ function verifyPublishedPackageMatches(pkg) {
   const downloadUrl =
     `https://static.crates.io/crates/${encodedName}/` +
     `${encodedName}-${encodedVersion}.crate`;
+
   try {
     const downloadResult = run(
       "curl",
@@ -496,14 +494,40 @@ function verifyPublishedPackageMatches(pkg) {
       process.stderr.write(downloadResult.stderr);
       process.exit(downloadResult.status ?? 1);
     }
+
     const localChecksum = createHash("sha256").update(fs.readFileSync(localArchive)).digest("hex");
     const publishedChecksum = createHash("sha256")
       .update(fs.readFileSync(publishedArchive))
       .digest("hex");
-    if (localChecksum !== publishedChecksum) {
-      console.error(`${pkg.name} ${pkg.version} exists from different source bytes`);
+    if (localChecksum === publishedChecksum) {
+      return;
+    }
+
+    const partialReleaseKey = `${pkg.name}@${pkg.version}`;
+    if (KNOWN_PARTIAL_RELEASE_ARCHIVES[partialReleaseKey] !== publishedChecksum) {
+      console.error(`${pkg.name} ${pkg.version} is already published from different source bytes`);
       process.exit(1);
     }
+
+    try {
+      compareCratePayloads({
+        localArchive,
+        publishedArchive,
+        packageName: pkg.name,
+        packageVersion: pkg.version,
+        workspacePackageNames: actualPublishableNames,
+        temporaryDirectory: comparisonDirectory,
+      });
+    } catch (error) {
+      const reason = error instanceof CratePayloadError ? error.code : "comparison-failed";
+      console.error(
+        `${pkg.name} ${pkg.version} published source does not match the certified release (${reason})`,
+      );
+      process.exit(1);
+    }
+    console.log(
+      `${pkg.name} ${pkg.version} matches the known clean partial-release source payload`,
+    );
   } finally {
     fs.rmSync(comparisonDirectory, { force: true, recursive: true });
   }
@@ -516,7 +540,6 @@ function publishPackage(pkg) {
     pkg.name,
     "--no-verify",
     "--locked",
-    ...(allowGeneratedDirty ? ["--allow-dirty"] : []),
   ]);
   if (packageResult.status !== 0) {
     process.exit(packageResult.status ?? 1);
@@ -524,7 +547,7 @@ function publishPackage(pkg) {
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
     const result = run(
       "cargo",
-      ["publish", "-p", pkg.name, "--locked", ...(allowGeneratedDirty ? ["--allow-dirty"] : [])],
+      ["publish", "-p", pkg.name, "--locked"],
       { capture: true },
     );
     process.stdout.write(result.stdout);
@@ -535,7 +558,7 @@ function publishPackage(pkg) {
     const combined = `${result.stdout}\n${result.stderr}`;
     if (combined.includes("already uploaded") || combined.includes("already exists")) {
       verifyPublishedPackageMatches(pkg);
-      console.log(`${pkg.name} ${pkg.version} is already published; continuing`);
+      console.log(`${pkg.name} ${pkg.version} is already published and matches; continuing`);
       return;
     }
     const lowerCombined = combined.toLowerCase();

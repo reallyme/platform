@@ -164,9 +164,13 @@ jobs:
       - name: Inspect normalized crate archives and dry-run publication
         env:
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
-        # Contract generation produces ignored Rust sources that must be present
-        # in the inspected archives. Publication itself never permits dirty input.
-        run: node scripts/publish_crates_in_order.mjs inspect --allow-dirty
+        run: node scripts/publish_crates_in_order.mjs inspect
+
+      - name: Revalidate the exact reviewed source tree
+        env:
+          RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
+          RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+        run: node scripts/verify_release_source.mjs
 
       - name: Write reviewed package attestation
         env:

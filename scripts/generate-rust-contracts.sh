@@ -18,9 +18,9 @@ for contract_dir in "${contract_dirs[@]}"; do
   fi
 
   generated_dir="${repo_root}/${contract_dir}/src/generated"
-  # Generated output is deliberately untracked. Remove the exact output tree
-  # before generation so files removed from a schema cannot survive into a
-  # release archive as stale Rust modules.
+  # Contract output is reviewed source distributed with its contract crate.
+  # Remove the exact output tree first so schema deletions cannot leave stale
+  # modules behind; CI then verifies it matches the committed source.
   rm -rf "${generated_dir}"
 
   printf 'Generating Rust contract code for %s\n' "${contract_dir}"
