@@ -1,5 +1,4 @@
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
-//
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! In-process typed port adapter for the example app.
@@ -45,20 +44,5 @@ fn map_example_app_error_to_contract_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use reallyme_example_contract::{ExamplePort, HelloRequest};
-
-    use super::InProcessExamplePort;
-    use crate::app::for_tests_only_local_context;
-
-    #[tokio::test]
-    async fn in_process_port_calls_same_app_core() {
-        let port = InProcessExamplePort::new(for_tests_only_local_context());
-        let response = port
-            .hello(HelloRequest)
-            .await
-            .expect("example app should serve");
-
-        assert_eq!(response.body(), "hello from example-app");
-    }
-}
+#[path = "in_process_tests.rs"]
+mod tests;

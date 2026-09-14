@@ -1,5 +1,4 @@
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
-//
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Host-neutral app orchestration layer for the example app.
@@ -17,7 +16,7 @@ pub use config_document::{
     ExampleAppConfigDocument, ExampleCustomConfig, example_app_config_document,
     parse_example_app_config_document,
 };
-#[cfg(any(test, feature = "testing"))]
+#[cfg(feature = "testing")]
 pub use context::for_tests_only_local_context;
 pub use context::{
     ExampleAppContext, ExampleAppCore, ExampleAppState, context_from_config_document, new_context,

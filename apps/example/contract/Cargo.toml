@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 [package]
 name = "reallyme-example-contract"
 version.workspace = true
@@ -16,3 +19,6 @@ connectrpc = { workspace = true, optional = true }
 reallyme-app-kit.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

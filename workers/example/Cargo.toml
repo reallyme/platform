@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "example-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+buffa.workspace = true
+example-app = { workspace = true, default-features = false, features = ["connect"] }
+reallyme-example-contract = { workspace = true, features = ["generated"] }
+serde.workspace = true
+thiserror.workspace = true
+worker.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

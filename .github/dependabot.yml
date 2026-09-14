@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 version: 2
@@ -12,22 +12,11 @@ updates:
       timezone: Europe/Malta
     open-pull-requests-limit: 5
 
-  # GitHub calls this ecosystem "npm" even when the project uses pnpm.
-  # It updates the Worker manifest and checked-in pnpm lockfile only.
-  - package-ecosystem: npm
-    directory: "/workers/example-worker"
-    schedule:
-      interval: weekly
-      day: tuesday
-      time: "06:15"
-      timezone: Europe/Malta
-    open-pull-requests-limit: 5
-
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
       day: tuesday
-      time: "06:30"
+      time: "06:15"
       timezone: Europe/Malta
     open-pull-requests-limit: 5

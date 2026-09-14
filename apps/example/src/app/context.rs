@@ -1,5 +1,4 @@
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
-//
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use reallyme_app_kit::{StandardAppContext, StandardAppCore, StandardAppState};
@@ -23,7 +22,7 @@ pub fn new_context(config: ExampleAppConfig, ports: ExamplePorts) -> ExampleAppC
 }
 
 /// Constructs a local/example context with deterministic placeholder ports.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(feature = "testing")]
 pub fn for_tests_only_local_context() -> ExampleAppContext {
     new_context(ExampleAppConfig::new(true), ExamplePorts::unconfigured())
 }

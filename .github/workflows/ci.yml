@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 name: CI
 
 on:
@@ -44,7 +47,7 @@ jobs:
         with:
           toolchain: 1.98.1
           components: clippy,rustfmt
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -86,18 +89,28 @@ jobs:
             | sha256sum --check --strict
           sudo dpkg -i "$package_path"
 
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
       - name: Set up pnpm and Node for Worker validation
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          runtime: node@22
+          runtime: node@24
           cache: true
-          cache-dependency-path: workers/example-worker/pnpm-lock.yaml
-          working-directory: workers/example-worker
+          cache-dependency-path: workers/example/pnpm-lock.yaml
+          working-directory: workers/example
           install: false
 
-      - name: Install Worker tooling from the lockfile
-        working-directory: workers/example-worker
-        run: pnpm install --frozen-lockfile
+      - name: Run shared ReallyMe release-readiness policy
+        env:
+          REALLYME_RELEASE_READINESS_REQUIRE_TRACKED: "1"
+        run: >-
+          npm exec --yes
+          --allow-git=root
+          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
         run: |
@@ -106,14 +119,13 @@ jobs:
           cargo install connectrpc-codegen --version "$CONNECTRPC_CODEGEN_VERSION" --locked
 
       - name: Generate Rust contracts
-        run: scripts/generate-rust-contracts.sh
+        run: scripts/generation/generate-rust-contracts.sh
 
       - name: Install pinned Worker build tool
         run: cargo install worker-build --version 0.8.5 --locked
 
       - name: Validate Worker deployment bundle
-        working-directory: workers/example-worker
-        run: pnpm worker:check
+        run: scripts/build/check-worker.sh
 
       - name: Cargo fmt
         run: cargo fmt --all -- --check
@@ -136,19 +148,19 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Test release automation
-        run: node --test scripts/*.test.mjs
+        run: node --test scripts/release/*.test.mjs
 
       - name: Verify crates.io publish order and metadata
-        run: node scripts/publish_crates_in_order.mjs order
+        run: node scripts/release/publish_crates_in_order.mjs order
 
       - name: Contract boundaries
-        run: scripts/verify-contract-boundaries.sh
+        run: scripts/policy/verify-contract-boundaries.sh
 
       - name: Crypto dependency policy
-        run: scripts/verify-crypto-policy.sh
+        run: scripts/policy/verify-crypto-policy.sh
 
       - name: Workspace standards
-        run: scripts/verify-workspace-standards.sh
+        run: scripts/policy/verify-workspace-standards.sh
 
   rust-full:
     name: Rust full audit suite
@@ -166,7 +178,7 @@ jobs:
         with:
           toolchain: 1.98.1
           components: clippy,rustfmt
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -212,6 +224,24 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Set up pnpm and Node for Worker validation
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          runtime: node@24
+          cache: true
+          cache-dependency-path: workers/example/pnpm-lock.yaml
+          working-directory: workers/example
+          install: false
+
+      - name: Run shared ReallyMe release-readiness policy
+        env:
+          REALLYME_RELEASE_READINESS_REQUIRE_TRACKED: "1"
+        run: >-
+          npm exec --yes
+          --allow-git=root
+          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          -- reallyme-release-readiness
+
       - name: Install Rust protobuf generators
         run: |
           cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
@@ -219,7 +249,13 @@ jobs:
           cargo install connectrpc-codegen --version "$CONNECTRPC_CODEGEN_VERSION" --locked
 
       - name: Generate Rust contracts
-        run: scripts/generate-rust-contracts.sh
+        run: scripts/generation/generate-rust-contracts.sh
+
+      - name: Install pinned Worker build tool
+        run: cargo install worker-build --version 0.8.5 --locked
+
+      - name: Validate Worker deployment bundle
+        run: scripts/build/check-worker.sh
 
       - name: Cargo fmt
         run: cargo fmt --all -- --check
@@ -284,19 +320,19 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Test release automation
-        run: node --test scripts/*.test.mjs
+        run: node --test scripts/release/*.test.mjs
 
       - name: Contract boundaries
-        run: scripts/verify-contract-boundaries.sh
+        run: scripts/policy/verify-contract-boundaries.sh
 
       - name: Crypto dependency policy
-        run: scripts/verify-crypto-policy.sh
+        run: scripts/policy/verify-crypto-policy.sh
 
       - name: Example app feature separation
-        run: scripts/verify-example-app-feature-separation.sh
+        run: scripts/conformance/verify-example-app-feature-separation.sh
 
       - name: Server-kit feature separation
-        run: scripts/verify-server-kit-feature-separation.sh
+        run: scripts/conformance/verify-server-kit-feature-separation.sh
 
       - name: Workspace standards
-        run: scripts/verify-workspace-standards.sh
+        run: scripts/policy/verify-workspace-standards.sh

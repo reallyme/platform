@@ -6,9 +6,9 @@
 
 [![CI](https://github.com/reallyme/platform/actions/workflows/ci.yml/badge.svg)](https://github.com/reallyme/platform/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/reallyme-platform.svg?label=crates.io)](https://crates.io/crates/reallyme-platform)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-**[Getting started](#getting-started) · [Applications](#applications) · [Kits](#kits) · [Architecture](#architecture) · [Hephaestus](#hephaestus)**
+**[Getting started](#getting-started) · [Applications](#applications) · [Kits](#kits) · [Architecture](#architecture)**
 
 </div>
 
@@ -79,8 +79,7 @@ same application core under the host platform's lifecycle.
 
 ## Getting started
 
-Add the facade crate to use Platform's host-neutral application contracts and
-native server runtime:
+Add the facade crate to use Platform's host-neutral application contracts:
 
 ```console
 cargo add reallyme-platform
@@ -92,13 +91,19 @@ Infrastructure integrations are opt-in features:
 cargo add reallyme-platform --features postgres,nats
 ```
 
+The native runtime is also opt-in:
+
+```console
+cargo add reallyme-platform --features native-server
+```
+
 Clone the repository and run the reference native server:
 
 ```console
 git clone https://github.com/reallyme/platform.git
 cd platform
 cargo run -p example-server -- \
-  --config servers/configs/example-server.jsonc
+  --config servers/example/config/example-server.jsonc
 ```
 
 In another terminal, call the reference application and the runtime-owned
@@ -112,9 +117,9 @@ curl http://127.0.0.1:8080/readyz
 The [reference application](apps/example/) includes host-neutral behavior, a
 protobuf contract, Connect and HTTP adapters, native-server integration, and a
 core that can be called without a native runtime. The
-[reference native server](servers/example-server/) shows explicit application
+[reference native server](servers/example/) shows explicit application
 selection and process composition. The
-[reference Cloudflare Workers host](workers/example-worker/) supplies
+[reference Cloudflare Workers host](workers/example/) supplies
 the Cloudflare-specific adapter and shows how the same application runs on
 Cloudflare Workers.
 
@@ -177,8 +182,8 @@ Platform treats application contracts as durable interfaces, not Rust implementa
 Applications define RPC-shaped contracts in Protocol Buffers.
 [Buf](https://buf.build/) supplies schema linting, code generation, and
 compatibility tooling for breaking-change checks.
-[Buffa](https://github.com/anthropics/buffa) generates Rust message types and
-borrowed views, while Connect RPC provides the primary RPC transport.
+Buffa generates Rust message types and borrowed views, while Connect RPC
+provides the primary RPC transport.
 
 We use Protocol Buffers because an application contract should outlive any
 particular transport, host, or Rust implementation. Stable field numbers,
@@ -226,40 +231,33 @@ Platform has four deliberate boundaries:
 | Servers and edge hosts | Select applications and produce concrete executable artifacts. |
 | Infrastructure | Decides where immutable artifacts run and how they are operated. |
 
-Hephaestus sits beside these layers as a deployment control plane. It
-coordinates the application of desired state but is not required by the
-application, server, or runtime model.
-
-The public repository is organized around reusable kits, first-party components, and reference implementations:
+The public repository is organized around reusable kits and reference implementations:
 
 ```text
 platform/
-├── src/                  # The reallyme-platform facade crate
+├── crates/
+│   └── platform/         # Least-dependency reallyme-platform facade
 ├── kits/
-│   ├── reallyme-app-kit/
-│   ├── reallyme-server-kit/
-│   ├── reallyme-foundationdb-kit/
-│   ├── reallyme-nats-kit/
-│   ├── reallyme-postgres-kit/
-│   ├── reallyme-s3-kit/
-│   ├── reallyme-typesense-kit/
-│   └── reallyme-valkey-kit/
-├── components/
-│   └── hephaestus/
-│       ├── domain/
-│       ├── contract/
-│       └── agent/
+│   ├── app/
+│   ├── server/
+│   ├── foundationdb/
+│   ├── nats/
+│   ├── postgres/
+│   ├── s3/
+│   ├── typesense/
+│   └── valkey/
 ├── apps/
 │   └── example/
 ├── servers/
-│   ├── configs/
-│   │   └── example-server.jsonc
-│   └── example-server/
+│   └── example/
+│       └── config/
+│           └── example-server.jsonc
 └── workers/
-    └── example-worker/
+    └── example/
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed runtime model.
+See [the architecture guide](docs/concepts/architecture.md) for the detailed
+runtime model and ownership rules.
 
 ## Kits
 
@@ -272,37 +270,24 @@ own their schemas, payloads, tenant policy, and business behavior.
 
 | Kit | Provides |
 | --- | --- |
-| [`reallyme-platform`](Cargo.toml) | Facade over the application kit, the default native server runtime, and opt-in infrastructure and Hephaestus kits. |
-| [`reallyme-app-kit`](kits/reallyme-app-kit/) | Host-neutral application metadata, configuration, health, lifecycle contributions, permissions, metrics naming, and adapter conventions. |
-| [`reallyme-server-kit`](kits/reallyme-server-kit/) | Native listeners, startup and shutdown, readiness, tracing, metrics, task supervision, HTTP, Connect RPC, optional gRPC, and WebSockets. |
+| [`reallyme-platform`](crates/platform/) | Least-dependency facade over the application kit and explicitly selected runtime and infrastructure integrations. |
+| [`reallyme-app-kit`](kits/app/) | Host-neutral application metadata, configuration, health, lifecycle contributions, permissions, metrics naming, and adapter conventions. |
+| [`reallyme-server-kit`](kits/server/) | Native listeners, startup and shutdown, readiness, tracing, metrics, task supervision, HTTP, Connect RPC, optional gRPC, and WebSockets. |
 
 ### Data and infrastructure
 
 | Kit | Service | Provides |
 | --- | --- | --- |
-| [`reallyme-foundationdb-kit`](kits/reallyme-foundationdb-kit/) | FoundationDB | Process-scoped client lifecycle, validated tenant handles, transaction and retry policies, tuple and range helpers, readiness, and optional tenant administration. |
-| [`reallyme-postgres-kit`](kits/reallyme-postgres-kit/) | PostgreSQL | TLS-first connection pooling, bounded timeouts, typed transactions, retry classification, migration locks, and readiness. |
-| [`reallyme-valkey-kit`](kits/reallyme-valkey-kit/) | Valkey | TLS-first connections, bounded commands and pipelines, namespaced binary keys, mandatory TTL policy, leases, counters, and readiness. |
-| [`reallyme-typesense-kit`](kits/reallyme-typesense-kit/) | Typesense | Validated endpoints and API keys, failover and retry policy, collection lifecycle, typed search and multi-search, bulk import, and readiness. |
-| [`reallyme-nats-kit`](kits/reallyme-nats-kit/) | NATS and JetStream | TLS-aware connections, bounded publishing, acknowledgements, deterministic deduplication, and durable pull consumers. |
-| [`reallyme-s3-kit`](kits/reallyme-s3-kit/) | S3-compatible object storage | Endpoint and object-key validation, AWS Signature Version 4, bounded uploads, and native or Cloudflare Workers clients. |
+| [`reallyme-foundationdb-kit`](kits/foundationdb/) | FoundationDB | Process-scoped client lifecycle, validated tenant handles, transaction and retry policies, tuple and range helpers, readiness, and optional tenant administration. |
+| [`reallyme-postgres-kit`](kits/postgres/) | PostgreSQL | TLS-first connection pooling, bounded timeouts, typed transactions, retry classification, migration locks, and readiness. |
+| [`reallyme-valkey-kit`](kits/valkey/) | Valkey | TLS-first connections, bounded commands and pipelines, namespaced binary keys, mandatory TTL policy, leases, counters, and readiness. |
+| [`reallyme-typesense-kit`](kits/typesense/) | Typesense | Validated endpoints and API keys, failover and retry policy, collection lifecycle, typed search and multi-search, bulk import, and readiness. |
+| [`reallyme-nats-kit`](kits/nats/) | NATS and JetStream | TLS-aware connections, bounded publishing, acknowledgements, deterministic deduplication, and durable pull consumers. |
+| [`reallyme-s3-kit`](kits/s3/) | S3-compatible object storage | Endpoint and object-key validation, AWS Signature Version 4, bounded uploads, and native or Cloudflare Workers clients. |
 
 Connector kits deliberately stop at the infrastructure boundary. Product event
 subjects, database schemas, collection definitions, object naming policy, and
 serialization stay with the application that owns them.
-
-## Hephaestus
-
-Platform bundles the Hephaestus node agent as a first-party operational
-component. Hephaestus is ReallyMe's deployment path for Platform installations,
-but applications and servers do not depend on it and may be deployed through
-another system.
-
-The agent, its wire contract, and its host-neutral domain types live together
-under [`components/hephaestus/`](components/hephaestus/). The Hephaestus
-controller consumes those versioned components while remaining a separate
-application. This keeps the Platform checkout buildable without private
-controller or company infrastructure code.
 
 ## Status
 

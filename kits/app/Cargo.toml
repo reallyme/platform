@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "reallyme-app-kit"
+description = "Host-neutral application contracts and conventions for ReallyMe Platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["application", "architecture", "connect-rpc", "grpc", "cloudflare-workers"]
+categories = ["development-tools"]
+publish = ["crates-io"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+
+[dependencies]
+metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
