@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 /target
 target/
 **/target/
@@ -9,11 +12,7 @@ target/
 **/*.crate
 .DS_Store
 **/.DS_Store
-.codex/
-.claude/
 .wrangler/
-**/.codex/
-**/.claude/
 
 # Cargo credentials are machine-local and may grant registry publish access.
 **/.cargo/credentials
@@ -24,12 +23,17 @@ target/
 .env.*
 **/.env
 **/.env.*
+**/.dev.vars
+**/.dev.vars.*
 !/.env.example
 !/.env.sample
 !/.env.template
 !**/.env.example
 !**/.env.sample
 !**/.env.template
+!**/.dev.vars.example
+!**/.dev.vars.sample
+!**/.dev.vars.template
 **/*.local.env
 **/*.secret
 **/*.secret.*
@@ -49,13 +53,22 @@ target/
 **/*-signing-key.pem
 **/id_rsa
 **/id_ed25519
+**/*.key
 **/*.p12
 **/*.pfx
 **/*.jks
 **/*.keystore
+**/*.mobileprovision
 **/*service-account*.json
 **/*service_account*.json
 **/*credentials*.json
+**/.netrc
+**/.npmrc
+**/.pypirc
+**/.aws/
+**/.config/gcloud/
+**/.kube/config
+**/.docker/config.json
 
 # Local persistence, logs, and infrastructure state can contain PII or secrets.
 **/*.sqlite
@@ -66,28 +79,28 @@ target/
 **/*.tfstate
 **/*.tfstate.*
 **/*.tfvars
+**/*.tfplan
 **/.terraform/
 proptest-regressions/
-/AGENTS.md
-/ENGINEERING_STANDARDS.md
+**/AGENTS.md
+**/ENGINEERING_STANDARDS.md
+/release-attestation/
 /workers/*/build
+/.pnpm-store/
 **/.wrangler/
 **/node_modules/
-
-# Claude review ignore rules are defined in .claudeignore
+**/.direnv/
+**/.envrc
 
 # Keep generated Rust/build artifacts out of git tooling and local commits.
-# The two checked-in contract crates below are an intentional exception: their
-# generated API surface is reviewed together with the schema and distributed
-# wherever the contract crate is packaged.
+# The checked-in example contract is an intentional exception: its generated
+# API surface is reviewed together with the schema and distributed with the crate.
 **/generated
 **/generated/**
 **/src/generated
 **/src/generated/**
 !apps/example/contract/src/generated/
 !apps/example/contract/src/generated/**
-!components/hephaestus/contract/src/generated/
-!components/hephaestus/contract/src/generated/**
 **/src/pb
 **/src/pb/**
 **/src/prost

@@ -1,0 +1,177 @@
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
+
+use axum::body::Body;
+use axum::http::{HeaderValue, Request};
+use axum::response::{IntoResponse, Response};
+use pin_project_lite::pin_project;
+use tower::{Layer, Service};
+
+use crate::observability::{
+    HttpMethodLabel, HttpRejectionReason, MetricRouteTemplateLabel,
+    record_http_request_rejected_for_route_template,
+};
+use crate::transport::TraceId;
+
+use super::super::ids::{X_TRACE_ID, trace_id_from_headers};
+use super::super::response::JsonErrorResponse;
+use super::listener::listener_name_for_request;
+
+/// Layer that validates or replaces the trace ID.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TraceIdLayer;
+
+/// Creates middleware that validates or replaces the trace ID.
+///
+/// Policy:
+/// - if a valid trace ID header is present, preserve it
+/// - if the header is missing, generate a new trace ID
+/// - if the header is malformed, replace it with a newly generated trace ID
+///
+/// Trace IDs are transport-correlation hints only. They must never be trusted
+/// for security decisions, authorization, tenancy, or identity.
+pub fn trace_id_layer() -> TraceIdLayer {
+    TraceIdLayer
+}
+
+impl<S> Layer<S> for TraceIdLayer {
+    type Service = TraceIdService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        TraceIdService { inner }
+    }
+}
+
+#[derive(Clone)]
+pub struct TraceIdService<S> {
+    inner: S,
+}
+
+impl<S> Service<Request<Body>> for TraceIdService<S>
+where
+    S: Service<Request<Body>, Response = Response, Error = Infallible> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response;
+    type Error = Infallible;
+    type Future = TraceIdResponseFuture<S::Future>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: Request<Body>) -> Self::Future {
+        if let Some(header_value) = request.headers().get(X_TRACE_ID)
+            && TraceId::try_from(header_value).is_err()
+        {
+            let route_template = MetricRouteTemplateLabel::unknown();
+            record_http_request_rejected_for_route_template(
+                listener_name_for_request(&request),
+                HttpMethodLabel::from_method(request.method()),
+                &route_template,
+                HttpRejectionReason::MalformedTraceId,
+            );
+        }
+
+        let trace_id = trace_id_from_headers(request.headers()).unwrap_or_else(TraceId::generate);
+        let header_value = match trace_id.to_header_value() {
+            Ok(header_value) => header_value,
+            Err(_) => {
+                return TraceIdResponseFuture::ready(
+                    JsonErrorResponse::internal_server_error().into_response(),
+                );
+            }
+        };
+        request.extensions_mut().insert(trace_id);
+        request
+            .headers_mut()
+            .insert(X_TRACE_ID, header_value.clone());
+        let response_future = self.inner.call(request);
+
+        TraceIdResponseFuture::new(response_future, trace_id, header_value)
+    }
+}
+
+pin_project! {
+    /// Response future for [`TraceIdService`].
+    pub struct TraceIdResponseFuture<F> {
+        #[pin]
+        state: TraceIdResponseFutureState<F>,
+    }
+}
+
+pin_project! {
+    #[project = TraceIdResponseFutureStateProj]
+    enum TraceIdResponseFutureState<F> {
+        Inner {
+            #[pin]
+            inner: F,
+            trace_id: TraceId,
+            header_value: Option<HeaderValue>,
+        },
+        Ready {
+            response: Option<Response>,
+        },
+    }
+}
+
+impl<F> TraceIdResponseFuture<F> {
+    fn new(inner: F, trace_id: TraceId, header_value: HeaderValue) -> Self {
+        Self {
+            state: TraceIdResponseFutureState::Inner {
+                inner,
+                trace_id,
+                header_value: Some(header_value),
+            },
+        }
+    }
+
+    fn ready(response: Response) -> Self {
+        Self {
+            state: TraceIdResponseFutureState::Ready {
+                response: Some(response),
+            },
+        }
+    }
+}
+
+impl<F> Future for TraceIdResponseFuture<F>
+where
+    F: Future<Output = Result<Response, Infallible>>,
+{
+    type Output = Result<Response, Infallible>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.project().state.project() {
+            TraceIdResponseFutureStateProj::Inner {
+                inner,
+                trace_id,
+                header_value,
+            } => {
+                let mut response = ready!(inner.poll(cx))?;
+
+                response.extensions_mut().insert(*trace_id);
+                if !response.headers().contains_key(X_TRACE_ID)
+                    && let Some(header_value) = header_value.take()
+                {
+                    response.headers_mut().insert(X_TRACE_ID, header_value);
+                }
+
+                Poll::Ready(Ok(response))
+            }
+            TraceIdResponseFutureStateProj::Ready { response } => {
+                let response = match response.take() {
+                    Some(response) => response,
+                    None => JsonErrorResponse::internal_server_error().into_response(),
+                };
+
+                Poll::Ready(Ok(response))
+            }
+        }
+    }
+}

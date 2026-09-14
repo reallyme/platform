@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "reallyme-server-kit"
+description = "Native server runtime and production lifecycle primitives for ReallyMe Platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["server", "axum", "connect-rpc", "grpc", "observability"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+publish = ["crates-io"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+
+[features]
+default = ["http", "connect", "websocket", "metrics"]
+connect = ["http"]
+http = [
+    "metrics",
+    "dep:axum",
+    "dep:pin-project-lite",
+    "dep:tower",
+    "dep:tower-http",
+]
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus", "dep:metrics-util"]
+testing = ["http", "dep:axum-test"]
+tonic-grpc = ["http", "dep:tokio-stream", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection"]
+websocket = ["http", "axum/ws", "dep:bytes"]
+
+[dependencies]
+axum = { workspace = true, optional = true }
+axum-test = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+metrics-util = { workspace = true, optional = true }
+subtle.workspace = true
+opentelemetry.workspace = true
+bytes = { workspace = true, optional = true }
+pin-project-lite = { workspace = true, optional = true }
+reallyme-app-kit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tonic-health = { workspace = true, optional = true }
+tonic-reflection = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+axum-test.workspace = true
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+
+[lints]
+workspace = true

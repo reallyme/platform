@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+packages:
+  - .
+
+# CI installs the exact pinned pnpm version before validating the lockfile.
+# Prevent pnpm from recursively downloading itself and prepending a second
+# package-manager lock document to this dependency lockfile.
+pmOnFail: ignore
+
+allowBuilds:
+  esbuild: true
+  workerd: true

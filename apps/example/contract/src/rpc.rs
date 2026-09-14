@@ -1,5 +1,4 @@
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
-//
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Feature-neutral RPC identity metadata for the example app contract.
@@ -66,29 +65,5 @@ pub const EXAMPLE_HELLO_RPC: ExampleRpcMethodPath = ExampleRpcMethodPath::new(
 );
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        EXAMPLE_HELLO_CONNECT_RPC_PATH, EXAMPLE_HELLO_RPC, EXAMPLE_HELLO_RPC_METHOD_NAME,
-        EXAMPLE_HELLO_RPC_PATH, EXAMPLE_RPC_SERVICE_NAME,
-    };
-
-    #[test]
-    fn example_rpc_path_is_feature_neutral() {
-        assert_eq!(
-            EXAMPLE_RPC_SERVICE_NAME,
-            "reallyme.example.v1.ExampleService",
-        );
-        assert_eq!(EXAMPLE_HELLO_RPC_METHOD_NAME, "Hello");
-        assert_eq!(
-            EXAMPLE_HELLO_RPC_PATH,
-            "/reallyme.example.v1.ExampleService/Hello",
-        );
-        assert_eq!(EXAMPLE_HELLO_CONNECT_RPC_PATH, EXAMPLE_HELLO_RPC_PATH);
-        assert_eq!(EXAMPLE_HELLO_RPC.service_name(), EXAMPLE_RPC_SERVICE_NAME);
-        assert_eq!(
-            EXAMPLE_HELLO_RPC.method_name(),
-            EXAMPLE_HELLO_RPC_METHOD_NAME,
-        );
-        assert_eq!(EXAMPLE_HELLO_RPC.path(), EXAMPLE_HELLO_RPC_PATH);
-    }
-}
+#[path = "rpc_tests.rs"]
+mod tests;

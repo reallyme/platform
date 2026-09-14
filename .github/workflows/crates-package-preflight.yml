@@ -1,4 +1,5 @@
-# SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
 
 name: Crates Package Preflight
 
@@ -11,7 +12,7 @@ on:
         description: Release version without a leading v
         required: true
         type: string
-        default: 0.1.0
+        default: 0.2.0
 
 concurrency:
   group: crates-package-preflight-${{ inputs.version }}-${{ github.sha }}
@@ -57,7 +58,7 @@ jobs:
           RELEASE_SHA: ${{ github.sha }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_SOURCE_WRITE_GITHUB_OUTPUT: "1"
-        run: node scripts/verify_release_source.mjs
+        run: node scripts/release/verify_release_source.mjs
 
   crates-package:
     name: Review crates.io packages
@@ -86,6 +87,24 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
+
+      - name: Set up pnpm and Node for Worker validation
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          runtime: node@24
+          cache: true
+          cache-dependency-path: workers/example/pnpm-lock.yaml
+          working-directory: workers/example
+          install: false
+
+      - name: Run shared ReallyMe release-readiness policy
+        env:
+          REALLYME_RELEASE_READINESS_REQUIRE_TRACKED: "1"
+        run: >-
+          npm exec --yes
+          --allow-git=root
+          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          -- reallyme-release-readiness
 
       - name: Install Buf
         shell: bash
@@ -131,6 +150,9 @@ jobs:
           cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked
           cargo install connectrpc-codegen --version "$CONNECTRPC_CODEGEN_VERSION" --locked
 
+      - name: Install pinned Worker build tool
+        run: cargo install worker-build --version 0.8.5 --locked
+
       - name: Install cargo-deny
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
@@ -147,7 +169,7 @@ jobs:
           tool: cargo-machete@${{ env.CARGO_MACHETE_VERSION }}
 
       - name: Generate Rust contracts
-        run: scripts/generate-rust-contracts.sh
+        run: scripts/generation/generate-rust-contracts.sh
 
       - name: Verify minimum supported Rust version
         run: |
@@ -155,29 +177,29 @@ jobs:
           cargo +1.96.0 check --locked --workspace --all-features
 
       - name: Run repository release gates
-        run: scripts/local-audit.sh --contracts-generated
+        run: scripts/release-readiness/check.sh --contracts-generated
 
       - name: Check release version and publish order
         env:
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
-        run: node scripts/publish_crates_in_order.mjs order
+        run: node scripts/release/publish_crates_in_order.mjs order
 
       - name: Inspect normalized crate archives and dry-run publication
         env:
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
-        run: node scripts/publish_crates_in_order.mjs inspect
+        run: node scripts/release/publish_crates_in_order.mjs inspect
 
       - name: Revalidate the exact reviewed source tree
         env:
           RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
-        run: node scripts/verify_release_source.mjs
+        run: node scripts/release/verify_release_source.mjs
 
       - name: Write reviewed package attestation
         env:
           RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
-        run: node scripts/write_release_attestation.mjs
+        run: node scripts/release/write_release_attestation.mjs
 
       - name: Upload reviewed package attestation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -197,6 +219,6 @@ jobs:
             echo
             echo "- Distribution: ReallyMe Platform ${RELEASE_VERSION}"
             echo "- Commit: \`${RELEASE_SHA}\`"
-            echo '- Public crates: 12'
+          echo '- Public crates: 9'
             echo "- Attestation run ID: \`${GITHUB_RUN_ID}\`"
           } >> "$GITHUB_STEP_SUMMARY"

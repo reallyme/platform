@@ -10,7 +10,7 @@ Platform repository.
 
 ## Reference Worker
 
-[`example-worker/`](example-worker/) runs the reference application on
+[`example/`](example/) runs the reference application on
 Cloudflare Workers. It demonstrates the complete edge boundary:
 
 - a `workers-rs` fetch entrypoint;
@@ -33,5 +33,5 @@ lifecycle, while the Worker owns its entrypoint, routing, bindings, and
 platform-specific response policy. Listeners, process shutdown, and native
 readiness supervision do not exist at this boundary.
 
-See the [example Worker README](example-worker/) for local development,
+See the [example Worker README](example/) for local development,
 deployment, and validation commands.

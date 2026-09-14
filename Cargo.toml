@@ -1,62 +1,26 @@
-[package]
-name = "reallyme-platform"
-description = "Application architecture for taking Rust services from framework to production"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-keywords = ["application", "architecture", "server", "connect-rpc", "cloudflare-workers"]
-categories = ["asynchronous", "development-tools", "web-programming"]
-publish = ["crates-io"]
-readme = "README.md"
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
-
-[features]
-default = ["native-server"]
-native-server = ["dep:reallyme-server-kit", "reallyme-server-kit/default"]
-foundationdb = ["dep:reallyme-foundationdb-kit"]
-hephaestus = ["dep:reallyme-hephaestus-contract", "dep:reallyme-hephaestus-domain"]
-nats = ["dep:reallyme-nats-kit"]
-postgres = ["dep:reallyme-postgres-kit"]
-s3 = ["dep:reallyme-s3-kit"]
-typesense = ["dep:reallyme-typesense-kit"]
-valkey = ["dep:reallyme-valkey-kit"]
-
-[dependencies]
-reallyme-app-kit.workspace = true
-reallyme-foundationdb-kit = { workspace = true, optional = true }
-reallyme-hephaestus-contract = { workspace = true, optional = true }
-reallyme-hephaestus-domain = { workspace = true, optional = true }
-reallyme-nats-kit = { workspace = true, optional = true }
-reallyme-postgres-kit = { workspace = true, optional = true }
-reallyme-s3-kit = { workspace = true, optional = true }
-reallyme-server-kit = { workspace = true, optional = true }
-reallyme-typesense-kit = { workspace = true, optional = true }
-reallyme-valkey-kit = { workspace = true, optional = true }
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
 
 [workspace]
 members = [
     "apps/example",
     "apps/example/contract",
-    "components/hephaestus/contract",
-    "components/hephaestus/domain",
-    "components/hephaestus/agent",
-    "kits/reallyme-app-kit",
-    "kits/reallyme-foundationdb-kit",
-    "kits/reallyme-postgres-kit",
-    "kits/reallyme-nats-kit",
-    "kits/reallyme-typesense-kit",
-    "kits/reallyme-server-kit",
-    "kits/reallyme-valkey-kit",
-    "kits/reallyme-s3-kit",
-    "servers/example-server",
-    "workers/example-worker",
+    "crates/platform",
+    "kits/app",
+    "kits/foundationdb",
+    "kits/nats",
+    "kits/postgres",
+    "kits/s3",
+    "kits/server",
+    "kits/typesense",
+    "kits/valkey",
+    "servers/example",
+    "workers/example",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.96.0"
 license = "MIT OR Apache-2.0"
@@ -122,18 +86,16 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Workspace-local crates use the same release version and are declared here so
 # member manifests express only their feature requirements, not path/version policy.
-example-app = { path = "apps/example", version = "0.1.1", default-features = false }
-reallyme-app-kit = { path = "kits/reallyme-app-kit", version = "0.1.1" }
-reallyme-example-contract = { path = "apps/example/contract", version = "0.1.1" }
-reallyme-foundationdb-kit = { path = "kits/reallyme-foundationdb-kit", version = "0.1.1" }
-reallyme-hephaestus-contract = { path = "components/hephaestus/contract", version = "0.1.1" }
-reallyme-hephaestus-domain = { path = "components/hephaestus/domain", version = "0.1.1" }
-reallyme-nats-kit = { path = "kits/reallyme-nats-kit", version = "0.1.1" }
-reallyme-postgres-kit = { path = "kits/reallyme-postgres-kit", version = "0.1.1" }
-reallyme-s3-kit = { path = "kits/reallyme-s3-kit", version = "0.1.1" }
-reallyme-server-kit = { path = "kits/reallyme-server-kit", version = "0.1.1", default-features = false }
-reallyme-typesense-kit = { path = "kits/reallyme-typesense-kit", version = "0.1.1" }
-reallyme-valkey-kit = { path = "kits/reallyme-valkey-kit", version = "0.1.1" }
+example-app = { path = "apps/example", version = "0.2.0", default-features = false }
+reallyme-app-kit = { path = "kits/app", version = "0.2.0" }
+reallyme-example-contract = { path = "apps/example/contract", version = "0.2.0" }
+reallyme-foundationdb-kit = { path = "kits/foundationdb", version = "0.2.0" }
+reallyme-nats-kit = { path = "kits/nats", version = "0.2.0" }
+reallyme-postgres-kit = { path = "kits/postgres", version = "0.2.0" }
+reallyme-s3-kit = { path = "kits/s3", version = "0.2.0" }
+reallyme-server-kit = { path = "kits/server", version = "0.2.0", default-features = false }
+reallyme-typesense-kit = { path = "kits/typesense", version = "0.2.0" }
+reallyme-valkey-kit = { path = "kits/valkey", version = "0.2.0" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
@@ -142,5 +104,8 @@ panic = "deny"
 todo = "deny"
 dbg_macro = "deny"
 
-[lints]
-workspace = true
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+overflow-checks = true
