@@ -139,7 +139,7 @@ reallyme-server host
   -> server-kit adds /healthz, /readyz, /version, /metrics
 
 Cloudflare Worker /hello or Connect RPC path
-  -> workers/example-worker fetch entrypoint
+  -> workers/example fetch entrypoint
   -> Worker-host route adapter
   -> app::hello(...)
   -> Worker response
@@ -229,7 +229,7 @@ The local server composition mounts this app:
 
 ```text
 cargo run -p example-server -- \
-  --config servers/configs/example-server.jsonc
+  --config servers/example/config/example-server.jsonc
 ```
 
 Server observability config supports request-completion logging control through
@@ -270,7 +270,7 @@ hardcoding listener behavior in this app.
 The concrete Worker host lives in:
 
 ```text
-workers/example-worker/
+workers/example/
 ```
 
 It imports this app with `default-features = false` and `features = ["connect"]`,
@@ -280,7 +280,7 @@ Cloudflare dependency in the app crate.
 Run locally:
 
 ```text
-cd workers/example-worker
+cd workers/example
 rustup target add wasm32-unknown-unknown
 cargo install worker-build
 wrangler dev --config wrangler.jsonc
