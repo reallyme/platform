@@ -32,13 +32,13 @@ if (requireTrackedFiles) {
   assertReallyMeVendoredCorePolicy({
     scriptPath: "scripts/check_release_readiness.mjs",
     corePath: "scripts/release-readiness/core.mjs",
-    version: "0.6.1",
+    version: "0.6.2",
   });
 }
 
 assertContains(
   "scripts/release-readiness/core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.1"',
+  'RELEASE_READINESS_VERSION = "0.6.2"',
 );
 assertWorkflowActionsPinned();
 assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });

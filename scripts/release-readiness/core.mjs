@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_VERSION = "0.6.1";
+export const RELEASE_READINESS_VERSION = "0.6.2";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -1448,8 +1448,10 @@ export function createReleaseReadinessContext(options) {
         ],
       },
       "application": {
-        required: ["crates", "contracts", "conformance", "docs", "scripts", ".github"],
+        required: ["contracts", "conformance", "docs", "scripts", ".github"],
+        requiredAny: [["app", "crates"]],
         permitted: [
+          "app",
           "crates",
           "contracts",
           "conformance",
@@ -1748,6 +1750,15 @@ export function createReleaseReadinessContext(options) {
         fail(`repository shape archetype ${archetype} requires lane ${lane}`);
       }
     }
+    for (const alternatives of archetypePolicy.requiredAny ?? []) {
+      if (!alternatives.some((lane) => requiredLaneSet.has(lane))) {
+        fail(
+          `repository shape archetype ${archetype} requires at least one implementation lane from ${alternatives.join(
+            ", ",
+          )}`,
+        );
+      }
+    }
 
     if (!Array.isArray(exceptions)) {
       fail("repository shape exceptions must be an array");
@@ -1994,32 +2005,72 @@ export function createReleaseReadinessContext(options) {
       fail("repository shape proto-codec requires a canonical proto crate");
     }
     const protoFiles = governedFiles.filter((path) => path.endsWith(".proto"));
-    const usesAppOwnedProto =
-      archetype === "platform-workspace" || archetype === "application-collection";
-    if (usesAppOwnedProto && (protoCrates.length !== 0 || protoCodecCrates.length !== 0)) {
-      fail(`repository shape ${archetype} keeps protobuf ownership in application contracts`);
-    }
-    if (!usesAppOwnedProto && protoFiles.length !== 0 && protoCrates.length === 0) {
-      fail("repository shape found protobuf schemas without a declared canonical proto crate");
-    }
-    if (
-      !usesAppOwnedProto &&
-      protoCrates.length === 1 &&
-      protoFiles.some((path) => !pathIsInside(path, protoCrates[0][0]))
-    ) {
-      fail("repository shape requires every protobuf schema inside crates/proto");
-    }
-    if (
-      usesAppOwnedProto &&
-      protoFiles.some((path) => {
-        const expectedPattern =
-          /^apps\/[A-Za-z0-9][A-Za-z0-9_.-]*\/contract\/proto\/.+[.]proto$/u;
-        return !expectedPattern.test(path);
-      })
-    ) {
-      fail(
-        `repository shape ${archetype} requires protobuf schemas in apps/<app>/contract/proto`,
-      );
+    const appProtoPattern =
+      /^apps\/[A-Za-z0-9][A-Za-z0-9_.-]*\/contract\/proto\/.+[.]proto$/u;
+    const standaloneAppProtoPattern = /^app\/contract\/proto\/.+[.]proto$/u;
+    const isCanonicalProto = (path) => pathIsInside(path, "crates/proto");
+    const isApplicationProto = (path) => appProtoPattern.test(path);
+    const isStandaloneApplicationProto = (path) =>
+      standaloneAppProtoPattern.test(path);
+
+    if (archetype === "platform-workspace") {
+      if (protoCrates.length !== 0 || protoCodecCrates.length !== 0) {
+        fail(
+          "repository shape platform-workspace keeps protobuf ownership in application contracts",
+        );
+      }
+      if (protoFiles.some((path) => !isApplicationProto(path))) {
+        fail(
+          "repository shape platform-workspace requires protobuf schemas in apps/<app>/contract/proto",
+        );
+      }
+    } else if (archetype === "application") {
+      if (
+        protoFiles.some((path) => isCanonicalProto(path)) &&
+        protoCrates.length === 0
+      ) {
+        fail(
+          "repository shape application found shared Rust protobuf schemas without a declared canonical proto crate",
+        );
+      }
+      if (
+        protoFiles.some(
+          (path) =>
+            !isCanonicalProto(path) && !isStandaloneApplicationProto(path),
+        )
+      ) {
+        fail(
+          "repository shape application requires Rust/shared protobuf schemas in crates/proto and app-owned schemas in app/contract/proto",
+        );
+      }
+    } else if (archetype === "application-collection") {
+      if (
+        protoFiles.some((path) => isCanonicalProto(path)) &&
+        protoCrates.length === 0
+      ) {
+        fail(
+          "repository shape application-collection found shared protobuf schemas without a declared canonical proto crate",
+        );
+      }
+      if (
+        protoFiles.some(
+          (path) => !isCanonicalProto(path) && !isApplicationProto(path),
+        )
+      ) {
+        fail(
+          "repository shape application-collection requires shared protobuf schemas in crates/proto and application-owned schemas in apps/<app>/contract/proto",
+        );
+      }
+    } else {
+      if (protoFiles.length !== 0 && protoCrates.length === 0) {
+        fail("repository shape found protobuf schemas without a declared canonical proto crate");
+      }
+      if (
+        protoCrates.length === 1 &&
+        protoFiles.some((path) => !isCanonicalProto(path))
+      ) {
+        fail("repository shape requires every protobuf schema inside crates/proto");
+      }
     }
     if (
       governedFiles.some(

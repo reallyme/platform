@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: 1.98.1
           components: clippy,rustfmt
@@ -109,7 +109,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          --package=github:reallyme/release-readiness#985cf16f866bcdbd384edd8a9b6f332b38c5eb52
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
@@ -174,7 +174,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: 1.98.1
           components: clippy,rustfmt
@@ -239,7 +239,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          --package=github:reallyme/release-readiness#985cf16f866bcdbd384edd8a9b6f332b38c5eb52
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
