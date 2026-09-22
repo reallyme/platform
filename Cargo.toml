@@ -81,7 +81,7 @@ toml = "1.1.5"
 url = "2"
 nkeys = "0.4.5"
 uuid = { version = "1", features = ["serde"] }
-worker = { version = "=0.8.5", default-features = false, features = ["d1"] }
+worker = { version = "=0.8.6", default-features = false, features = ["d1"] }
 zeroize = { version = "1", features = ["derive"] }
 
 # Workspace-local crates use the same release version and are declared here so
