@@ -62,7 +62,7 @@ tonic = "0.14"
 tonic-health = "0.14"
 tonic-prost = "0.14"
 tonic-reflection = "0.14"
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
 bytes = "1"
 pin-project-lite = "0.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["gzip", "http2", "json", "query", "rustls"] }
