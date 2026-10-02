@@ -109,7 +109,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#985cf16f866bcdbd384edd8a9b6f332b38c5eb52
+          --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
@@ -239,7 +239,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#985cf16f866bcdbd384edd8a9b6f332b38c5eb52
+          --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
