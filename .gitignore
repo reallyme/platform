@@ -125,3 +125,8 @@ proptest-regressions/
 *.gcno
 *.profraw
 *.d
+
+/AGENTS.md
+/agents.md
+/.claude/
+/.codex/
