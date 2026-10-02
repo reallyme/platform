@@ -62,7 +62,7 @@ tonic = "0.14"
 tonic-health = "0.14"
 tonic-prost = "0.14"
 tonic-reflection = "0.14"
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
 bytes = "1"
 pin-project-lite = "0.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["gzip", "http2", "json", "query", "rustls"] }
@@ -75,7 +75,7 @@ time = { version = "0.3", default-features = false, features = ["formatting", "m
 tower = { version = "0.5", features = ["limit", "timeout"] }
 tower-http = { version = "0.7", features = ["cors", "limit", "request-id", "timeout", "trace"] }
 tracing = "0.1"
-tracing-opentelemetry = { version = "0.33", default-features = false }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 toml = "1.1.5"
 url = "2"
