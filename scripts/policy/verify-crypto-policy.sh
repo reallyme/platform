@@ -27,7 +27,7 @@ if ! rg -n '^reallyme-crypto = \{ version = "=0\.3\.9", default-features = false
   status=1
 fi
 
-if ! rg -n '^reallyme-codec = \{ version = "0\.2\.3", default-features = false \}' Cargo.toml >/dev/null; then
+if ! rg -n '^reallyme-codec = \{ version = "0\.3\.0", default-features = false \}' Cargo.toml >/dev/null; then
   printf 'workspace reallyme-codec dependency must come from crates.io and stay centralized\n' >&2
   status=1
 fi
