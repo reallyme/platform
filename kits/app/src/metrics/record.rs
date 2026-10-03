@@ -9,19 +9,19 @@ use metrics::{Counter, counter};
 use super::{AppMetricName, AppMetricNamespace};
 
 const APP_EVENT_COUNTER: &str = "reallyme_app_events_total";
+const APP_METRIC_SERIES_REJECTED_COUNTER: &str = "reallyme_app_metric_series_rejected_total";
 const APP_METRIC_NAMESPACE_LABEL: &str = "app_namespace";
 const APP_METRIC_NAME_LABEL: &str = "app_metric";
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
-struct StaticMetricLabelPair {
-    namespace: &'static str,
-    name: &'static str,
-}
+// The process-wide cap bounds both our retained handles and the exporter's
+// registered series, even if callers generate many individually valid names.
+const MAX_APP_METRIC_SERIES: usize = 1_024;
 
 #[derive(Default)]
 struct AppMetricCounterCache {
-    interned_labels: HashMap<String, &'static str>,
-    counters: HashMap<StaticMetricLabelPair, Counter>,
+    counters: HashMap<String, HashMap<String, Counter>>,
+    series_count: usize,
+    rejected_counter: Option<Counter>,
 }
 
 fn metric_cache() -> &'static Mutex<AppMetricCounterCache> {
@@ -30,42 +30,52 @@ fn metric_cache() -> &'static Mutex<AppMetricCounterCache> {
     CACHE.get_or_init(|| Mutex::new(AppMetricCounterCache::default()))
 }
 
-fn intern_label(cache: &mut AppMetricCounterCache, label: &str) -> &'static str {
-    if let Some(label) = cache.interned_labels.get(label).copied() {
-        return label;
-    }
-
-    let boxed = label.to_owned().into_boxed_str();
-    let leaked: &'static str = Box::leak(boxed);
-    cache.interned_labels.insert(leaked.to_owned(), leaked);
-
-    leaked
+fn rejected_counter(cache: &mut AppMetricCounterCache) -> Counter {
+    cache
+        .rejected_counter
+        .get_or_insert_with(|| counter!(APP_METRIC_SERIES_REJECTED_COUNTER))
+        .clone()
 }
 
-fn metric_counter(namespace: &AppMetricNamespace, name: &AppMetricName) -> Counter {
+fn metric_counter(
+    cache: &Mutex<AppMetricCounterCache>,
+    namespace: &AppMetricNamespace,
+    name: &AppMetricName,
+) -> Counter {
     let namespace = namespace.as_str();
     let name = name.as_str();
 
-    let cache = metric_cache();
     let mut cache = match cache.lock() {
         Ok(cache) => cache,
         Err(error) => error.into_inner(),
     };
 
-    let namespace = intern_label(&mut cache, namespace);
-    let name = intern_label(&mut cache, name);
-    let key = StaticMetricLabelPair { namespace, name };
-
-    if let Some(counter) = cache.counters.get(&key) {
+    if let Some(counter) = cache
+        .counters
+        .get(namespace)
+        .and_then(|names| names.get(name))
+    {
         return counter.clone();
+    }
+
+    let Some(next_series_count) = cache.series_count.checked_add(1) else {
+        return rejected_counter(&mut cache);
+    };
+    if next_series_count > MAX_APP_METRIC_SERIES {
+        return rejected_counter(&mut cache);
     }
 
     let counter = counter!(
         APP_EVENT_COUNTER,
-        APP_METRIC_NAMESPACE_LABEL => namespace,
-        APP_METRIC_NAME_LABEL => name,
+        APP_METRIC_NAMESPACE_LABEL => namespace.to_owned(),
+        APP_METRIC_NAME_LABEL => name.to_owned(),
     );
-    cache.counters.insert(key, counter.clone());
+    cache
+        .counters
+        .entry(namespace.to_owned())
+        .or_default()
+        .insert(name.to_owned(), counter.clone());
+    cache.series_count = next_series_count;
 
     counter
 }
@@ -73,11 +83,12 @@ fn metric_counter(namespace: &AppMetricNamespace, name: &AppMetricName) -> Count
 /// Records one app-level aggregate event.
 ///
 /// The metric instrument name is stable; app namespace and metric name are
-/// validated low-cardinality labels. App code must not use this for
+/// validated tokens with a process-wide series limit. App code must not use this for
 /// user-specific, request-specific, handle-specific, or otherwise unbounded
-/// labels.
+/// labels. Once the process-wide series budget is full, new pairs increment
+/// an unlabelled rejection counter; already registered pairs remain usable.
 pub fn record_app_metric_counter(namespace: &AppMetricNamespace, name: &AppMetricName) {
-    metric_counter(namespace, name).increment(1);
+    metric_counter(metric_cache(), namespace, name).increment(1);
 }
 
 /// Records one app-level aggregate event from static metric tokens.
@@ -95,3 +106,7 @@ pub fn record_app_metric_counter_by_name(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "record_tests.rs"]
+mod tests;
