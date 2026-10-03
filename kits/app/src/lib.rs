@@ -30,6 +30,12 @@ mod name_validator;
 pub mod ports;
 pub mod registration;
 
+#[cfg(feature = "native-http")]
+pub use adapters::{
+    BoundedHttpsClient, BoundedHttpsRequest, BoundedHttpsResponse, CapturedResponseHeader,
+    HttpsDispatchOutcome, HttpsExchangeLimits, HttpsMethod, HttpsOrigin, HttpsTransportError,
+    HttpsTransportErrorReason,
+};
 pub use adapters::{
     ConnectAdapterConventions, ConnectCodeGenerationWorkflow, ConnectJsonCompatibilityPolicy,
     ConnectProtocolEncoding, ConnectPublicEncodingPolicy, ConnectSchemaSource,

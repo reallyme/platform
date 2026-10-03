@@ -48,7 +48,7 @@ pub enum ServerRuntimeErrorKind {
 
 /// Operational source classification for runtime failures.
 ///
-/// This captures the useful part of Pingora's error taxonomy while preserving
+/// This captures Pingora's useful operational categories while preserving
 /// ReallyMe's stricter typed-error policy: sources are low-cardinality enums,
 /// not erased boxed errors or string context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

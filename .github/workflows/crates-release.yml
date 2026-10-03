@@ -108,15 +108,17 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: 1.98.1
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # Restore the reviewed build cache without saving Cargo's transient
-          # target/package trees after publication.
+          # Reuse dependency downloads without restoring ephemeral package
+          # verification trees into the certified publication workspace.
+          shared-key: release-registry
+          cache-targets: false
           save-if: false
 
       - name: Install Node

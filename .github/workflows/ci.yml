@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: 1.98.1
           components: clippy,rustfmt
@@ -95,7 +95,7 @@ jobs:
           node-version: "24"
 
       - name: Set up pnpm and Node for Worker validation
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
         with:
           runtime: node@24
           cache: true
@@ -109,7 +109,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
@@ -174,7 +174,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: 1.98.1
           components: clippy,rustfmt
@@ -225,7 +225,7 @@ jobs:
           node-version: "24"
 
       - name: Set up pnpm and Node for Worker validation
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
         with:
           runtime: node@24
           cache: true
@@ -239,7 +239,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#d313e4591b7db3fd94ce62d9b2855b3fd9e236eb
+          --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
