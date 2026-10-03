@@ -97,6 +97,13 @@ The native runtime is also opt-in:
 cargo add reallyme-platform --features native-server
 ```
 
+Native application adapters that need the bounded, zeroizing HTTPS transport
+can depend on the application kit directly:
+
+```console
+cargo add reallyme-app-kit --features native-http
+```
+
 Clone the repository and run the reference native server:
 
 ```console
@@ -271,7 +278,7 @@ own their schemas, payloads, tenant policy, and business behavior.
 | Kit | Provides |
 | --- | --- |
 | [`reallyme-platform`](crates/platform/) | Least-dependency facade over the application kit and explicitly selected runtime and infrastructure integrations. |
-| [`reallyme-app-kit`](kits/app/) | Host-neutral application metadata, configuration, health, lifecycle contributions, permissions, metrics naming, and adapter conventions. |
+| [`reallyme-app-kit`](kits/app/) | Host-neutral application metadata, configuration, health, lifecycle contributions, permissions, metrics naming, adapter conventions, and an opt-in bounded native HTTPS transport for sensitive request and response bytes. |
 | [`reallyme-server-kit`](kits/server/) | Native listeners, startup and shutdown, readiness, tracing, metrics, task supervision, HTTP, Connect RPC, optional gRPC, and WebSockets. |
 
 ### Data and infrastructure

@@ -4,7 +4,12 @@
 
 import { existsSync } from "node:fs";
 
-import { createReleaseReadinessContext } from "./release-readiness/core.mjs";
+const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
+if (typeof coreUrl !== "string" || coreUrl.length === 0) {
+  console.error("release readiness check failed: pinned core URL is unavailable");
+  process.exit(1);
+}
+const { createReleaseReadinessContext } = await import(coreUrl);
 
 const requireTrackedFiles =
   process.env.REALLYME_RELEASE_READINESS_REQUIRE_TRACKED === "1";
@@ -19,7 +24,7 @@ const {
   assertContains,
   assertNodeWorkflowJobsPinNode,
   assertRepositoryShapePolicy,
-  assertReallyMeVendoredCorePolicy,
+  assertReallyMeReleasePackagePolicy,
   assertRustSourcePolicy,
   assertSpdxHeaders,
   assertTextPolicy,
@@ -28,18 +33,10 @@ const {
   readText,
 } = context;
 
-if (requireTrackedFiles) {
-  assertReallyMeVendoredCorePolicy({
-    scriptPath: "scripts/check_release_readiness.mjs",
-    corePath: "scripts/release-readiness/core.mjs",
-    version: "0.6.1",
-  });
-}
-
-assertContains(
-  "scripts/release-readiness/core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.1"',
-);
+assertReallyMeReleasePackagePolicy({
+  scriptPath: "scripts/check_release_readiness.mjs",
+  version: "0.6.7",
+});
 assertWorkflowActionsPinned();
 assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
 assertCargoWorkspacePolicy({
@@ -69,10 +66,6 @@ assertSpdxHeaders({
     {
       path: "apps/example/contract/src/generated",
       reason: "generated",
-    },
-    {
-      path: "scripts/release-readiness/core.mjs",
-      reason: "vendored",
     },
   ],
   requireExclusionsMatched: true,

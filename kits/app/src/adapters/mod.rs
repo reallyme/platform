@@ -15,5 +15,11 @@ pub use connect::{
 };
 pub use grpc::GrpcAdapterConventions;
 pub use http::HttpAdapterConventions;
+#[cfg(feature = "native-http")]
+pub use http::{
+    BoundedHttpsClient, BoundedHttpsRequest, BoundedHttpsResponse, CapturedResponseHeader,
+    HttpsDispatchOutcome, HttpsExchangeLimits, HttpsMethod, HttpsOrigin, HttpsTransportError,
+    HttpsTransportErrorReason,
+};
 pub use server::ServerAdapterConventions;
 pub use workers::WorkersAdapterConventions;

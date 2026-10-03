@@ -19,6 +19,24 @@ App crates use this kit for reusable, typed conventions:
 - app metric namespace/name validation
 - host/transport adapter and port naming conventions
 
+Native application adapters that send sensitive request bodies may opt into
+the `native-http` feature. It provides a reusable HTTPS client constrained to
+one validated origin. The client rejects redirects, plaintext HTTP, authority
+changes, ambiguous relative targets, excessive timeouts, oversized request
+bodies, oversized response bodies, and oversized selected response headers.
+Encoded request targets are bounded at 8 KiB so reviewed percent-expanded
+relative targets fit without permitting unbounded request lines.
+Request copies and returned response data use zeroizing owners; debug output
+reports only safe metadata and byte counts. Failures distinguish validation or
+construction errors that are proven not dispatched from failures where the
+remote outcome is unknown.
+
+The transport deliberately does not define product routes, authentication
+protocols, status-code meaning, retries, or response parsing. Those policies
+belong in the owning application's adapter. In particular, callers must not
+retry a failure with an unknown remote outcome unless their operation has an
+application-owned idempotency guarantee.
+
 Connect/gRPC-shaped app contracts use Buf/protobuf as the canonical schema
 source. Per the Connect Rust guide, product apps must use `buf generate` for
 Rust RPC generation before Rust formatting and checks. Do not hide generation

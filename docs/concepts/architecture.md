@@ -103,7 +103,11 @@ crates remain direct dependencies of their consumers.
 Application cores own use cases, domain validation, application state, and the
 ports required to perform their work. They may use `reallyme-app-kit` for
 Platform's host-neutral application interfaces, lifecycle contracts, and
-conventions.
+conventions. A native adapter may explicitly enable app-kit's `native-http`
+feature for domain-neutral HTTPS mechanics: validated same-origin request
+targets, zeroizing owned bytes, bounded responses, and typed dispatch-outcome
+classification. Product routes, authentication rules, retries, and response
+interpretation remain application-owned.
 
 Application cores do not depend on Axum, Tonic, Connect implementations,
 `reallyme-server-kit`, Cloudflare Workers runtime APIs, listeners, shutdown

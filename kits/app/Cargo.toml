@@ -14,11 +14,26 @@ categories = ["development-tools"]
 publish = ["crates-io"]
 include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
 
+[features]
+default = []
+native-http = ["dep:bytes", "dep:reqwest", "dep:url", "dep:zeroize"]
+
 [dependencies]
+bytes = { workspace = true, optional = true }
 metrics.workspace = true
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+url = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

@@ -15,7 +15,9 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
-node scripts/check_release_readiness.mjs
+npm exec --yes --allow-git=root \
+  --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207 \
+  -- reallyme-release-readiness
 cargo fmt --all -- --check
 if [[ "${contracts_are_generated}" != true ]]; then
   scripts/generation/generate-rust-contracts.sh
