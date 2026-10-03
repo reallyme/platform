@@ -74,9 +74,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt,clippy
           targets: wasm32-unknown-unknown
 
@@ -154,20 +154,20 @@ jobs:
           cargo install connectrpc-codegen --version "$CONNECTRPC_CODEGEN_VERSION" --locked
 
       - name: Install pinned Worker build tool
-        run: cargo install worker-build --version 0.8.5 --locked
+        run: cargo install worker-build --version 0.8.7 --locked
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
 
       - name: Install cargo-machete
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-machete@${{ env.CARGO_MACHETE_VERSION }}
 
@@ -176,8 +176,8 @@ jobs:
 
       - name: Verify minimum supported Rust version
         run: |
-          rustup toolchain install 1.96.0 --profile minimal
-          cargo +1.96.0 check --locked --workspace --all-features
+          rustup toolchain install 1.99.0 --profile minimal
+          cargo +1.99.0 check --locked --workspace --all-features
 
       - name: Run repository release gates
         run: scripts/release-readiness/check.sh --contracts-generated

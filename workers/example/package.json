@@ -1,7 +1,7 @@
 {
   "name": "example-worker-tooling",
   "private": true,
-  "packageManager": "pnpm@12.3.4",
+  "packageManager": "pnpm@12.8.1",
   "scripts": {
     "dev": "wrangler dev --config wrangler.jsonc",
     "deploy": "wrangler deploy --config wrangler.jsonc",
@@ -9,6 +9,6 @@
     "worker:check": "wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "wrangler": "4.131.0"
+    "wrangler": "4.147.0"
   }
 }
