@@ -8,7 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
 if ! command -v worker-build >/dev/null 2>&1; then
-  printf 'worker-build 0.8.5 is required to validate the Worker bundle\n' >&2
+  printf 'worker-build 0.8.7 is required to validate the Worker bundle\n' >&2
   exit 1
 fi
 
