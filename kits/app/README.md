@@ -19,6 +19,12 @@ App crates use this kit for reusable, typed conventions:
 - app metric namespace/name validation
 - host/transport adapter and port naming conventions
 
+App event metrics accept stable namespace/name pairs and register at most 1,024
+distinct pairs per process. Once that budget is full, events for new pairs
+increment the unlabelled `reallyme_app_metric_series_rejected_total` counter;
+previously registered pairs continue to work. Use fixed names for app-level
+events, never user, request, or object identifiers.
+
 Native application adapters that send sensitive request bodies may opt into
 the `native-http` feature. It provides a reusable HTTPS client constrained to
 one validated origin. The client rejects redirects, plaintext HTTP, authority
