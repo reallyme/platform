@@ -11,12 +11,18 @@ use crate::response::WorkerRouteResponse;
 use crate::routing::{
     allowed_method_for_path, allowed_origin, is_connect_content_type, is_known_app_path,
     is_known_operational_path, is_valid_hello_request, parse_connect_timeout_values,
-    route_example_app, route_example_app_with_deadline, valid_operational_probe_headers,
-    valid_operational_probe_token,
+    route_example_app, route_example_app_with_deadline, valid_operational_probe_token,
 };
 use example_app::app::{ExampleAppConfig, new_context};
 use example_app::ports::ExamplePorts;
 use serde::Deserialize;
+
+fn valid_operational_probe_headers(headers: &[String], expected: &str) -> bool {
+    let [authorization] = headers else {
+        return false;
+    };
+    valid_operational_probe_token(authorization, expected)
+}
 
 #[derive(Deserialize)]
 struct HostParityCase {

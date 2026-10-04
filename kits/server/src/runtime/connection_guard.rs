@@ -141,12 +141,6 @@ impl BoundedTcpListener {
         bounded.force_close = Some(force_close);
         bounded
     }
-
-    #[cfg(all(test, feature = "tonic-grpc"))]
-    pub(super) fn with_grpc_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.grpc_idle_timeout = timeout;
-        self
-    }
 }
 
 impl Listener for BoundedTcpListener {

@@ -7,11 +7,15 @@ use crate::runtime::{HttpRateLimitScope, HttpRateLimitTierPolicy};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+fn indexes_are_consistent(state: &super::state::RateLimitBucketState) -> bool {
+    super::state::tests::indexes_are_consistent(state)
+}
+
 fn source_bucket_id(
     registry: &super::RateLimitRegistry,
     source_identity: RateLimitSourceIdentity,
 ) -> u64 {
-    registry.source_bucket_id(source_identity)
+    registry.source_bucket_id_with_prefix(source_identity, 64)
 }
 
 fn source(number: u8) -> RateLimitSourceIdentity {
@@ -63,7 +67,7 @@ fn sweep_reduces_bucket_count_after_ttl() {
 
     assert_eq!(buckets.len(), 0);
     assert!(buckets.by_tier.is_empty());
-    assert!(buckets.indexes_are_consistent());
+    assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
@@ -287,7 +291,7 @@ fn full_tier_evicts_its_least_recently_used_source() {
     assert!(entries.contains_key(&first_id));
     assert!(!entries.contains_key(&second_id));
     assert!(entries.contains_key(&third_id));
-    assert!(buckets.indexes_are_consistent());
+    assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
@@ -315,7 +319,7 @@ fn global_cap_keeps_a_bucket_for_each_configured_tier() {
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
     assert_eq!(buckets.by_tier.get(&first).expect("first tier").len(), 1);
     assert_eq!(buckets.by_tier.get(&second).expect("second tier").len(), 1);
-    assert!(buckets.indexes_are_consistent());
+    assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
@@ -353,7 +357,7 @@ fn global_eviction_preserves_recent_sources_and_each_tiers_last_bucket() {
     assert!(first_entries.contains_key(&source_bucket_id(&registry, source(1))));
     assert!(!first_entries.contains_key(&source_bucket_id(&registry, source(2))));
     assert_eq!(second_entries.len(), 2);
-    assert!(buckets.indexes_are_consistent());
+    assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
@@ -384,7 +388,7 @@ fn rotating_ipv6_networks_cannot_lock_out_new_sources() {
     );
     assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT);
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
-    assert!(buckets.indexes_are_consistent());
+    assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
