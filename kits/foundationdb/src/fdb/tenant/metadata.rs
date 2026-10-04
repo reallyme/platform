@@ -82,7 +82,7 @@ pub(super) async fn read_tenant_metadata(
     let keys = TenantMetadataKeys::current()?;
     let tenant = tenant_handle.tenant();
     let (schema_raw, created_at_raw) = tenant_handle
-        .transact_boxed_arc(
+        .transact_boxed_arc_raw(
             Arc::new(keys),
             |trx, metadata| {
                 Box::pin(async move {
@@ -128,7 +128,7 @@ pub(super) async fn write_tenant_metadata(
     let keys = Arc::new(TenantMetadataKeys::current()?);
 
     tenant_handle
-        .transact_boxed_arc(
+        .transact_boxed_arc_raw(
             keys,
             |trx, keys| {
                 Box::pin(async move {

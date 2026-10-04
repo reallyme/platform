@@ -34,7 +34,10 @@ pub use fdb::error::{
     FdbSetupErrorReason, TenantErrorReason, TenantMetadataField,
 };
 pub use fdb::startup::{verify_ready, verify_tenants_provisioned};
-pub use fdb::tenant::TenantHandle;
+pub use fdb::tenant::{
+    TenantDataAccessErrorReason, TenantDataKey, TenantDataRange, TenantDataRangeLimit,
+    TenantDataTransaction, TenantHandle,
+};
 pub use fdb::tenant_name::{
     FoundationDbTenantName, FoundationDbTenantNameError, FoundationDbTenantNameErrorReason,
     MAX_FOUNDATIONDB_TENANT_NAME_LENGTH,

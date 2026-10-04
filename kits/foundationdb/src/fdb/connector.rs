@@ -222,14 +222,8 @@ impl FoundationDbConnector {
     }
 
     /// Returns the database handle to crate-internal infrastructure helpers.
-    #[allow(dead_code)]
-    pub(crate) fn database(&self) -> &Database {
-        &self.inner.database
-    }
-
-    /// Returns the database handle for explicit operator-only administration.
     #[cfg(feature = "tenant-admin")]
-    pub fn database_for_admin(&self) -> &Database {
+    pub(crate) fn database(&self) -> &Database {
         &self.inner.database
     }
 }

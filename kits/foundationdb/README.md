@@ -155,12 +155,13 @@ Use `ReadTxnPolicy`/`idempotent_read_option` for read-only operations and
 The kit does not make an arbitrary business mutation idempotent. Apps own
 operation IDs, deduplication records, and reconciliation policy.
 
-Transaction callbacks receive the raw FoundationDB transaction for their
-tenant. This permits application code to write any key in that tenant,
-including the kit's `__meta/v1/` metadata namespace. The typed tuple-key
-helpers avoid accidental overlap, but they do not restrict raw transactions.
-Only trusted application code may use these callbacks; metadata changes belong
-to the tenant-admin API.
+Application transaction callbacks receive a `TenantDataTransaction` view. Every
+key-bearing operation requires a `TenantDataKey` or `TenantDataRange`, which
+rejects the kit's `__meta` metadata namespace, system keys, and ranges that
+span metadata. Values and range result counts are bounded before reaching the
+FoundationDB client. Only the kit's private metadata operations receive raw
+tenant transactions. Operator-only administration remains behind the
+`tenant-admin` feature and does not expose the connector's database handle.
 
 ## Metrics
 

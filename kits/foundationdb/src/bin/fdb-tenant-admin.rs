@@ -57,20 +57,18 @@ async fn run() -> Result<(), AdminToolError> {
     #[allow(unsafe_code)]
     let context =
         unsafe { FdbContext::connect(&config) }.map_err(|_| AdminToolError::ConnectFailed)?;
-    let database = context.database_for_admin();
-
     match command.as_str() {
-        "ensure" => admin::ensure_tenant(database, tenant)
+        "ensure" => admin::ensure_tenant(&context, tenant)
             .await
             .map_err(|_| AdminToolError::EnsureFailed),
-        "repair" => admin::repair_tenant_metadata(database, tenant)
+        "repair" => admin::repair_tenant_metadata(&context, tenant)
             .await
             .map_err(|_| AdminToolError::RepairFailed),
-        "delete" => admin::delete_tenant(database, tenant)
+        "delete" => admin::delete_tenant(&context, tenant)
             .await
             .map_err(|_| AdminToolError::DeleteFailed),
         "exists" => {
-            let exists = admin::tenant_exists(database, tenant)
+            let exists = admin::tenant_exists(&context, tenant)
                 .await
                 .map_err(|_| AdminToolError::ExistsFailed)?;
             // Deliberate exception: this one-shot operator CLI uses stdout as its
