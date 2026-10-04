@@ -12,12 +12,12 @@ pub const EXAMPLE_PROTO_PACKAGE: &str = "reallyme.example.v1";
 
 /// Generated Connect service stubs for the example app.
 #[allow(missing_docs)]
-#[cfg(feature = "generated")]
+#[cfg(feature = "connect")]
 #[path = "generated/connect/mod.rs"]
 pub mod connect;
 
 /// Generated Buffa protobuf message and view types for the example app.
 #[allow(missing_docs)]
-#[cfg(feature = "generated")]
+#[cfg(feature = "proto")]
 #[path = "generated/buffa/mod.rs"]
 pub mod proto;

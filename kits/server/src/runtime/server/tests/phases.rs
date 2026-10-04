@@ -7,8 +7,8 @@ use std::time::Duration;
 use axum::Router;
 
 use super::fixtures::{
-    http_server_config_for_port, observability_config, phase_regression_action,
-    spawn_phase_regression_worker,
+    assert_one_subprocess_test_passed, http_server_config_for_port, observability_config,
+    phase_regression_action, spawn_phase_regression_worker,
 };
 use crate::health::{Readiness, ReadinessState};
 use crate::runtime::{
@@ -30,6 +30,7 @@ fn runtime_phase_ordering_is_observable_in_subprocess() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_one_subprocess_test_passed(&output);
 }
 
 #[test]
@@ -42,6 +43,7 @@ fn failed_listener_bind_moves_runtime_to_failed_phase() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_one_subprocess_test_passed(&output);
 }
 
 #[test]

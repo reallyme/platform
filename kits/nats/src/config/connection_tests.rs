@@ -3,45 +3,63 @@
 
 use std::time::Duration;
 
+use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-#[test]
-fn explicit_ring_provider_builds_with_reqwest_kit_in_graph() {
-    let _ = std::any::type_name::<reallyme_typesense_kit::TypesenseConnector>();
-    let result = super::build_nats_tls_config(rustls::RootCertStore::empty());
-    assert!(result.is_ok());
-}
-
 #[tokio::test]
-async fn tls_required_info_reaches_handshake_without_provider_panic() {
-    let _ = std::any::type_name::<reallyme_typesense_kit::TypesenseConnector>();
-    let listener = TcpListener::bind("127.0.0.1:0")
+async fn plaintext_seed_does_not_follow_discovered_server_with_token() {
+    let seed = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("fake NATS listener should bind");
-    let address = listener
-        .local_addr()
-        .expect("fake NATS listener should have an address");
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("client should connect");
-        stream
-            .write_all(b"INFO {\"tls_required\":true}\r\n")
-            .await
-            .expect("fake NATS INFO should be sent");
-        let mut client_hello = [0_u8; 256];
-        let bytes_read =
-            tokio::time::timeout(Duration::from_secs(5), stream.read(&mut client_hello))
+        .expect("seed listener binds");
+    let discovered = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("discovered listener binds");
+    let seed_address = seed.local_addr().expect("seed address");
+    let discovered_address = discovered.local_addr().expect("discovered address");
+    let seed_task = tokio::spawn(async move {
+        let (mut stream, _) = seed.accept().await.expect("seed accepts client");
+        let info = format!(
+            "INFO {{\"server_id\":\"seed\",\"server_name\":\"seed\",\"version\":\"2.10.0\",\"proto\":1,\"host\":\"127.0.0.1\",\"port\":{},\"max_payload\":1048576,\"connect_urls\":[\"{discovered_address}\"]}}\r\n",
+            seed_address.port()
+        );
+        stream.write_all(info.as_bytes()).await.expect("send INFO");
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 512];
+        loop {
+            let count = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buffer))
                 .await
-                .expect("TLS client hello should arrive")
-                .expect("TLS client hello should be readable");
-        assert!(bytes_read > 0, "TLS client hello must not be empty");
-        assert_eq!(client_hello[0], 22, "client should begin a TLS handshake");
+                .expect("client handshake deadline")
+                .expect("read client handshake");
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            if bytes.windows(6).any(|window| window == b"PING\r\n") {
+                stream.write_all(b"PONG\r\n").await.expect("send PONG");
+                break;
+            }
+        }
     });
-
-    let url = format!("tls://{address}");
-    let result = tokio::time::timeout(Duration::from_secs(10), super::connect_client(&url))
-        .await
-        .expect("failed TLS handshake should return promptly");
-    assert!(matches!(result, Err(super::JetStreamError::ConnectFailed)));
-    server.await.expect("fake NATS server should complete");
+    let credential =
+        super::JetStreamCredentials::Token(SecretString::new("test-only-token".to_owned().into()));
+    let client = tokio::time::timeout(
+        Duration::from_secs(5),
+        super::connect_with_credentials(
+            &format!("nats://{seed_address}"),
+            super::JetStreamTlsPolicy::Disabled,
+            &credential,
+        ),
+    )
+    .await
+    .expect("client connection deadline")
+    .expect("seed connection succeeds");
+    seed_task.await.expect("seed task completes");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), discovered.accept())
+            .await
+            .is_err(),
+        "plaintext reconnect must not follow advertised servers"
+    );
+    drop(client);
 }

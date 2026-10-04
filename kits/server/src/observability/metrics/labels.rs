@@ -141,6 +141,8 @@ pub enum HttpRejectionReason {
     BlockedOperationalRoute,
     /// The request targeted a route that is not exposed on this listener visibility.
     BlockedRouteVisibility,
+    /// The request path could not be mapped to one unambiguous policy path.
+    MalformedRequestPath,
     /// The request exceeded the configured header count limit.
     HeaderCountLimit,
     /// The request exceeded the configured aggregate header byte limit.
@@ -183,6 +185,7 @@ impl HttpRejectionReason {
             Self::BlockedHostAuthority => "blocked_host_authority",
             Self::BlockedOperationalRoute => "blocked_operational_route",
             Self::BlockedRouteVisibility => "blocked_route_visibility",
+            Self::MalformedRequestPath => "malformed_request_path",
             Self::HeaderCountLimit => "header_count_limit",
             Self::HeaderBytesLimit => "header_bytes_limit",
             Self::MalformedRequestId => "malformed_request_id",

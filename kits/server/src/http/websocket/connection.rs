@@ -35,14 +35,17 @@ use super::shutdown::{WebSocketShutdownConfig, gracefully_close_websocket};
 static EMPTY_PING_PAYLOAD: Bytes = Bytes::new();
 const OUTBOUND_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const MESSAGE_HANDLER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONNECTION_AGE: Duration = Duration::from_secs(3_600);
 
 #[path = "connection/handle_application_message.rs"]
 mod message_handler;
 #[path = "connection/model.rs"]
 mod model;
+#[path = "connection/protocol_close.rs"]
+mod protocol_close;
 
-use message_handler::handle_application_message;
+use message_handler::{ApplicationMessageInput, handle_application_message};
 use model::{ApplicationMessageOutcome, OutboundWebSocketEvent};
 pub use model::{
     ConnectionId, NoopWebSocketConnectionHooks, WebSocketApplicationMessage,
@@ -50,6 +53,7 @@ pub use model::{
     WebSocketConnectionLimiter, WebSocketConnectionOutcome, WebSocketConnectionPermit,
     WebSocketHandlerAction,
 };
+use protocol_close::websocket_protocol_close_reason;
 
 /// Runtime-owned infrastructure configuration for one managed WebSocket
 /// connection.
@@ -364,12 +368,12 @@ where
                         last_inbound_activity = Instant::now();
                         match handle_application_message(
                             &mut handler,
-                            context,
-                            WebSocketApplicationMessage::Text(text),
+                            ApplicationMessageInput::new(context, WebSocketApplicationMessage::Text(text)),
                             &outbound,
                             &mut receiver,
                             &mut socket,
                             &mut shutdown,
+                            MESSAGE_HANDLER_TIMEOUT,
                         ).await {
                             ApplicationMessageOutcome::Continue => {}
                             ApplicationMessageOutcome::Close(reason) => {
@@ -383,6 +387,11 @@ where
                                     WebSocketCloseReason::InternalError,
                                     shutdown_config,
                                 ).await;
+                                break WebSocketConnectionOutcome::HandlerError;
+                            }
+                            ApplicationMessageOutcome::HandlerTimeout => {
+                                record_websocket_connection_timeout();
+                                gracefully_close_websocket(&mut socket, WebSocketCloseReason::InternalError, shutdown_config).await;
                                 break WebSocketConnectionOutcome::HandlerError;
                             }
                             ApplicationMessageOutcome::TransportError => {
@@ -403,12 +412,12 @@ where
                         last_inbound_activity = Instant::now();
                         match handle_application_message(
                             &mut handler,
-                            context,
-                            WebSocketApplicationMessage::Binary(binary),
+                            ApplicationMessageInput::new(context, WebSocketApplicationMessage::Binary(binary)),
                             &outbound,
                             &mut receiver,
                             &mut socket,
                             &mut shutdown,
+                            MESSAGE_HANDLER_TIMEOUT,
                         ).await {
                             ApplicationMessageOutcome::Continue => {}
                             ApplicationMessageOutcome::Close(reason) => {
@@ -422,6 +431,11 @@ where
                                     WebSocketCloseReason::InternalError,
                                     shutdown_config,
                                 ).await;
+                                break WebSocketConnectionOutcome::HandlerError;
+                            }
+                            ApplicationMessageOutcome::HandlerTimeout => {
+                                record_websocket_connection_timeout();
+                                gracefully_close_websocket(&mut socket, WebSocketCloseReason::InternalError, shutdown_config).await;
                                 break WebSocketConnectionOutcome::HandlerError;
                             }
                             ApplicationMessageOutcome::TransportError => {
@@ -472,20 +486,6 @@ where
     );
 
     outcome
-}
-
-fn websocket_protocol_close_reason(error: &axum::Error) -> Option<WebSocketCloseReason> {
-    use tungstenite::error::{CapacityError, Error};
-
-    let cause = error.source()?.downcast_ref::<Error>()?;
-    match cause {
-        Error::Capacity(CapacityError::MessageTooLong { .. }) => {
-            Some(WebSocketCloseReason::MessageTooLarge)
-        }
-        Error::Utf8(_) => Some(WebSocketCloseReason::InvalidPayload),
-        Error::Protocol(_) | Error::AttackAttempt => Some(WebSocketCloseReason::ProtocolError),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

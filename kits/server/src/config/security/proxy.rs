@@ -175,15 +175,22 @@ impl TrustedProxyRange {
                     IpAddr::V6(_) => 128,
                 };
 
-                Ok(Self {
-                    network,
-                    prefix_len,
-                })
+                Self::new(network, prefix_len)
             }
         }
     }
 
     fn new(network: IpAddr, prefix_len: u8) -> Result<Self, ConfigError> {
+        if let IpAddr::V6(address) = network
+            && let Some(mapped) = address.to_ipv4_mapped()
+        {
+            // Normalize mapped ranges at configuration time because accepted
+            // socket peers are normalized to IPv4 before matching.
+            let mapped_prefix = prefix_len.checked_sub(96).ok_or_else(|| {
+                invalid_host_authority(ConfigValidationErrorReason::InvalidNetworkRange)
+            })?;
+            return Self::new(IpAddr::V4(mapped), mapped_prefix);
+        }
         let max_prefix_len = match network {
             IpAddr::V4(_) => 32,
             IpAddr::V6(_) => 128,

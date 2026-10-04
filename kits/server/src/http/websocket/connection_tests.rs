@@ -14,7 +14,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::{
-    ApplicationMessageOutcome, ConnectionId, NoopWebSocketConnectionHooks,
+    ApplicationMessageInput, ApplicationMessageOutcome, ConnectionId, NoopWebSocketConnectionHooks,
     WebSocketApplicationMessage, WebSocketConnectionContext, WebSocketConnectionHandle,
     WebSocketConnectionLimiter, WebSocketConnectionRuntime, WebSocketHandlerAction,
     WebSocketMessageHandler, configure_websocket_upgrade, handle_application_message,
@@ -280,16 +280,39 @@ async fn application_handler_wait_is_shutdown_cancellable() {
 
     let result = handle_application_message(
         &mut handler,
-        context,
-        WebSocketApplicationMessage::Text("hello".into()),
+        ApplicationMessageInput::new(context, WebSocketApplicationMessage::Text("hello".into())),
         &outbound,
         &mut receiver,
         &mut socket,
         &mut shutdown,
+        Duration::from_secs(30),
     )
     .await;
 
     assert_eq!(result, ApplicationMessageOutcome::ShutdownRequested);
+}
+
+#[tokio::test]
+async fn application_handler_has_a_bounded_deadline() {
+    let controller = ShutdownController::new();
+    let mut shutdown = controller.token();
+    let context = WebSocketConnectionContext::new(None, None);
+    let (outbound, mut receiver) = make_outbound_channel(context.connection_id(), 1);
+    let mut handler = PendingHandler;
+    let mut socket = futures_util::sink::drain();
+
+    let result = handle_application_message(
+        &mut handler,
+        ApplicationMessageInput::new(context, WebSocketApplicationMessage::Text("hello".into())),
+        &outbound,
+        &mut receiver,
+        &mut socket,
+        &mut shutdown,
+        Duration::from_millis(10),
+    )
+    .await;
+
+    assert_eq!(result, ApplicationMessageOutcome::HandlerTimeout);
 }
 
 struct ThreeRepliesHandler;
@@ -334,12 +357,15 @@ async fn handler_can_enqueue_more_replies_than_outbound_capacity() {
         Duration::from_secs(2),
         handle_application_message(
             &mut handler,
-            context,
-            WebSocketApplicationMessage::Text("request".into()),
+            ApplicationMessageInput::new(
+                context,
+                WebSocketApplicationMessage::Text("request".into()),
+            ),
             &outbound,
             &mut receiver,
             &mut socket,
             &mut shutdown,
+            Duration::from_secs(30),
         ),
     )
     .await

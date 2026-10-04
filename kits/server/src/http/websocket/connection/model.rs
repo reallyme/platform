@@ -321,6 +321,7 @@ pub(super) enum ApplicationMessageOutcome {
     Continue,
     Close(WebSocketCloseReason),
     HandlerError,
+    HandlerTimeout,
     TransportError,
     ShutdownRequested,
 }

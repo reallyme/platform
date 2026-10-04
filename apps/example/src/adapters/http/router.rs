@@ -106,6 +106,7 @@ async fn connect_http_protocol_policy(request: Request, next: Next) -> axum::res
         let valid = timeouts.next().is_none()
             && timeout.to_str().ok().is_some_and(|value| {
                 !value.is_empty()
+                    && value.len() <= 10
                     && value.bytes().all(|byte| byte.is_ascii_digit())
                     && value.parse::<u64>().is_ok()
             });
@@ -190,6 +191,7 @@ where
             });
         let origin_allowed = websocket_same_origin(
             &parts.headers,
+            &parts.uri,
             parts.extensions.get::<ExternalRequestOrigin>(),
         );
         Ok(Self {

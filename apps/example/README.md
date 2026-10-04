@@ -232,8 +232,10 @@ cargo run -p example-server -- \
   --config servers/example/config/example-server.jsonc
 ```
 
-Server observability config supports request-completion logging control through
-`observability.request_log_mode` in the server JSONC:
+The server-kit observability API supports request-completion logging control.
+The reference `servers/example` JSONC parser currently uses a fixed local
+observability configuration and does not accept an `observability` object.
+Product hosts that expose the API can configure `request_log_mode`:
 
 - `disabled`: do not emit per-request completion logs
 - `errors_only`: emit only for error responses
@@ -242,8 +244,8 @@ Server observability config supports request-completion logging control through
 
 Optional tuning fields:
 
-- `observability.request_log_sample_rate`: `0.0..=1.0` (used by `sampled`)
-- `observability.request_log_slow_request_ms`: always log requests at/above this latency
+- `request_log_sample_rate`: `0.0..=1.0` (used by `sampled`)
+- `request_log_slow_request_ms`: always log requests at/above this latency
 
 Expected local checks:
 
@@ -273,7 +275,7 @@ The concrete Worker host lives in:
 workers/example/
 ```
 
-It imports this app with `default-features = false` and `features = ["connect"]`,
+It imports this app with `default-features = false` and `features = ["contract"]`,
 proving that Worker builds do not require Axum, `reallyme-server-kit`, or a
 Cloudflare dependency in the app crate.
 
@@ -282,9 +284,14 @@ Run locally:
 ```text
 cd workers/example
 rustup target add wasm32-unknown-unknown
-cargo install worker-build
-wrangler dev --config wrangler.jsonc
+cargo install worker-build --version 0.8.7 --locked
+pnpm install --frozen-lockfile
+pnpm dev
 ```
+
+Set the `EXAMPLE_APP_CONFIG_JSONC` binding and the operational probe token as
+described in [the Worker host README](../../workers/example/README.md) before
+making these requests.
 
 Expected local checks:
 
@@ -292,15 +299,13 @@ Expected local checks:
 curl http://127.0.0.1:8787/hello
 curl http://127.0.0.1:8787/healthz
 curl http://127.0.0.1:8787/readyz
-curl http://127.0.0.1:8787/version
-curl http://127.0.0.1:8787/metrics
 buf curl --schema ../../apps/example/contract/proto --protocol connect --data '{}' \
   http://127.0.0.1:8787/reallyme.example.v1.ExampleService/Hello
 ```
 
-The Worker `/metrics` route is intentionally a compatibility endpoint. Native
-server processes expose Prometheus through `reallyme-server-kit`; Workers
-should use Cloudflare Workers observability for platform metrics.
+The Worker host exposes `/healthz` and `/readyz` with a configured operational
+probe token. Native server processes expose `/metrics` through
+`reallyme-server-kit`; the Worker uses Workers observability.
 
 ## Validation
 

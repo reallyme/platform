@@ -61,7 +61,7 @@ pub(crate) async fn route_worker_request(req: &mut Request, env: &Env) -> Result
                 .set("access-control-allow-methods", requested_method)?;
             response.headers_mut().set(
                 "access-control-allow-headers",
-                "content-type, connect-timeout-ms",
+                "content-type, connect-timeout-ms, connect-protocol-version",
             )?;
             apply_cors_headers(&mut response, allowed_origin)?;
             return Ok(response);
@@ -168,7 +168,7 @@ async fn route_connect_request(req: &mut Request, env: &Env) -> Result<Response>
             return connect_error_response(
                 WorkerConnectErrorCode::ResourceExhausted,
                 INVALID_REQUEST_MESSAGE,
-                413,
+                429,
             );
         }
         Err(ConnectBodyError::Invalid) => {
@@ -216,11 +216,17 @@ pub(crate) fn parse_connect_timeout_values(
 ) -> core::result::Result<Option<Duration>, ConnectTimeoutError> {
     match values {
         [] => Ok(None),
-        [value] if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => value
-            .parse::<u64>()
-            .map(Duration::from_millis)
-            .map(Some)
-            .map_err(|_| ConnectTimeoutError::Invalid),
+        [value]
+            if !value.is_empty()
+                && value.len() <= 10
+                && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            value
+                .parse::<u64>()
+                .map(Duration::from_millis)
+                .map(Some)
+                .map_err(|_| ConnectTimeoutError::Invalid)
+        }
         _ => Err(ConnectTimeoutError::Invalid),
     }
 }
@@ -330,14 +336,17 @@ fn authorized_operational_probe(req: &Request, env: &Env) -> Result<bool> {
         return Ok(false);
     };
     let authorization = Zeroizing::new(authorization);
-    if authorization.contains(',') {
-        return Ok(false);
-    }
     let expected = match env.secret(OPERATIONAL_PROBE_TOKEN_BINDING) {
         Ok(secret) => Zeroizing::new(secret.to_string()),
         Err(_) => return Ok(false),
     };
-    Ok(valid_operational_probe_token(&authorization, &expected))
+    Ok(valid_operational_probe_header(&authorization, &expected))
+}
+
+pub(crate) fn valid_operational_probe_header(authorization: &str, expected: &str) -> bool {
+    // Headers.get joins repeated fields in Workers. A comma is not a valid
+    // bearer token byte here, so reject joined duplicates as one unit.
+    !authorization.contains(',') && valid_operational_probe_token(authorization, expected)
 }
 
 pub(crate) fn valid_operational_probe_token(authorization: &str, expected: &str) -> bool {

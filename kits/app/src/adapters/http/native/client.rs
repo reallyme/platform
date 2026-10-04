@@ -96,20 +96,16 @@ fn hardened_builder() -> Result<reqwest::ClientBuilder, HttpsTransportError> {
     const MAXIMUM_IDLE_CONNECTIONS_PER_HOST: usize = 8;
 
     let mut roots = rustls::RootCertStore::empty();
-    let (accepted, _) =
-        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    if accepted == 0 {
-        return Err(HttpsTransportError::local(
-            HttpsTransportErrorReason::ClientInitializationFailed,
-        ));
-    }
-    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|_| HttpsTransportError::local(HttpsTransportErrorReason::ClientInitializationFailed))?
     .with_root_certificates(roots)
     .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Client::builder()
         .tls_backend_preconfigured(tls)
         // Credentials must not transit an ambient proxy chosen by process env.

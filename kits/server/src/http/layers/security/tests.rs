@@ -11,11 +11,14 @@ use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use tower::{Layer, Service};
 
+use super::response_headers::{
+    CACHE_CONTROL_HEADER, CONTENT_SECURITY_POLICY_HEADER, REFERRER_POLICY_HEADER,
+    X_CONTENT_TYPE_OPTIONS_HEADER, X_FRAME_OPTIONS_HEADER,
+};
 use super::{
-    CACHE_CONTROL_HEADER, CONTENT_SECURITY_POLICY_HEADER, ExternalRequestOrigin, FORWARDED_HEADER,
-    ForwardedHost, ForwardedProto, REFERRER_POLICY_HEADER, X_CONTENT_TYPE_OPTIONS_HEADER,
-    X_FORWARDED_FOR_HEADER, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
-    X_FORWARDED_PROTO_HEADER, X_FRAME_OPTIONS_HEADER, X_REAL_IP_HEADER, security_layer,
+    ExternalRequestOrigin, FORWARDED_HEADER, ForwardedHost, ForwardedProto, X_FORWARDED_FOR_HEADER,
+    X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PROTO_HEADER, X_REAL_IP_HEADER,
+    security_layer,
 };
 use crate::config::{
     HostAuthority, HostAuthorityPolicy, HttpHeaderBytesLimit, HttpHeaderCountLimit,
@@ -278,6 +281,31 @@ async fn trusted_proxy_ranges_allow_normalized_forwarded_metadata_without_raw_he
     let response = service.call(request).await.expect("infallible service");
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn malformed_forwarded_client_chain_is_rejected_instead_of_using_proxy_identity() {
+    let config = trusted_proxy_metadata_config(vec![
+        HostAuthority::new("api.reallyme.net:443").expect("valid host"),
+    ]);
+    let mut service = security_layer(&config).layer(EchoHeadersService);
+    let mut request = Request::builder()
+        .uri("/app")
+        .header("host", "internal-lb.local")
+        .header("x-forwarded-for", "bad-address, 10.1.2.4")
+        .header("x-forwarded-host", "api.reallyme.net")
+        .header("x-forwarded-port", "443")
+        .header("x-forwarded-proto", "https")
+        .body(Body::empty())
+        .expect("valid request");
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(10, 1, 2, 3),
+            40_000,
+        ))));
+    let response = service.call(request).await.expect("infallible service");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

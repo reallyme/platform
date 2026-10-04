@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Bytes;
 use axum::http::{Method, StatusCode, header};
+use axum::response::IntoResponse;
 use axum::routing::{get, options, post};
 use serde_json::json;
 
@@ -209,6 +210,39 @@ async fn normalized_auth_error_preserves_challenge_without_raw_body() {
         "Unauthorized",
     );
     assert!(!response.text().contains("internal auth detail"));
+}
+
+#[tokio::test]
+async fn normalized_auth_error_preserves_every_authenticate_challenge() {
+    let config = test_http_config(Duration::from_secs(1), 1024);
+    let app = apply_standard_router_layers(
+        Router::new().route(
+            "/auth-many",
+            get(|| async {
+                let mut response = (StatusCode::UNAUTHORIZED, "private detail").into_response();
+                response.headers_mut().append(
+                    header::WWW_AUTHENTICATE,
+                    "Bearer realm=\"api\"".parse().expect("valid challenge"),
+                );
+                response.headers_mut().append(
+                    header::WWW_AUTHENTICATE,
+                    "Basic realm=\"legacy\"".parse().expect("valid challenge"),
+                );
+                response
+            }),
+        ),
+        &config,
+    );
+    let response = TestServer::new(app).get("/auth-many").await;
+    let challenges: Vec<_> = response
+        .headers()
+        .get_all(header::WWW_AUTHENTICATE)
+        .iter()
+        .collect();
+    assert_eq!(challenges.len(), 2);
+    assert_eq!(challenges[0], "Bearer realm=\"api\"");
+    assert_eq!(challenges[1], "Basic realm=\"legacy\"");
+    assert!(!response.text().contains("private detail"));
 }
 
 #[tokio::test]

@@ -63,6 +63,25 @@ fn locator_overrides_default_scheme_and_port() {
 }
 
 #[test]
+fn resolver_allows_plaintext_only_with_validated_magic_dns_suffix() {
+    let resolver =
+        TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+            dns_suffix: Some("example.ts.net".to_owned()),
+            default_scheme: Some("http".to_owned()),
+            default_port: Some(8108),
+        })
+        .expect("tailnet DNS suffix and scheme should validate");
+
+    let endpoints = resolver
+        .resolve(&locator("search", None, None))
+        .expect("tailnet service may use plaintext within the private overlay");
+    assert_eq!(
+        endpoints.endpoints()[0].as_str(),
+        "http://search.example.ts.net:8108"
+    );
+}
+
+#[test]
 fn resolver_requires_magic_dns_suffix() {
     let error = TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
         dns_suffix: None,
@@ -109,6 +128,28 @@ fn rejects_invalid_dns_suffix() {
         error.reason(),
         TailscaleResolverConfigErrorReason::InvalidDnsSuffix
     );
+}
+
+#[test]
+fn rejects_public_or_ambiguous_dns_suffixes_even_when_http_is_selected() {
+    for suffix in [
+        "example.com",
+        "ts.net",
+        "example.other.ts.net",
+        "example.ts.net.evil.com",
+    ] {
+        let error =
+            TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+                dns_suffix: Some(suffix.to_owned()),
+                default_scheme: Some("http".to_owned()),
+                default_port: Some(8108),
+            })
+            .expect_err("plaintext resolver must reject non-tailnet DNS suffixes");
+        assert_eq!(
+            error.reason(),
+            TailscaleResolverConfigErrorReason::InvalidDnsSuffix
+        );
+    }
 }
 
 #[test]

@@ -77,9 +77,16 @@ pub struct ValkeyConnector {
 impl ValkeyConnector {
     /// Establishes and authenticates the initial connection.
     pub async fn connect(config: &ValkeyConfig) -> ValkeyResult<Self> {
-        // Rustls allows only one process-wide crypto provider. A failed install here
-        // means another component already selected one, which is a valid composition.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // Redis currently builds its rustls config through the process-default
+        // provider. Require the host to choose that provider deliberately for
+        // TLS; this library must not mutate process-global crypto policy.
+        if matches!(
+            config.transport_security(),
+            ValkeyTransportSecurity::RequireTls
+        ) && rustls::crypto::CryptoProvider::get_default().is_none()
+        {
+            return Err(setup_error(ValkeySetupErrorReason::TlsProviderUnavailable));
+        }
 
         let address = match config.transport_security() {
             ValkeyTransportSecurity::RequireTls => ConnectionAddr::TcpTls {

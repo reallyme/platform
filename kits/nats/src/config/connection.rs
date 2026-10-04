@@ -54,6 +54,13 @@ pub async fn connect_with_credentials(
     // async-nats otherwise calls rustls' process-default builder, which can
     // panic when a binary links more than one crypto provider.
     let tls = nats_tls_config()?;
+    // A plaintext loopback seed must not redirect credential-bearing
+    // reconnects to arbitrary servers advertised in INFO or cluster updates.
+    let options = if tls_policy == JetStreamTlsPolicy::Disabled {
+        options.ignore_discovered_servers()
+    } else {
+        options
+    };
     options
         .tls_client_config(tls)
         .require_tls(matches!(
@@ -68,8 +75,9 @@ pub async fn connect_with_credentials(
 fn nats_tls_config() -> Result<rustls::ClientConfig, JetStreamError> {
     let native = rustls_native_certs::load_native_certs();
     let mut roots = rustls::RootCertStore::empty();
-    // A loopback plaintext connection needs no trust anchors. For TLS,
-    // rustls fails closed at handshake if no usable roots were installed.
+    // Bundled public roots keep TLS available in slim containers; local
+    // private roots remain available through the operating system store.
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let _ = roots.add_parsable_certificates(native.certs);
     build_nats_tls_config(roots)
 }

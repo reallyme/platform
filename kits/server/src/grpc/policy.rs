@@ -3,6 +3,7 @@
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -110,15 +111,21 @@ pub struct GrpcPolicyService<S> {
 
 impl<S> Service<Request<TonicBody>> for GrpcPolicyService<S>
 where
-    S: Service<Request<TonicBody>, Response = Response<TonicBody>, Error = Infallible>,
+    S: Service<Request<TonicBody>, Response = Response<TonicBody>>,
     S::Future: Send + 'static,
+    S::Error: Send + 'static,
 {
     type Response = Response<TonicBody>;
-    type Error = Infallible;
-    type Future = GrpcPolicyResponseFuture<S::Future>;
+    type Error = std::convert::Infallible;
+    type Future = GrpcPolicyResponseFuture<S::Future, S::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
+        self.inner.poll_ready(cx).map(|result| {
+            // A load-shed inner service reports readiness even at capacity;
+            // its call error is converted into a valid gRPC status below.
+            let _ = result;
+            Ok(())
+        })
     }
 
     fn call(&mut self, mut request: Request<TonicBody>) -> Self::Future {
@@ -236,18 +243,19 @@ where
 
 pin_project! {
     /// Response future for [`GrpcPolicyService`].
-    pub struct GrpcPolicyResponseFuture<F> {
+    pub struct GrpcPolicyResponseFuture<F, E> {
         #[pin]
-        state: GrpcPolicyResponseFutureState<F>,
+        state: GrpcPolicyResponseFutureState<F, E>,
     }
 }
 
 pin_project! {
     #[project = GrpcPolicyResponseFutureStateProj]
-    enum GrpcPolicyResponseFutureState<F> {
+    enum GrpcPolicyResponseFutureState<F, E> {
         Inner {
             #[pin]
             inner: F,
+            error: PhantomData<E>,
         },
         Ready {
             response: Option<Response<TonicBody>>,
@@ -255,10 +263,13 @@ pin_project! {
     }
 }
 
-impl<F> GrpcPolicyResponseFuture<F> {
+impl<F, E> GrpcPolicyResponseFuture<F, E> {
     fn inner(inner: F) -> Self {
         Self {
-            state: GrpcPolicyResponseFutureState::Inner { inner },
+            state: GrpcPolicyResponseFutureState::Inner {
+                inner,
+                error: PhantomData,
+            },
         }
     }
 
@@ -271,16 +282,17 @@ impl<F> GrpcPolicyResponseFuture<F> {
     }
 }
 
-impl<F> Future for GrpcPolicyResponseFuture<F>
+impl<F, E> Future for GrpcPolicyResponseFuture<F, E>
 where
-    F: Future<Output = Result<Response<TonicBody>, Infallible>>,
+    F: Future<Output = Result<Response<TonicBody>, E>>,
 {
     type Output = Result<Response<TonicBody>, Infallible>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let response = match this.state.project() {
-            GrpcPolicyResponseFutureStateProj::Inner { inner } => ready!(inner.poll(cx))?,
+            GrpcPolicyResponseFutureStateProj::Inner { inner, .. } => ready!(inner.poll(cx))
+                .unwrap_or_else(|_| grpc_resource_exhausted_response("concurrency_limit")),
             GrpcPolicyResponseFutureStateProj::Ready { response } => response
                 .take()
                 .unwrap_or_else(|| grpc_status_response(GRPC_STATUS_INTERNAL, "internal")),

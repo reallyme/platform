@@ -77,7 +77,8 @@ impl TailscaleServiceResolver {
                     )
                 })
                 .and_then(|endpoint| {
-                    AppServiceEndpointUrl::new(endpoint).map_err(|_| {
+                    // The validated MagicDNS suffix keeps this plaintext option on the tailnet.
+                    AppServiceEndpointUrl::new_private_transport(endpoint).map_err(|_| {
                         record_resolve_metric("tailscale_service", "failure");
                         AppServiceEndpointResolutionError::new(
                             AppServiceEndpointResolutionErrorReason::InvalidEndpointUrl,
@@ -174,6 +175,7 @@ fn build_tailscale_service_url(
 fn parse_scheme(value: &str) -> Result<AppServiceEndpointScheme, TailscaleResolverConfigError> {
     match value {
         "https" => Ok(AppServiceEndpointScheme::Https),
+        "http" => Ok(AppServiceEndpointScheme::Http),
         _ => Err(TailscaleResolverConfigError::new(
             TailscaleResolverConfigErrorReason::InvalidScheme,
         )),
@@ -186,9 +188,20 @@ fn validate_dns_suffix(value: String) -> Result<String, TailscaleResolverConfigE
             TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
         ));
     }
-    for label in value.split('.') {
-        validate_dns_label(label)?;
+    // Plain HTTP is permitted through this resolver. Require the exact
+    // MagicDNS tailnet shape so config cannot redirect credentials to a
+    // syntactically valid public DNS suffix.
+    let Some((tailnet, zone)) = value.split_once('.') else {
+        return Err(TailscaleResolverConfigError::new(
+            TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
+        ));
+    };
+    if zone != "ts.net" {
+        return Err(TailscaleResolverConfigError::new(
+            TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
+        ));
     }
+    validate_dns_label(tailnet)?;
     Ok(value)
 }
 

@@ -11,7 +11,9 @@ publish = false
 
 [features]
 default = []
-generated = ["dep:buffa", "dep:connectrpc"]
+proto = ["dep:buffa"]
+connect = ["proto", "dep:connectrpc"]
+generated = ["connect"]
 
 [dependencies]
 buffa = { workspace = true, optional = true }

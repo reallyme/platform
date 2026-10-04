@@ -85,9 +85,10 @@ Downstream endpoint config supports a singleton `base_url`, a static
 `locator.mode = "tailscale_service"` through Tailscale Services/MagicDNS
 without app core depending on server-kit or Tailscale APIs.
 
-Each enabled app should have exactly one explicit app config source. In
-ReallyMe server composition, the host points at that app-owned JSONC document
-with `apps[].config_path`, or injects it intentionally with
+Each enabled app should have exactly one explicit app config source. A product
+server host may select an app-owned JSONC document or inject one through its
+own typed composition API. The reference `servers/example` host uses its
+`application_profile` field; it does not parse `apps[].config_path` or
 `apps[].config_inline_jsonc`. The server JSONC owns process/runtime concerns;
 the app JSONC owns app behavior.
 

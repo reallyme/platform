@@ -181,6 +181,22 @@ fn trusted_proxy_ranges_match_ipv4_and_ipv6_prefixes() {
 }
 
 #[test]
+fn mapped_ipv4_proxy_ranges_match_normalized_socket_peers() {
+    let mapped =
+        TrustedProxyRange::parse("::ffff:192.0.2.0/120").expect("mapped IPv4 network is valid");
+    assert!(mapped.contains(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 42))));
+    assert!(
+        mapped.contains(IpAddr::V6(
+            "::ffff:192.0.2.42"
+                .parse::<Ipv6Addr>()
+                .expect("mapped peer is valid")
+        ))
+    );
+    assert!(!mapped.contains(IpAddr::V4(Ipv4Addr::new(192, 0, 3, 42))));
+    assert!(TrustedProxyRange::parse("::ffff:192.0.2.0/95").is_err());
+}
+
+#[test]
 fn trusted_proxy_headers_require_configured_ranges() {
     assert_eq!(
         TrustedProxyHeaders::trust_configured_proxies(Vec::new()),

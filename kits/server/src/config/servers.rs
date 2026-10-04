@@ -17,6 +17,8 @@ use super::network::BindAddress;
 use super::security::HttpSecurityConfig;
 #[cfg(feature = "http")]
 use super::timing::TimeoutConfig;
+#[cfg(feature = "http")]
+use super::transport_timeouts::HttpTransportTimeouts;
 
 /// Shared HTTP server runtime configuration.
 #[cfg(feature = "http")]
@@ -28,6 +30,7 @@ pub struct HttpServerConfig {
     body_limit: BodyLimitConfig,
     concurrency_limit: RuntimeConcurrencyLimit,
     connection_limits: ConnectionLimitConfig,
+    transport_timeouts: HttpTransportTimeouts,
     http3: Http3ServerConfig,
     security: HttpSecurityConfig,
 }
@@ -48,6 +51,7 @@ impl HttpServerConfig {
             body_limit,
             concurrency_limit: DEFAULT_HTTP_IN_FLIGHT_REQUEST_LIMIT,
             connection_limits: ConnectionLimitConfig::secure_defaults(),
+            transport_timeouts: HttpTransportTimeouts::secure_defaults(),
             http3: Http3ServerConfig::disabled(),
             security: HttpSecurityConfig::secure_defaults(),
         }
@@ -68,6 +72,7 @@ impl HttpServerConfig {
             body_limit,
             concurrency_limit,
             connection_limits: ConnectionLimitConfig::secure_defaults(),
+            transport_timeouts: HttpTransportTimeouts::secure_defaults(),
             http3: Http3ServerConfig::disabled(),
             security: HttpSecurityConfig::secure_defaults(),
         }
@@ -93,6 +98,17 @@ impl HttpServerConfig {
     pub fn with_connection_limits(mut self, limits: ConnectionLimitConfig) -> Self {
         self.connection_limits = limits;
         self
+    }
+
+    /// Returns a copy with validated HTTP connection and write deadlines.
+    pub fn with_transport_timeouts(mut self, timeouts: HttpTransportTimeouts) -> Self {
+        self.transport_timeouts = timeouts;
+        self
+    }
+
+    /// Returns HTTP connection and write deadlines.
+    pub fn transport_timeouts(&self) -> HttpTransportTimeouts {
+        self.transport_timeouts
     }
 
     /// Returns the validated bind address.

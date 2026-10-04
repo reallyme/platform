@@ -36,6 +36,10 @@ use crate::runtime::{RateLimitRegistry, RateLimitSourceIdentity};
 
 use super::super::response::JsonErrorResponse;
 
+#[path = "route_visibility/policy_path.rs"]
+mod policy_path;
+use policy_path::canonical_policy_path;
+
 /// Creates a route visibility guard for one listener.
 pub fn route_visibility_layer(
     listener_name: HttpListenerName,
@@ -126,19 +130,37 @@ where
         // MatchedPath is a route template; policy must evaluate the concrete
         // request path so wildcard and parameter routes cannot hide children.
         let request_path = request.uri().path();
+        let canonical_path = match canonical_policy_path(request_path) {
+            Some(path) => path,
+            None => {
+                let request_id = request_id_from_headers(request.headers());
+                record_http_request_rejected_for_route_template_with_transport(
+                    SharedString::from_shared(self.listener_name.clone_shared()),
+                    transport_label_for_request(&request),
+                    HttpMethodLabel::from_method(request.method()),
+                    &route_template,
+                    HttpRejectionReason::MalformedRequestPath,
+                );
+                return RouteVisibilityResponseFuture::ready(
+                    JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                        ErrorCode::BadRequest,
+                    ))
+                    .with_optional_request_id(request_id)
+                    .into_response(),
+                );
+            }
+        };
 
         let matching_rule = self.policy.matching_rule_for_request(
             &self.listener_name,
             &self.listener_visibility,
-            request_path,
+            canonical_path.as_ref(),
         );
-        if ambiguous_policy_path(request_path)
-            || !self.policy.allows_request(
-                &self.listener_name,
-                &self.listener_visibility,
-                request_path,
-            )
-        {
+        if !self.policy.allows_request(
+            &self.listener_name,
+            &self.listener_visibility,
+            canonical_path.as_ref(),
+        ) {
             let request_id = request_id_from_headers(request.headers());
             record_http_request_rejected_for_route_template_with_transport(
                 SharedString::from_shared(self.listener_name.clone_shared()),
@@ -298,16 +320,6 @@ where
 
         RouteVisibilityResponseFuture::inner(self.inner.call(request))
     }
-}
-
-fn ambiguous_policy_path(path: &str) -> bool {
-    // Axum and intermediaries can decode or normalise paths differently from
-    // the raw URI used for visibility, rate tiers, and body limits. Reject
-    // ambiguous spellings before applying any of those policies.
-    path.as_bytes().contains(&b'%')
-        || path.contains("//")
-        || path.contains('\\')
-        || path.split('/').any(|segment| matches!(segment, "." | ".."))
 }
 
 fn request_body_limit_rejection(

@@ -43,6 +43,28 @@ fn service_endpoint_rejects_remote_plaintext_and_normalizes_equivalent_urls() {
 }
 
 #[test]
+fn private_transport_endpoint_allows_plaintext_without_weakening_public_validation() {
+    let private = AppServiceEndpointSource::from_private_transport_document(
+        AppServiceEndpointSourceDocument {
+            base_url: Some("http://search.internal:8108".to_owned()),
+            endpoints: Vec::new(),
+            endpoint_selection: None,
+            locator: None,
+        },
+    )
+    .expect("private transport may use plaintext within its authenticated network");
+    assert_eq!(
+        private.primary_static_endpoint().map(|url| url.as_str()),
+        Some("http://search.internal:8108")
+    );
+    assert!(super::AppServiceEndpointUrl::new("http://search.internal:8108").is_err());
+    assert!(
+        super::AppServiceEndpointUrl::new_private_transport("http://user@search.internal:8108")
+            .is_err()
+    );
+}
+
+#[test]
 fn static_endpoint_list_preserves_selection_policy() {
     let source = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
         base_url: None,

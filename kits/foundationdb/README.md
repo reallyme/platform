@@ -123,15 +123,20 @@ cargo run -p reallyme-foundationdb-kit \
   --bin fdb-tenant-admin --features tenant-admin -- ensure example
 ```
 
-Supported actions are `ensure`, `repair`, `exists`, and `delete`. Existing
+Supported actions are `ensure`, `repair`, `recover-delete`, `exists`, and `delete`. Existing
 tenants with missing or incompatible metadata fail closed under `ensure`.
 If provisioning was interrupted after tenant creation, an operator may run
 `repair` after verifying the intended tenant name; it writes metadata only
 when the tenant is empty. `delete` first checks that no application data remains,
 then clears only the kit metadata keys in a tenant transaction. It deletes the
-empty tenant in a second operation and restores metadata if that operation fails
-while the tenant still exists. Application data produces a typed empty-tenant
-administration error without clearing metadata.
+empty tenant in a second operation and attempts metadata restoration if that
+operation fails. Between those two commits, concurrent opens fail closed and a
+concurrent writer can leave data in the tenant. If an outage prevents automatic
+restoration, `recover-delete` recreates both metadata keys only when both are
+absent; it permits application data and requires the operator to verify the
+intended tenant before use. This recovery records a new metadata creation time.
+Application data present before deletion produces a typed empty-tenant error
+without clearing metadata.
 
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
@@ -141,6 +146,8 @@ selected tenant.
 
 Use `ReadTxnPolicy`/`idempotent_read_option` for read-only operations and
 `WriteTxnPolicy`/`mutation_option` for mutations.
+Application transaction views reject all mutation methods when opened with a
+read policy, even if a caller ignores the returned error.
 
 - Retry limits cap total attempts, including the initial attempt, matching
   foundationdb-rs `TransactOption` semantics.

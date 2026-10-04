@@ -30,7 +30,6 @@ const REQUIRED_PUBLISH_ORDER_EDGES = Object.freeze([
   ["reallyme-app-kit", "reallyme-server-kit"],
   ["reallyme-app-kit", "reallyme-platform"],
   ["reallyme-foundationdb-kit", "reallyme-platform"],
-  ["reallyme-typesense-kit", "reallyme-nats-kit"],
   ["reallyme-nats-kit", "reallyme-platform"],
   ["reallyme-postgres-kit", "reallyme-platform"],
   ["reallyme-s3-kit", "reallyme-platform"],

@@ -13,14 +13,16 @@ use super::data::TenantDataTransaction;
 pub(super) struct TenantDataFnMutAdapter<'trx, F, D> {
     operation: F,
     data: D,
+    writable: bool,
     _marker: PhantomData<&'trx ()>,
 }
 
 impl<'trx, F, D> TenantDataFnMutAdapter<'trx, F, D> {
-    pub(super) const fn new(operation: F, data: D) -> Self {
+    pub(super) const fn new(operation: F, data: D, writable: bool) -> Self {
         Self {
             operation,
             data,
+            writable,
             _marker: PhantomData,
         }
     }
@@ -50,12 +52,13 @@ where
         let mut operation = self.operation;
         let mut data = self.data;
         Box::pin(async move {
-            let view = TenantDataTransaction::new(&transaction);
+            let view = TenantDataTransaction::new(&transaction, self.writable);
             let result = operation(&view, &mut data).await;
             (
                 Self {
                     operation,
                     data,
+                    writable: self.writable,
                     _marker: PhantomData,
                 },
                 transaction,
@@ -69,14 +72,16 @@ where
 pub(super) struct TenantDataArcAdapter<'trx, F, D> {
     operation: F,
     data: Arc<D>,
+    writable: bool,
     _marker: PhantomData<&'trx ()>,
 }
 
 impl<'trx, F, D> TenantDataArcAdapter<'trx, F, D> {
-    pub(super) const fn new(operation: F, data: Arc<D>) -> Self {
+    pub(super) const fn new(operation: F, data: Arc<D>, writable: bool) -> Self {
         Self {
             operation,
             data,
+            writable,
             _marker: PhantomData,
         }
     }
@@ -106,12 +111,13 @@ where
         let mut operation = self.operation;
         let data = self.data;
         Box::pin(async move {
-            let view = TenantDataTransaction::new(&transaction);
+            let view = TenantDataTransaction::new(&transaction, self.writable);
             let result = operation(&view, &data).await;
             (
                 Self {
                     operation,
                     data,
+                    writable: self.writable,
                     _marker: PhantomData,
                 },
                 transaction,

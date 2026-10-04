@@ -194,6 +194,14 @@ pub(super) fn spawn_critical_task_regression_worker(action: &'static str) -> std
         .expect("critical task regression subprocess should launch")
 }
 
+pub(super) fn assert_one_subprocess_test_passed(output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("running 1 test") && stdout.contains("1 passed;"),
+        "regression subprocess did not execute exactly one test: {stdout}"
+    );
+}
+
 pub(super) fn critical_task_regression_action() -> Option<std::ffi::OsString> {
     std::env::var_os(CRITICAL_TASK_REGRESSION_ENV)
 }

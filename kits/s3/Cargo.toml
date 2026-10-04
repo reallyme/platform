@@ -16,12 +16,13 @@ include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENS
 
 [features]
 default = ["native-client"]
-native-client = ["dep:futures-util", "dep:reqwest", "dep:rustls", "dep:rustls-native-certs"]
+native-client = ["dep:futures-util", "dep:reqwest", "dep:rustls", "dep:rustls-native-certs", "dep:webpki-roots"]
 worker-client = ["dep:futures-util", "dep:worker"]
 
 [dependencies]
 rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["stream"] }
 secrecy = { workspace = true }

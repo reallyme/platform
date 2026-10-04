@@ -213,12 +213,8 @@ fn tls_connector(config: &PostgresConfig) -> PostgresResult<MakeRustlsConnect> {
 
 fn add_native_roots(roots: &mut rustls::RootCertStore) -> PostgresResult<()> {
     let native = rustls_native_certs::load_native_certs();
-    let (accepted, _ignored) = roots.add_parsable_certificates(native.certs);
-    if accepted == 0 {
-        return Err(PostgresError::Setup {
-            reason: PostgresSetupErrorReason::TlsTrustUnavailable,
-        });
-    }
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let _ = roots.add_parsable_certificates(native.certs);
     Ok(())
 }
 

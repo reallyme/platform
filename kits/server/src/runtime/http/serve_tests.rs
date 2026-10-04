@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use axum::{Router, body::Body};
-use bytes::Bytes;
 use futures_util::stream;
 #[cfg(feature = "websocket")]
 use futures_util::{SinkExt, StreamExt};
@@ -19,16 +19,18 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use super::{
-    CONNECTION_DRAIN_GRACE, HTTP_IDLE_TIMEOUT, HTTP_WRITE_STALL_TIMEOUT, HttpServePolicy,
-    MAX_HTTP_CONNECTION_AGE, serve_http,
-};
+use super::{HttpServePolicy, serve_http};
 use crate::config::{
     ConnectionLimitConfig, HttpHeaderLimitConfig, TrustedProxyHeaders, TrustedProxyRange,
 };
 use crate::http::HttpListenerName;
 use crate::shutdown::ShutdownReason;
 use crate::task::ShutdownController;
+
+const MAX_HTTP_CONNECTION_AGE: Duration = Duration::from_secs(600);
+const CONNECTION_DRAIN_GRACE: Duration = Duration::from_secs(30);
+const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const HTTP_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn test_policy(trusted_proxies: TrustedProxyHeaders) -> HttpServePolicy {
     HttpServePolicy {
@@ -40,6 +42,7 @@ fn test_policy(trusted_proxies: TrustedProxyHeaders) -> HttpServePolicy {
         connection_drain_grace: CONNECTION_DRAIN_GRACE,
         idle_timeout: HTTP_IDLE_TIMEOUT,
         write_stall_timeout: HTTP_WRITE_STALL_TIMEOUT,
+        shutdown_drain_budget: Duration::from_secs(1),
     }
 }
 
@@ -90,6 +93,90 @@ async fn websocket_upgrade_survives_http_connection_age() {
     assert!(task.await.expect("listener joins").is_ok());
 }
 
+#[cfg(feature = "websocket")]
+#[tokio::test]
+async fn http2_websocket_survives_http_idle_and_short_connection_age() {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use futures_util::{SinkExt, StreamExt};
+    use hyper::client::conn::http2;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use tokio_tungstenite::{WebSocketStream, tungstenite};
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener binds");
+    let address = listener.local_addr().expect("listener address");
+    let controller = ShutdownController::new();
+    let router = Router::new().route(
+        "/ws",
+        axum::routing::any(|upgrade: WebSocketUpgrade| async move {
+            upgrade.on_upgrade(|mut socket| async move {
+                while let Some(Ok(Message::Text(text))) = socket.recv().await {
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        }),
+    );
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.idle_timeout = Duration::from_millis(80);
+    policy.write_stall_timeout = Duration::from_millis(80);
+    policy.connection_drain_grace = Duration::from_millis(50);
+    policy.max_connection_age = Duration::from_millis(100);
+    let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
+
+    let io = TokioIo::new(TcpStream::connect(address).await.expect("client connects"));
+    let (mut sender, connection) = http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .expect("h2 handshake");
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(connection.is_extended_connect_protocol_enabled());
+    let driver = tokio::spawn(connection);
+    let request = Request::builder()
+        .method(axum::http::Method::CONNECT)
+        .extension(hyper::ext::Protocol::from_static("websocket"))
+        .uri("/ws")
+        .header("sec-websocket-version", "13")
+        .header("host", "localhost")
+        .body(Body::empty())
+        .expect("valid upgrade request");
+    let mut response = sender
+        .send_request(request)
+        .await
+        .expect("upgrade response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let upgraded = hyper::upgrade::on(&mut response)
+        .await
+        .expect("extended connect upgrades");
+    let mut socket = WebSocketStream::from_raw_socket(
+        TokioIo::new(upgraded),
+        tungstenite::protocol::Role::Client,
+        None,
+    )
+    .await;
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        socket
+            .send(tungstenite::Message::Text("still-open".into()))
+            .await
+            .expect("socket remains writable");
+        let frame = timeout(Duration::from_secs(2), socket.next())
+            .await
+            .expect("echo deadline")
+            .expect("echo frame")
+            .expect("valid echo");
+        assert_eq!(frame.into_text().expect("text frame"), "still-open");
+    }
+    drop(socket);
+    controller.begin_shutdown(ShutdownReason::Sigterm);
+    assert!(server.await.expect("server joins").is_ok());
+    driver.abort();
+}
+
 #[tokio::test]
 async fn http2_idle_timeout_preserves_an_active_stream_then_retires_the_connection() {
     use hyper::client::conn::http2;
@@ -108,6 +195,7 @@ async fn http2_idle_timeout_preserves_an_active_stream_then_retires_the_connecti
         .route("/ready", get(|| async { StatusCode::OK }));
     let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
     policy.idle_timeout = Duration::from_millis(80);
+    policy.write_stall_timeout = Duration::from_millis(80);
     policy.connection_drain_grace = Duration::from_millis(50);
     let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
 
@@ -163,6 +251,92 @@ async fn http2_idle_timeout_preserves_an_active_stream_then_retires_the_connecti
 }
 
 #[tokio::test]
+async fn slow_reader_receives_complete_response_while_socket_writes_progress() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind");
+    let address = listener.local_addr().expect("listener address");
+    let controller = ShutdownController::new();
+    const BODY_BYTES: usize = 8 * 1024 * 1024;
+    let router = Router::new().route("/large", get(|| async { vec![b'x'; BODY_BYTES] }));
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.idle_timeout = Duration::from_millis(80);
+    policy.connection_drain_grace = Duration::from_millis(50);
+    policy.write_stall_timeout = Duration::from_secs(10);
+    let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
+
+    let mut client = TcpStream::connect(address).await.expect("client connects");
+    client
+        .write_all(b"GET /large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("request writes");
+    let mut received = Vec::new();
+    let mut chunk = [0_u8; 16 * 1024];
+    timeout(Duration::from_secs(20), async {
+        loop {
+            let count = client.read(&mut chunk).await.expect("response reads");
+            if count == 0 {
+                break;
+            }
+            received.extend_from_slice(&chunk[..count]);
+            tokio::time::sleep(Duration::from_millis(3)).await;
+        }
+    })
+    .await
+    .expect("slow response completes");
+    let header_end = received
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP headers")
+        + 4;
+    assert_eq!(received.len() - header_end, BODY_BYTES);
+    controller.begin_shutdown(ShutdownReason::Sigterm);
+    assert!(server.await.expect("server joins").is_ok());
+}
+
+#[tokio::test]
+async fn zero_window_http2_response_releases_connection_before_maximum_age() {
+    use hyper::client::conn::http2;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener binds");
+    let address = listener.local_addr().expect("listener address");
+    let controller = ShutdownController::new();
+    // A tiny body can finish producing before Hyper obtains any stream window.
+    // The transport must still release the slot before the ordinary idle age.
+    let router = Router::new().route("/small", get(|| async { "ok" }));
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.idle_timeout = Duration::from_secs(5);
+    policy.write_stall_timeout = Duration::from_millis(80);
+    policy.max_connection_age = Duration::from_secs(5);
+    let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
+
+    let io = TokioIo::new(TcpStream::connect(address).await.expect("client connects"));
+    let mut builder = http2::Builder::new(TokioExecutor::new());
+    builder.initial_stream_window_size(0);
+    let (mut sender, connection) = builder.handshake(io).await.expect("h2 handshake");
+    let driver = tokio::spawn(connection);
+    let response = sender
+        .send_request(
+            Request::builder()
+                .uri("/small")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response headers");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _connection_result = timeout(Duration::from_secs(1), driver)
+        .await
+        .expect("stalled connection must retire before maximum age")
+        .expect("client driver joins");
+    controller.begin_shutdown(ShutdownReason::Sigterm);
+    assert!(server.await.expect("server joins").is_ok());
+}
+
+#[tokio::test]
 async fn owned_listener_preserves_peer_identity_and_serves_http() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -198,6 +372,60 @@ async fn owned_listener_preserves_peer_identity_and_serves_http() {
 
     controller.begin_shutdown(ShutdownReason::Sigterm);
     assert!(task.await.expect("listener task should join").is_ok());
+}
+
+#[tokio::test]
+async fn listener_joins_overdue_connection_tasks_before_returning() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropMarker(Arc<AtomicBool>);
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener binds");
+    let address = listener.local_addr().expect("listener address");
+    let controller = ShutdownController::new();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let route_dropped = Arc::clone(&dropped);
+    let router = Router::new().route(
+        "/stream",
+        get(move || {
+            let marker = DropMarker(Arc::clone(&route_dropped));
+            async move {
+                Body::from_stream(stream::once(async move {
+                    let _marker = marker;
+                    futures_util::future::pending::<Result<Bytes, std::io::Error>>().await
+                }))
+            }
+        }),
+    );
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.shutdown_drain_budget = Duration::from_millis(50);
+    let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
+    let mut client = TcpStream::connect(address).await.expect("client connects");
+    client
+        .write_all(b"GET /stream HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("stream request writes");
+    let mut headers = [0_u8; 512];
+    let received = timeout(Duration::from_secs(1), client.read(&mut headers))
+        .await
+        .expect("response headers arrive")
+        .expect("response headers read");
+    assert!(headers[..received].starts_with(b"HTTP/1.1 200"));
+
+    controller.begin_shutdown(ShutdownReason::Sigterm);
+    timeout(Duration::from_secs(1), server)
+        .await
+        .expect("listener drain finishes within its budget")
+        .expect("listener task joins")
+        .expect("listener returns without a transport error");
+    assert!(dropped.load(Ordering::Acquire));
 }
 
 #[tokio::test]

@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tonic::body::Body as TonicBody;
 use tonic::codegen::http::{Request, Response};
-use tower::{Layer, Service, ServiceExt, service_fn};
+use tower::limit::ConcurrencyLimitLayer;
+use tower::load_shed::LoadShedLayer;
+use tower::{Layer, Service, ServiceBuilder, ServiceExt, service_fn};
 
 use super::{GrpcPolicy, grpc_policy_layer};
 use crate::config::{TrustedProxyHeaders, TrustedProxyRange};
@@ -154,4 +156,54 @@ async fn method_content_length_limit_rejects_early_with_resource_exhausted() {
         !called.load(Ordering::SeqCst),
         "inner handler should not run for early advisory reject"
     );
+}
+
+#[tokio::test]
+async fn saturated_grpc_service_returns_resource_exhausted_without_waiting() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let started_inner = Arc::clone(&started);
+    let inner = service_fn(move |_: Request<TonicBody>| {
+        let started_inner = Arc::clone(&started_inner);
+        async move {
+            started_inner.notify_one();
+            std::future::pending::<Result<Response<TonicBody>, Infallible>>().await
+        }
+    });
+    let policy = GrpcPolicy::new(
+        Arc::<str>::from("grpc-public"),
+        None,
+        false,
+        Vec::new(),
+        Arc::new(RateLimitRegistry::new(Arc::new(Vec::new()))),
+    );
+    let mut service = ServiceBuilder::new()
+        .layer(grpc_policy_layer(policy))
+        .layer(LoadShedLayer::new())
+        .layer(ConcurrencyLimitLayer::new(1))
+        .service(inner);
+    let first = service
+        .ready()
+        .await
+        .expect("first request ready")
+        .call(Request::new(TonicBody::empty()));
+    let first_task = tokio::spawn(first);
+    started.notified().await;
+
+    let second = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        service
+            .ready()
+            .await
+            .expect("policy remains ready at capacity")
+            .call(Request::new(TonicBody::empty()))
+            .await
+            .expect("policy maps shedding to a response")
+    })
+    .await
+    .expect("saturated request must not wait for first-request timeout");
+    assert_eq!(second.headers().get("grpc-status").expect("status"), "8");
+    assert_eq!(
+        second.headers().get("grpc-message").expect("message"),
+        "concurrency_limit"
+    );
+    first_task.abort();
 }

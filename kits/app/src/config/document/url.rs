@@ -67,6 +67,14 @@ impl fmt::Debug for AppDownstreamBaseUrl {
 }
 
 pub(super) fn validate_secure_url(value: &str) -> Result<String, AppConfigDocumentError> {
+    validate_url(value, false)
+}
+
+pub(super) fn validate_private_endpoint_url(value: &str) -> Result<String, AppConfigDocumentError> {
+    validate_url(value, true)
+}
+
+fn validate_url(value: &str, allow_private_http: bool) -> Result<String, AppConfigDocumentError> {
     let invalid = AppConfigDocumentError::new;
     if value.is_empty() {
         return Err(invalid(AppConfigDocumentErrorReason::EmptyUrl));
@@ -124,7 +132,7 @@ pub(super) fn validate_secure_url(value: &str) -> Result<String, AppConfigDocume
     if parsed.port() == Some(0) {
         return Err(invalid(AppConfigDocumentErrorReason::InvalidUrlPort));
     }
-    if parsed.scheme() == "http" && !is_loopback_host(host) {
+    if parsed.scheme() == "http" && !allow_private_http && !is_loopback_host(host) {
         return Err(invalid(
             AppConfigDocumentErrorReason::InsecureNonLocalHttpOrigin,
         ));

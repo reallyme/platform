@@ -11,18 +11,12 @@ use crate::response::WorkerRouteResponse;
 use crate::routing::{
     allowed_method_for_path, allowed_origin, is_connect_content_type, is_known_app_path,
     is_known_operational_path, is_valid_hello_request, parse_connect_timeout_values,
-    route_example_app, route_example_app_with_deadline, valid_operational_probe_token,
+    route_example_app, route_example_app_with_deadline, valid_operational_probe_header,
+    valid_operational_probe_token,
 };
 use example_app::app::{ExampleAppConfig, new_context};
 use example_app::ports::ExamplePorts;
 use serde::Deserialize;
-
-fn valid_operational_probe_headers(headers: &[String], expected: &str) -> bool {
-    let [authorization] = headers else {
-        return false;
-    };
-    valid_operational_probe_token(authorization, expected)
-}
 
 #[derive(Deserialize)]
 struct HostParityCase {
@@ -53,7 +47,7 @@ fn worker_matches_shared_host_parity_cases() {
             HostParityTransport::HttpHello => (ExampleWorkerMethod::Get, "/hello"),
             HostParityTransport::ConnectHello => (
                 ExampleWorkerMethod::Post,
-                example_app::adapters::connect::EXAMPLE_HELLO_CONNECT_RPC_PATH,
+                reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH,
             ),
         };
         let routed = route_example_app(&context, method, path);
@@ -108,7 +102,7 @@ fn worker_host_routes_connect_path_to_example_app_core() {
     let response = route_example_app(
         &test_context(),
         ExampleWorkerMethod::Post,
-        example_app::adapters::connect::EXAMPLE_HELLO_CONNECT_RPC_PATH,
+        reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH,
     )
     .expect("checked-in config should be valid")
     .expect("connect route should match");
@@ -144,6 +138,7 @@ fn worker_connect_timeout_is_validated_and_reaches_app_core() {
         vec!["+1".to_owned()],
         vec!["1S".to_owned()],
         vec!["18446744073709551616".to_owned()],
+        vec!["12345678901".to_owned()],
         vec!["1".to_owned(), "2".to_owned()],
     ] {
         assert!(parse_connect_timeout_values(&values).is_err());
@@ -151,7 +146,7 @@ fn worker_connect_timeout_is_validated_and_reaches_app_core() {
     let error = route_example_app_with_deadline(
         &test_context(),
         ExampleWorkerMethod::Post,
-        example_app::adapters::connect::EXAMPLE_HELLO_CONNECT_RPC_PATH,
+        reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH,
         Some(Duration::ZERO),
     )
     .expect_err("expired deadline must prevent the app call");
@@ -173,7 +168,7 @@ fn worker_host_does_not_route_unknown_app_paths() {
 fn worker_host_distinguishes_unknown_paths_from_method_mismatch() {
     assert!(is_known_app_path("/hello"));
     assert!(is_known_app_path(
-        example_app::adapters::connect::EXAMPLE_HELLO_CONNECT_RPC_PATH
+        reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH
     ));
     assert!(!is_known_app_path("/unknown"));
 }
@@ -191,13 +186,10 @@ fn worker_operational_routes_are_known_for_method_mismatch_mapping() {
 fn operational_probe_requires_a_configured_bearer_token() {
     let token = "a".repeat(32);
     let authorization = format!("Bearer {token}");
-    assert!(valid_operational_probe_headers(
-        std::slice::from_ref(&authorization),
-        &token
-    ));
-    assert!(!valid_operational_probe_headers(&[], &token));
-    assert!(!valid_operational_probe_headers(
-        &[authorization.clone(), authorization.clone()],
+    assert!(valid_operational_probe_header(&authorization, &token));
+    assert!(!valid_operational_probe_header("", &token));
+    assert!(!valid_operational_probe_header(
+        &format!("{authorization}, {authorization}"),
         &token
     ));
     assert!(valid_operational_probe_token(&authorization, &token));
@@ -237,7 +229,7 @@ fn worker_cors_origin_and_preflight_method_match_exactly() {
     );
     assert_eq!(allowed_method_for_path("/hello"), Some("GET"));
     assert_eq!(
-        allowed_method_for_path(example_app::adapters::connect::EXAMPLE_HELLO_CONNECT_RPC_PATH),
+        allowed_method_for_path(reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH),
         Some("POST")
     );
     assert_eq!(allowed_method_for_path("/unknown"), None);
