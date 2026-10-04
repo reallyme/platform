@@ -9,13 +9,19 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use tracing::debug;
 
-use crate::config::{HostAuthority, NetworkPort, TrustedProxyHeaderFamily, TrustedProxyHeaders};
+use crate::config::{HostAuthority, NetworkPort, TrustedProxyHeaderFamily};
 
 use super::{
-    FORWARDED_HEADER, ForwardedClientIp, ForwardedHost, ForwardedMetadataDebugReason,
-    ForwardedProto, ProxyMetadataError, X_FORWARDED_FOR_HEADER, X_FORWARDED_HOST_HEADER,
-    X_FORWARDED_PORT_HEADER, X_FORWARDED_PROTO_HEADER, X_REAL_IP_HEADER, is_operational_route,
+    FORWARDED_HEADER, ForwardedHost, ForwardedMetadataDebugReason, ForwardedProto,
+    ProxyMetadataError, X_FORWARDED_FOR_HEADER, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
+    X_FORWARDED_PROTO_HEADER, X_REAL_IP_HEADER, is_operational_route,
 };
+
+#[path = "proxy_metadata/client_chain.rs"]
+mod client_chain;
+#[cfg(feature = "tonic-grpc")]
+pub(crate) use client_chain::client_ip_from_x_forwarded_for;
+pub(super) use client_chain::forwarded_client_ip_from_headers;
 
 pub(super) fn strip_untrusted_proxy_headers(request: &mut Request<Body>) {
     let headers = request.headers_mut();
@@ -148,7 +154,7 @@ fn direct_host_authority(request: &Request<Body>) -> Option<HostAuthority> {
 fn forwarded_host_from_forwarded_header(
     headers: &HeaderMap,
 ) -> Result<Option<ForwardedHost>, ProxyMetadataError> {
-    if let Some(value) = headers.get(FORWARDED_HEADER)
+    if let Some(value) = headers.get_all(FORWARDED_HEADER).iter().next_back()
         && let Some(host) = forwarded_header_parameter(value, "host")
     {
         let authority = HostAuthority::retain_authority(host)
@@ -237,7 +243,7 @@ fn forwarded_host_authority_from_x_forwarded_headers(
 fn forwarded_proto_from_forwarded_header(
     headers: &HeaderMap,
 ) -> Result<Option<ForwardedProto>, ProxyMetadataError> {
-    if let Some(value) = headers.get(FORWARDED_HEADER)
+    if let Some(value) = headers.get_all(FORWARDED_HEADER).iter().next_back()
         && let Some(proto) = forwarded_header_parameter(value, "proto")
     {
         return parse_forwarded_proto_token(proto).map(Some);
@@ -325,61 +331,6 @@ fn forwarded_port_from_headers(
         .map_err(|_| ProxyMetadataError::InvalidForwardedHost)
 }
 
-pub(super) fn forwarded_client_ip_from_headers(
-    headers: &HeaderMap,
-    trusted_proxies: &TrustedProxyHeaders,
-) -> Option<ForwardedClientIp> {
-    let address = if headers.contains_key(FORWARDED_HEADER) {
-        client_ip_from_header_chain(
-            headers,
-            FORWARDED_HEADER,
-            trusted_proxies,
-            parse_forwarded_for_ip,
-        )
-    } else {
-        client_ip_from_x_forwarded_for(headers, trusted_proxies)
-    };
-    address.map(ForwardedClientIp)
-}
-
-pub(crate) fn client_ip_from_x_forwarded_for(
-    headers: &HeaderMap,
-    trusted_proxies: &TrustedProxyHeaders,
-) -> Option<IpAddr> {
-    client_ip_from_header_chain(
-        headers,
-        X_FORWARDED_FOR_HEADER,
-        trusted_proxies,
-        parse_ip_token,
-    )
-}
-
-fn client_ip_from_header_chain(
-    headers: &HeaderMap,
-    header_name: axum::http::HeaderName,
-    trusted_proxies: &TrustedProxyHeaders,
-    parse: fn(&str) -> Option<IpAddr>,
-) -> Option<IpAddr> {
-    let mut values = headers.get_all(header_name).iter();
-    let value = values.next()?;
-    if values.next().is_some() {
-        return None;
-    }
-
-    let mut selected = None;
-    for (index, token) in value.to_str().ok()?.split(',').rev().enumerate() {
-        if index >= 32 {
-            return None;
-        }
-        let address = parse(token.trim())?;
-        selected = Some(address);
-        if !trusted_proxies.trusts_peer(Some(address)) {
-            break;
-        }
-    }
-    selected
-}
-
 pub(super) fn direct_request_without_https_proof_allowed(
     request: &Request<Body>,
     peer_ip: Option<IpAddr>,
@@ -419,29 +370,6 @@ fn last_comma_separated_token(value: &HeaderValue) -> Option<&str> {
     }
 
     Some(last)
-}
-
-fn parse_ip_token(value: &str) -> Option<IpAddr> {
-    value.parse::<IpAddr>().ok()
-}
-
-fn parse_forwarded_for_ip(value: &str) -> Option<IpAddr> {
-    let parameter = value.split(';').find_map(|segment| {
-        let (key, token) = segment.trim().split_once('=')?;
-        key.trim()
-            .eq_ignore_ascii_case("for")
-            .then_some(token.trim())
-    })?;
-    let parameter = parameter.trim_matches('"');
-    if let Some(bracketed) = parameter.strip_prefix('[') {
-        let (address, suffix) = bracketed.split_once(']')?;
-        if !suffix.is_empty() && !suffix.starts_with(':') {
-            return None;
-        }
-        address.parse::<IpAddr>().ok()
-    } else {
-        parameter.parse::<IpAddr>().ok()
-    }
 }
 
 fn forwarded_header_parameter<'a>(value: &'a HeaderValue, key: &str) -> Option<&'a str> {

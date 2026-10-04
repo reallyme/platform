@@ -146,6 +146,66 @@ fn websocket_decoder_errors_map_to_protocol_close_codes() {
     );
 }
 
+#[tokio::test]
+async fn actual_axum_decoder_error_maps_to_message_too_large_close() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::sync::oneshot;
+
+    let shutdown = ShutdownController::new();
+    let app = axum::Router::new()
+        .route("/ws", axum::routing::get(websocket_route))
+        .with_state(WebSocketTestState {
+            runtime: WebSocketConnectionRuntime::new(
+                WebSocketLimits::safe_defaults(),
+                WebSocketHeartbeatConfig::new(
+                    HeartbeatInterval::new(Duration::from_secs(30)).expect("valid fixture"),
+                    IdleTimeout::new(Duration::from_secs(90)).expect("valid fixture"),
+                )
+                .expect("valid fixture"),
+                WebSocketShutdownConfig::safe_defaults(),
+                shutdown.token(),
+                Arc::new(NoopWebSocketConnectionHooks),
+                WebSocketConnectionLimiter::new(
+                    RuntimeConcurrencyLimit::new(
+                        2,
+                        ConcurrencyLimitConfigField::WebSocketConnections,
+                    )
+                    .expect("valid fixture"),
+                ),
+            ),
+        });
+    let listener = bind_websocket_test_listener().await;
+    let address = listener.local_addr().expect("local fixture address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_receiver.await;
+            })
+            .await
+            .expect("fixture server runs");
+    });
+    let (mut websocket, _) = connect_async(format!("ws://{address}/ws"))
+        .await
+        .expect("connect fixture");
+    websocket
+        .send(Message::Binary(vec![0_u8; 70 * 1024].into()))
+        .await
+        .expect("send over-limit frame");
+    let frame = tokio::time::timeout(Duration::from_secs(2), websocket.next())
+        .await
+        .expect("close response arrives")
+        .expect("close frame exists")
+        .expect("close frame decodes");
+    assert!(
+        matches!(frame, Message::Close(Some(close)) if close.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size)
+    );
+    shutdown_sender
+        .send(())
+        .expect("fixture server remains alive");
+    server.await.expect("fixture server joins");
+}
+
 #[test]
 fn configure_websocket_upgrade_applies_limits() {
     let _function: fn(WebSocketUpgrade, WebSocketLimits) -> WebSocketUpgrade =
@@ -371,6 +431,70 @@ async fn handler_can_enqueue_more_replies_than_outbound_capacity() {
     .await
     .expect("handler should not wait on its own queue");
     assert_eq!(outcome, ApplicationMessageOutcome::Continue);
+}
+
+#[tokio::test]
+async fn slow_outbound_drain_does_not_spend_handler_execution_budget() {
+    let controller = ShutdownController::new();
+    let mut shutdown = controller.token();
+    let context = WebSocketConnectionContext::new(None, None);
+    let (outbound, mut receiver) = make_outbound_channel(context.connection_id(), 1);
+    let mut handler = ThreeRepliesHandler;
+    let mut socket = Box::pin(futures_util::sink::unfold(
+        (),
+        |(), _message: super::WebSocketMessage| async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok::<(), std::convert::Infallible>(())
+        },
+    ));
+
+    let outcome = handle_application_message(
+        &mut handler,
+        ApplicationMessageInput::new(context, WebSocketApplicationMessage::Text("request".into())),
+        &outbound,
+        &mut receiver,
+        &mut socket,
+        &mut shutdown,
+        Duration::from_millis(40),
+    )
+    .await;
+    assert_eq!(outcome, ApplicationMessageOutcome::Continue);
+}
+
+#[test]
+fn websocket_handler_timeout_can_be_configured_without_changing_constructor() {
+    let shutdown = ShutdownController::new();
+    let limiter = WebSocketConnectionLimiter::new(
+        crate::config::RuntimeConcurrencyLimit::new(
+            8,
+            ConcurrencyLimitConfigField::WebSocketConnections,
+        )
+        .expect("valid limit"),
+    );
+    let runtime = WebSocketConnectionRuntime::new(
+        WebSocketLimits::safe_defaults(),
+        WebSocketHeartbeatConfig::safe_defaults(),
+        WebSocketShutdownConfig::safe_defaults(),
+        shutdown.token(),
+        Arc::new(NoopWebSocketConnectionHooks),
+        limiter,
+    );
+    assert!(
+        runtime
+            .clone()
+            .with_handler_timeout(Duration::ZERO)
+            .is_err()
+    );
+    assert!(
+        runtime
+            .clone()
+            .with_handler_timeout(Duration::from_secs(301))
+            .is_err()
+    );
+    let configured = runtime
+        .with_handler_timeout(Duration::from_secs(45))
+        .expect("valid timeout");
+    assert_eq!(configured.handler_timeout(), Duration::from_secs(45));
 }
 
 #[tokio::test]

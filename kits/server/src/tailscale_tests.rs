@@ -63,21 +63,16 @@ fn locator_overrides_default_scheme_and_port() {
 }
 
 #[test]
-fn resolver_allows_plaintext_only_with_validated_magic_dns_suffix() {
-    let resolver =
-        TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
-            dns_suffix: Some("example.ts.net".to_owned()),
-            default_scheme: Some("http".to_owned()),
-            default_port: Some(8108),
-        })
-        .expect("tailnet DNS suffix and scheme should validate");
-
-    let endpoints = resolver
-        .resolve(&locator("search", None, None))
-        .expect("tailnet service may use plaintext within the private overlay");
+fn resolver_rejects_plaintext_scheme() {
+    let error = TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+        dns_suffix: Some("example.ts.net".to_owned()),
+        default_scheme: Some("http".to_owned()),
+        default_port: Some(8108),
+    })
+    .expect_err("plaintext locator must fail without transport proof");
     assert_eq!(
-        endpoints.endpoints()[0].as_str(),
-        "http://search.example.ts.net:8108"
+        error.reason(),
+        TailscaleResolverConfigErrorReason::InvalidScheme
     );
 }
 
@@ -131,25 +126,36 @@ fn rejects_invalid_dns_suffix() {
 }
 
 #[test]
-fn rejects_public_or_ambiguous_dns_suffixes_even_when_http_is_selected() {
+fn rejects_incomplete_or_ambiguous_dns_suffixes() {
     for suffix in [
-        "example.com",
-        "ts.net",
-        "example.other.ts.net",
-        "example.ts.net.evil.com",
+        "singlelabel",
+        ".example.com",
+        "example..com",
+        "example.com.",
     ] {
         let error =
             TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
                 dns_suffix: Some(suffix.to_owned()),
-                default_scheme: Some("http".to_owned()),
+                default_scheme: Some("https".to_owned()),
                 default_port: Some(8108),
             })
-            .expect_err("plaintext resolver must reject non-tailnet DNS suffixes");
+            .expect_err("resolver must reject invalid DNS suffixes");
         assert_eq!(
             error.reason(),
             TailscaleResolverConfigErrorReason::InvalidDnsSuffix
         );
     }
+}
+
+#[test]
+fn accepts_configured_headscale_dns_suffix() {
+    let resolver =
+        TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+            dns_suffix: Some("nodes.internal.example".to_owned()),
+            default_scheme: None,
+            default_port: None,
+        });
+    assert!(resolver.is_ok());
 }
 
 #[test]

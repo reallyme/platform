@@ -102,6 +102,41 @@ fn attach_correlation_ids_replaces_missing_or_invalid_values() {
 }
 
 #[test]
+fn attach_correlation_ids_replaces_well_formed_untrusted_values() {
+    let supplied_request_id = RequestId::generate();
+    let supplied_trace_id = TraceId::generate();
+    let mut request = Request::new(());
+    request.metadata_mut().insert(
+        GRPC_REQUEST_ID_METADATA_KEY,
+        supplied_request_id
+            .into_uuid()
+            .to_string()
+            .parse()
+            .expect("valid fixture metadata"),
+    );
+    request.metadata_mut().insert(
+        GRPC_TRACE_ID_METADATA_KEY,
+        supplied_trace_id
+            .into_uuid()
+            .to_string()
+            .parse()
+            .expect("valid fixture metadata"),
+    );
+
+    let generated = attach_correlation_ids(&mut request).expect("generated metadata attaches");
+    assert_ne!(generated.request_id(), supplied_request_id);
+    assert_ne!(generated.trace_id(), supplied_trace_id);
+    assert_eq!(
+        request_id_from_metadata(request.metadata()),
+        Ok(Some(generated.request_id()))
+    );
+    assert_eq!(
+        trace_id_from_metadata(request.metadata()),
+        Ok(Some(generated.trace_id()))
+    );
+}
+
+#[test]
 fn correlation_ids_can_be_attached_to_status_metadata() {
     let correlation_ids = GrpcCorrelationIds::new(RequestId::generate(), TraceId::generate());
     let status =

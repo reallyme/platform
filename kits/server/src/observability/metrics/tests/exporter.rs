@@ -13,9 +13,9 @@ use crate::observability::metrics::{
     RouteTemplate, RuntimeAppFailureOutcome, RuntimeQueueLabel, install_prometheus_recorder,
     record_http_request_completed, record_http_request_outcome,
     record_http_request_rejected_for_route_template, record_rate_limit_buckets_live,
-    record_rate_limit_mutex_poisoned, record_readiness_state, record_runtime_app_cleanup_failure,
-    record_runtime_app_startup_failure, record_runtime_phase, record_runtime_queue_saturation,
-    record_startup_info,
+    record_rate_limit_mutex_poisoned, record_rate_limit_overflow_decision, record_readiness_state,
+    record_runtime_app_cleanup_failure, record_runtime_app_startup_failure, record_runtime_phase,
+    record_runtime_queue_saturation, record_startup_info,
 };
 use crate::runtime::ServerRuntimePhase;
 use crate::startup::ServerName;
@@ -80,6 +80,8 @@ fn metrics_subprocess_worker() {
             record_startup_info(&server_name, &build_info);
             record_rate_limit_buckets_live(Arc::<str>::from("public"), 7);
             record_rate_limit_mutex_poisoned();
+            record_rate_limit_overflow_decision(true);
+            record_rate_limit_overflow_decision(false);
 
             let rendered = exporter.render();
 
@@ -95,6 +97,9 @@ fn metrics_subprocess_worker() {
             assert!(rendered.contains(MetricName::RuntimePhase.as_str()));
             assert!(rendered.contains(MetricName::RateLimitBucketsLive.as_str()));
             assert!(rendered.contains(MetricName::RateLimitMutexPoisoned.as_str()));
+            assert!(rendered.contains("reallyme_rate_limit_overflow_decisions_total"));
+            assert!(rendered.contains("outcome=\"allowed\""));
+            assert!(rendered.contains("outcome=\"rejected\""));
             assert!(rendered.contains("route=\"/readyz\""));
             assert!(rendered.contains("listener_name=\"public\""));
             assert!(rendered.contains("listener_name=\"__unknown\""));

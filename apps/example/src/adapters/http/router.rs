@@ -30,7 +30,7 @@ use reallyme_server_kit::http::{
 };
 #[cfg(feature = "websocket")]
 use reallyme_server_kit::http::{
-    WebSocketHandlerAction, websocket_same_origin, websocket_upgrade_response,
+    WebSocketHandlerAction, websocket_same_origin_with_external_origin, websocket_upgrade_response,
 };
 #[cfg(feature = "websocket")]
 use reallyme_server_kit::task::ShutdownToken;
@@ -189,7 +189,7 @@ where
                     .get::<ConnectInfo<std::net::SocketAddr>>()
                     .map(|peer| peer.0.ip())
             });
-        let origin_allowed = websocket_same_origin(
+        let origin_allowed = websocket_same_origin_with_external_origin(
             &parts.headers,
             &parts.uri,
             parts.extensions.get::<ExternalRequestOrigin>(),

@@ -22,9 +22,9 @@ pub(super) struct RateLimitBucketState {
     pub(super) by_tier: HashMap<HttpRateLimitTierName, TierBuckets>,
     tier_age: HashMap<HttpRateLimitTierName, BTreeSet<(Instant, u64)>>,
     global_age: BTreeSet<GlobalAgeKey>,
-    // At most one shared bucket per configured tier serves newcomers when
-    // every retained source still has rate-limit debt.
-    pub(super) overflow: HashMap<HttpRateLimitTierName, SourceRateBucket>,
+    // Fixed shards reduce collateral throttling without minting a refill
+    // budget per new source identity.
+    pub(super) overflow: HashMap<(HttpRateLimitTierName, u32), SourceRateBucket>,
 }
 
 impl RateLimitBucketState {
@@ -135,13 +135,13 @@ impl RateLimitBucketState {
     pub(super) fn overflow_bucket(
         &mut self,
         tier: &HttpRateLimitTierName,
+        shard: u32,
         now: Instant,
+        capacity: u32,
     ) -> &mut SourceRateBucket {
         self.overflow
-            .entry(tier.clone())
-            // One initial token keeps a newly arrived client serviceable when
-            // the table first fills, without minting a burst per identity.
-            .or_insert_with(|| SourceRateBucket::fresh(now, 1))
+            .entry((tier.clone(), shard))
+            .or_insert_with(|| SourceRateBucket::fresh(now, capacity))
     }
 
     pub(super) fn prune_stale(
@@ -170,7 +170,7 @@ impl RateLimitBucketState {
         for (tier, source) in stale {
             self.remove(&tier, source);
         }
-        self.overflow.retain(|tier, bucket| {
+        self.overflow.retain(|(tier, shard), bucket| {
             let stale = now
                 .saturating_duration_since(bucket.last_activity_at)
                 .as_secs()
@@ -178,7 +178,24 @@ impl RateLimitBucketState {
             let refilled = policies
                 .iter()
                 .find_map(|(name, policy)| (name == tier).then_some(*policy))
-                .is_some_and(|policy| bucket_has_refilled(bucket, policy, now));
+                .is_some_and(|policy| {
+                    let overflow_burst = policy
+                        .burst_tokens()
+                        .saturating_mul(super::OVERFLOW_BUDGET_MULTIPLIER);
+                    let shard_count = overflow_burst.min(super::OVERFLOW_SHARD_LIMIT);
+                    let capacity = overflow_burst / shard_count
+                        + u32::from(*shard < overflow_burst % shard_count);
+                    let mut current = *bucket;
+                    super::refill_bucket_scaled(
+                        &mut current,
+                        policy,
+                        now,
+                        shard_count,
+                        capacity,
+                        super::OVERFLOW_BUDGET_MULTIPLIER,
+                    );
+                    current.tokens == capacity
+                });
             !stale || !refilled
         });
     }

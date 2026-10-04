@@ -127,15 +127,12 @@ impl TailscaleServiceLocator {
 pub enum AppServiceEndpointScheme {
     /// HTTPS over the tailnet.
     Https,
-    /// Plain HTTP confined to a validated private transport.
-    Http,
 }
 
 impl AppServiceEndpointScheme {
     fn parse(value: &str) -> Result<Self, AppConfigDocumentError> {
         match value {
             "https" => Ok(Self::Https),
-            "http" => Ok(Self::Http),
             _ => Err(AppConfigDocumentError::new(
                 AppConfigDocumentErrorReason::InvalidServiceEndpointSource,
             )),
@@ -146,7 +143,6 @@ impl AppServiceEndpointScheme {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Https => "https",
-            Self::Http => "http",
         }
     }
 }

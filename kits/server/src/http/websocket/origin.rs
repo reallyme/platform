@@ -13,7 +13,12 @@ const MAX_WEBSOCKET_ORIGIN_BYTES: usize = 2_048;
 /// Browsers send `Origin` on WebSocket handshakes. Requests without it can be
 /// non-browser clients, which must still authenticate through the app's own
 /// transport policy. A present but malformed or cross-origin value is denied.
-pub fn websocket_same_origin(
+pub fn websocket_same_origin(headers: &HeaderMap, uri: &Uri) -> bool {
+    websocket_same_origin_with_external_origin(headers, uri, None)
+}
+
+/// Checks the origin against a trusted externally visible endpoint when present.
+pub fn websocket_same_origin_with_external_origin(
     headers: &HeaderMap,
     uri: &Uri,
     external_origin: Option<&ExternalRequestOrigin>,

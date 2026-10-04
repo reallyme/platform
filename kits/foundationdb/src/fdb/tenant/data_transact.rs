@@ -9,6 +9,10 @@ use foundationdb::{DatabaseTransact, TransactError, Transaction};
 
 use super::data::TenantDataTransaction;
 
+// FoundationDB's non-retryable transaction_cancelled error ensures an ignored
+// read-policy mutation cannot produce a successful application transaction.
+const READ_POLICY_MUTATION_CODE: i32 = 1025;
+
 /// Carries mutable closure state through FoundationDB's retry contract.
 pub(super) struct TenantDataFnMutAdapter<'trx, F, D> {
     operation: F,
@@ -54,6 +58,13 @@ where
         Box::pin(async move {
             let view = TenantDataTransaction::new(&transaction, self.writable);
             let result = operation(&view, &mut data).await;
+            let result = if view.mutation_rejected() {
+                Err(E::from(foundationdb::FdbError::from_code(
+                    READ_POLICY_MUTATION_CODE,
+                )))
+            } else {
+                result
+            };
             (
                 Self {
                     operation,
@@ -113,6 +124,13 @@ where
         Box::pin(async move {
             let view = TenantDataTransaction::new(&transaction, self.writable);
             let result = operation(&view, &data).await;
+            let result = if view.mutation_rejected() {
+                Err(E::from(foundationdb::FdbError::from_code(
+                    READ_POLICY_MUTATION_CODE,
+                )))
+            } else {
+                result
+            };
             (
                 Self {
                     operation,

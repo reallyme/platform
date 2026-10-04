@@ -39,7 +39,7 @@ use axum::response::{IntoResponse, Response};
 use pin_project_lite::pin_project;
 use tower::{Layer, Service};
 
-use crate::config::{HttpSecurityConfig, SecurityHeadersConfig, TrustedProxyHeaderFamily};
+use crate::config::{HttpSecurityConfig, SecurityHeadersConfig};
 use crate::observability::{HttpMethodLabel, HttpRejectionReason};
 
 use super::super::response::JsonErrorResponse;
@@ -211,22 +211,6 @@ where
         let proxy_request_metadata = self.config.trusted_proxy_request_metadata();
         let strict_forwarded_header_consistency =
             proxy_request_metadata.strict_forwarded_header_consistency();
-        // A proxy may append a second field line while leaving an untrusted
-        // client line first. Host and scheme must never read that first line.
-        if trusted_peer
-            && proxy_request_metadata.header_family() == TrustedProxyHeaderFamily::Forwarded
-            && request.headers().get_all(FORWARDED_HEADER).iter().count() > 1
-        {
-            record_security_rejection(&request, method, HttpRejectionReason::UntrustedProxyHeaders);
-            return HttpSecurityResponseFuture::ready(
-                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
-                    ErrorCode::BadRequest,
-                ))
-                .with_optional_request_id(request_id)
-                .into_response(),
-                self.config.security_headers(),
-            );
-        }
         if trusted_peer
             && strict_forwarded_header_consistency
             && has_mixed_proxy_header_families(request.headers())
@@ -327,35 +311,28 @@ where
         }
 
         if trusted_peer {
-            let selected_client_header_present = match proxy_request_metadata.header_family() {
-                TrustedProxyHeaderFamily::Forwarded => {
-                    request.headers().contains_key(FORWARDED_HEADER)
-                }
-                TrustedProxyHeaderFamily::XForwarded => {
-                    request.headers().contains_key(X_FORWARDED_FOR_HEADER)
-                }
-            };
             let client_ip = forwarded_client_ip_from_headers(
                 request.headers(),
                 self.config.trusted_proxy_headers(),
             );
-            if selected_client_header_present && client_ip.is_none() {
-                // Falling back to the proxy's own address would merge many
-                // clients into one rate-limit bucket and weaken admission.
-                record_security_rejection(
-                    &request,
-                    method,
-                    HttpRejectionReason::UntrustedProxyHeaders,
-                );
-                return HttpSecurityResponseFuture::ready(
-                    JsonErrorResponse::from_public_error(PublicHttpError::from_code(
-                        ErrorCode::BadRequest,
-                    ))
-                    .with_optional_request_id(request_id)
-                    .into_response(),
-                    self.config.security_headers(),
-                );
-            }
+            let client_ip = match client_ip {
+                Ok(client_ip) => client_ip,
+                Err(_) => {
+                    record_security_rejection(
+                        &request,
+                        method,
+                        HttpRejectionReason::UntrustedProxyHeaders,
+                    );
+                    return HttpSecurityResponseFuture::ready(
+                        JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                            ErrorCode::BadRequest,
+                        ))
+                        .with_optional_request_id(request_id)
+                        .into_response(),
+                        self.config.security_headers(),
+                    );
+                }
+            };
             if let Some(client_ip) = client_ip {
                 request.extensions_mut().insert(client_ip);
             }

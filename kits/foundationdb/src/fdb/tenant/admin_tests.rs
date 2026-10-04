@@ -5,14 +5,15 @@ use crate::fdb::tenant_name::FoundationDbTenantName;
 
 use super::metadata_keys;
 use super::{
-    clear_metadata_if_empty, delete_tenant, ensure_tenant, finish_delete_after_clear,
-    recover_interrupted_delete,
+    TenantHandle, clear_metadata_if_empty, delete_tenant, ensure_tenant, finish_delete_after_clear,
+    read_tenant_metadata, recover_interrupted_delete, restore_metadata,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
 use crate::fdb::error::{FdbError, TenantErrorReason};
 use crate::fdb::tenant::TenantDataKey;
 use crate::fdb::transaction::{TenantTransactionPolicy, WriteTxnPolicy};
+use foundationdb::tenant::TenantManagement;
 
 #[test]
 fn tenant_delete_targets_only_the_kits_two_metadata_keys() {
@@ -32,6 +33,48 @@ async fn tenant_delete_recovery_live_cases() {
     let connector = unsafe { FoundationDbConnector::connect(&config) }.expect("live FDB connector");
     failed_second_delete_phase_restores_metadata_after_concurrent_write(&connector).await;
     interrupted_delete_recovery_restores_metadata_even_with_application_data(&connector).await;
+    restore_write_conflicts_with_in_flight_clear(&connector).await;
+}
+
+async fn restore_write_conflicts_with_in_flight_clear(connector: &FoundationDbConnector) {
+    let tenant = FoundationDbTenantName::new("kit-restore-race-test").expect("fixed tenant name");
+    ensure_tenant(connector, tenant)
+        .await
+        .expect("provision race fixture");
+    let inner = connector
+        .database()
+        .open_tenant(tenant.as_bytes())
+        .expect("open race fixture");
+    let transaction = inner.create_trx().expect("create clear transaction");
+    let keys = metadata_keys(tenant).expect("metadata keys");
+    let mut metadata = Vec::new();
+    for key in &keys {
+        let value = transaction
+            .get(key, false)
+            .await
+            .expect("read metadata in clear transaction")
+            .expect("metadata present");
+        metadata.push((key.to_vec(), value.to_vec()));
+        transaction.clear(key);
+    }
+
+    restore_metadata(connector.database(), tenant, &metadata)
+        .await
+        .expect("repair write must commit");
+    assert!(
+        transaction.commit().await.is_err(),
+        "clear must conflict with the repair write that committed first"
+    );
+    let reopened = connector
+        .database()
+        .open_tenant(tenant.as_bytes())
+        .expect("open surviving tenant");
+    read_tenant_metadata(&TenantHandle::new(tenant, reopened))
+        .await
+        .expect("metadata remains after conflicting clear");
+    delete_tenant(connector, tenant)
+        .await
+        .expect("clean up race fixture");
 }
 
 async fn failed_second_delete_phase_restores_metadata_after_concurrent_write(
@@ -77,6 +120,12 @@ async fn interrupted_delete_recovery_restores_metadata_even_with_application_dat
     ensure_tenant(connector, tenant)
         .await
         .expect("provision tenant");
+    let tenant_id = TenantManagement::get_tenant(connector.database(), tenant.as_bytes())
+        .await
+        .expect("tenant lookup")
+        .expect("tenant exists")
+        .expect("tenant info")
+        .id;
     let handle = connector.open_tenant(tenant).await.expect("open tenant");
     handle
         .transact_boxed(
@@ -107,7 +156,23 @@ async fn interrupted_delete_recovery_restores_metadata_even_with_application_dat
             reason: TenantErrorReason::MetadataMissing { .. }
         })
     ));
-    recover_interrupted_delete(connector, tenant)
+    assert!(
+        recover_interrupted_delete(connector, tenant, tenant_id ^ 1)
+            .await
+            .is_err()
+    );
+    let transaction = raw_tenant.create_trx().expect("foreign metadata fixture");
+    transaction.set(b"__meta/foreign", b"value");
+    transaction.commit().await.expect("write foreign metadata");
+    assert!(
+        recover_interrupted_delete(connector, tenant, tenant_id)
+            .await
+            .is_err()
+    );
+    let transaction = raw_tenant.create_trx().expect("foreign metadata cleanup");
+    transaction.clear(b"__meta/foreign");
+    transaction.commit().await.expect("remove foreign metadata");
+    recover_interrupted_delete(connector, tenant, tenant_id)
         .await
         .expect("recover both keys");
     assert!(connector.open_tenant(tenant).await.is_ok());
@@ -123,7 +188,7 @@ async fn interrupted_delete_recovery_restores_metadata_even_with_application_dat
             |transaction, _| {
                 Box::pin(async move {
                     let key = TenantDataKey::new(b"application/data").expect("fixed data key");
-                    transaction.clear(key).expect("write transaction");
+                    transaction.clear(key);
                     Ok::<(), foundationdb::FdbError>(())
                 })
             },

@@ -90,20 +90,20 @@ fn application_range_results_are_bounded() {
 fn transaction_and_range_byte_limits_reject_invalid_values() {
     assert!(matches!(
         TenantTransactionSizeLimit::new(0),
-        Err(TenantDataAccessErrorReason::InvalidTransactionSizeLimit)
+        Err(TenantDataAccessErrorReason::InvalidRangeLimit)
     ));
     assert!(matches!(
         TenantTransactionSizeLimit::new(10_000_001),
-        Err(TenantDataAccessErrorReason::InvalidTransactionSizeLimit)
+        Err(TenantDataAccessErrorReason::InvalidRangeLimit)
     ));
     assert!(TenantTransactionSizeLimit::new(900_000).is_ok());
     assert!(matches!(
         TenantDataRangeTargetBytes::new(0),
-        Err(TenantDataAccessErrorReason::InvalidRangeTargetBytes)
+        Err(TenantDataAccessErrorReason::InvalidRangeLimit)
     ));
     assert!(matches!(
         TenantDataRangeTargetBytes::new(1_000_001),
-        Err(TenantDataAccessErrorReason::InvalidRangeTargetBytes)
+        Err(TenantDataAccessErrorReason::InvalidRangeLimit)
     ));
     assert!(TenantDataRangeTargetBytes::new(800_000).is_ok());
 }
@@ -148,14 +148,14 @@ fn versionstamped_keys_keep_a_stable_application_prefix() {
     prefix_mutation[offset_start..].copy_from_slice(&prefix_offset);
     assert!(matches!(
         validate_versionstamped_key_template(&prefix_mutation),
-        Err(TenantDataAccessErrorReason::InvalidVersionstampedKey)
+        Err(TenantDataAccessErrorReason::KeyChangingMutation)
     ));
 
     let mut missing_placeholder = valid.clone();
     missing_placeholder[13] = 0;
     assert!(matches!(
         validate_versionstamped_key_template(&missing_placeholder),
-        Err(TenantDataAccessErrorReason::InvalidVersionstampedKey)
+        Err(TenantDataAccessErrorReason::KeyChangingMutation)
     ));
 
     let mut reserved = b"__meta/delivery/".to_vec();

@@ -168,7 +168,7 @@ async fn route_connect_request(req: &mut Request, env: &Env) -> Result<Response>
             return connect_error_response(
                 WorkerConnectErrorCode::ResourceExhausted,
                 INVALID_REQUEST_MESSAGE,
-                429,
+                413,
             );
         }
         Err(ConnectBodyError::Invalid) => {

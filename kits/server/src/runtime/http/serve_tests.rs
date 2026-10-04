@@ -174,9 +174,15 @@ async fn http2_websocket_survives_http_idle_and_short_connection_age() {
         assert_eq!(frame.into_text().expect("text frame"), "still-open");
     }
     drop(socket);
+    // A completed upgrade must not pin its shared HTTP/2 connection for the
+    // one-hour WebSocket age allowance after all traffic has stopped.
+    let connection_result = timeout(Duration::from_secs(3), driver)
+        .await
+        .expect("idle upgraded connection retires")
+        .expect("client driver joins");
+    assert!(connection_result.is_ok());
     controller.begin_shutdown(ShutdownReason::Sigterm);
     assert!(server.await.expect("server joins").is_ok());
-    driver.abort();
 }
 
 #[tokio::test]
@@ -312,6 +318,7 @@ async fn zero_window_http2_response_releases_connection_before_maximum_age() {
     let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
     policy.idle_timeout = Duration::from_secs(5);
     policy.write_stall_timeout = Duration::from_millis(80);
+    policy.connection_drain_grace = Duration::from_millis(100);
     policy.max_connection_age = Duration::from_secs(5);
     let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
 
@@ -336,6 +343,78 @@ async fn zero_window_http2_response_releases_connection_before_maximum_age() {
         .expect("client driver joins");
     controller.begin_shutdown(ShutdownReason::Sigterm);
     assert!(server.await.expect("server joins").is_ok());
+}
+
+#[tokio::test]
+async fn stalled_http2_body_does_not_abort_a_healthy_sse_stream() {
+    use http_body_util::BodyExt;
+    use hyper::client::conn::http2;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener binds");
+    let address = listener.local_addr().expect("listener address");
+    let controller = ShutdownController::new();
+    let router = Router::new()
+        .route("/stalled", get(|| async { vec![b'x'; 8 * 1024 * 1024] }))
+        .route(
+            "/events",
+            get(|| async {
+                Body::from_stream(stream::unfold((), |()| async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some((
+                        Ok::<_, std::convert::Infallible>(Bytes::from_static(b"data: x\n\n")),
+                        (),
+                    ))
+                }))
+            }),
+        );
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.write_stall_timeout = Duration::from_millis(80);
+    policy.connection_drain_grace = Duration::from_millis(100);
+    policy.max_connection_age = Duration::from_secs(5);
+    let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
+
+    let io = TokioIo::new(TcpStream::connect(address).await.expect("client connects"));
+    let (mut sender, connection) = http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .expect("h2 handshake");
+    let driver = tokio::spawn(connection);
+    let stalled = sender
+        .send_request(
+            Request::builder()
+                .uri("/stalled")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("stalled response headers");
+    assert_eq!(stalled.status(), StatusCode::OK);
+    let mut events = sender
+        .send_request(
+            Request::builder()
+                .uri("/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("SSE response headers")
+        .into_body();
+    for _ in 0..30 {
+        let frame = timeout(Duration::from_secs(1), events.frame())
+            .await
+            .expect("SSE frame arrives")
+            .expect("SSE stream remains open")
+            .expect("valid SSE frame");
+        assert!(frame.data_ref().is_some());
+    }
+    controller.begin_shutdown(ShutdownReason::Sigterm);
+    drop(events);
+    drop(stalled);
+    driver.abort();
+    assert!(server.await.expect("listener joins").is_ok());
 }
 
 #[tokio::test]

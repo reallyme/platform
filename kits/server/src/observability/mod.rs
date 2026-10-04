@@ -38,6 +38,8 @@ pub use logging::{
 #[cfg(all(feature = "http", feature = "metrics"))]
 pub(crate) use metrics::MetricRouteTemplateLabel;
 #[cfg(all(feature = "http", feature = "metrics"))]
+pub(crate) use metrics::record_rate_limit_overflow_decision;
+#[cfg(all(feature = "http", feature = "metrics"))]
 pub use metrics::record_runtime_phase;
 #[cfg(feature = "metrics")]
 pub use metrics::{

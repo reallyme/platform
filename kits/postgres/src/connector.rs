@@ -213,8 +213,12 @@ fn tls_connector(config: &PostgresConfig) -> PostgresResult<MakeRustlsConnect> {
 
 fn add_native_roots(roots: &mut rustls::RootCertStore) -> PostgresResult<()> {
     let native = rustls_native_certs::load_native_certs();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let _ = roots.add_parsable_certificates(native.certs);
+    if roots.is_empty() {
+        // Keep host trust authoritative; public roots only replace an absent
+        // or unusable OS certificate store.
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     Ok(())
 }
 

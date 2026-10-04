@@ -39,6 +39,7 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const H2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const H2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 const H2_MAX_CONCURRENT_STREAMS: u32 = 128;
+const H2_FLOW_CONTROL_STALL_MULTIPLIER: u32 = 4;
 const HTTP2_WEBSOCKET_MAX_AGE: Duration = Duration::from_secs(3_600);
 const HTTP1_REQUEST_LINE_ALLOWANCE_BYTES: usize = 8 * 1024;
 const LISTENER_ABORT_SETTLE_RESERVE: Duration = Duration::from_millis(100);
@@ -231,10 +232,16 @@ async fn serve_connection(
     let idle_since = activity_rx.borrow().idle_since;
     let mut idle_deadline = Box::pin(sleep_until(idle_since + drain_safe_idle_timeout));
     let mut frame_stall_deadline = Box::pin(tokio::time::sleep(Duration::from_secs(86_400)));
+    // Flow-control windows can pause a healthy slow reader without a stalled
+    // socket write. Give this protocol guard a separate, longer allowance.
+    let flow_control_stall_timeout = settings
+        .write_stall_timeout
+        .saturating_mul(H2_FLOW_CONTROL_STALL_MULTIPLIER);
 
     loop {
-        let has_active_requests = activity_rx.borrow().active_requests != 0;
-        let unconsumed_frame_at = activity_rx.borrow().oldest_unconsumed_frame_at;
+        let snapshot = *activity_rx.borrow();
+        let has_active_requests = snapshot.active_requests != 0;
+        let unconsumed_frame_at = snapshot.oldest_unconsumed_frame_at;
         tokio::select! {
             biased;
             result = &mut connection => {
@@ -290,15 +297,25 @@ async fn serve_connection(
                     if let Some(pending_since) = snapshot.oldest_unconsumed_frame_at {
                         frame_stall_deadline
                             .as_mut()
-                            .reset(pending_since + settings.write_stall_timeout);
+                            .reset(pending_since + flow_control_stall_timeout);
                     }
                 }
             }
-            _ = &mut frame_stall_deadline, if unconsumed_frame_at.is_some() => {
-                // Hyper cannot make per-stream progress when an HTTP/2 peer
-                // holds the flow-control window closed. Release the bounded
-                // connection slot instead of retaining it until max age.
+            _ = &mut frame_stall_deadline,
+                if unconsumed_frame_at.is_some()
+                    && snapshot.pending_frame_count >= snapshot.active_requests
+                    && snapshot.pending_frame_count > 0 => {
+                // Hyper owns stream flow control, so the transport cannot
+                // reset one stalled stream here. Send GOAWAY and give other
+                // in-flight streams their configured drain allowance.
                 trace!("http_body_frame_delivery_stalled");
+                connection.as_mut().graceful_shutdown();
+                if tokio::time::timeout(settings.connection_drain_grace, connection)
+                    .await
+                    .is_err()
+                {
+                    trace!("http_flow_control_drain_grace_elapsed");
+                }
                 break;
             }
             _ = &mut idle_deadline, if !has_active_requests => {

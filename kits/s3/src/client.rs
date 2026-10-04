@@ -219,8 +219,11 @@ fn http_client_builder() -> Result<reqwest::ClientBuilder, S3StorageError> {
     // A signature authorizes one endpoint and method. Redirects can replay an
     // upload body elsewhere, and automatic decompression changes stored bytes.
     let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if roots.is_empty() {
+        // Respect a configured host trust store before using public fallback roots.
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))

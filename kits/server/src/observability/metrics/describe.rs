@@ -4,6 +4,7 @@
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 use super::names::MetricName;
+use super::record::RATE_LIMIT_OVERFLOW_DECISION_COUNT;
 
 pub(super) fn describe_standard_metrics() {
     describe_counter!(
@@ -54,6 +55,10 @@ pub(super) fn describe_standard_metrics() {
     describe_gauge!(
         MetricName::RateLimitBucketsLive.as_str(),
         "Current number of live in-memory rate-limit buckets for a listener."
+    );
+    describe_counter!(
+        RATE_LIMIT_OVERFLOW_DECISION_COUNT,
+        "Allowed and rejected requests using a full tier's fixed newcomer allowance."
     );
     describe_counter!(
         MetricName::RateLimitMutexPoisoned.as_str(),

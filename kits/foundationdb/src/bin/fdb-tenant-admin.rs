@@ -6,7 +6,7 @@
 //! Invocations:
 //! - `ensure <tenant-name>`
 //! - `repair <tenant-name>`
-//! - `recover-delete <tenant-name>`
+//! - `recover-delete <tenant-name> <expected-tenant-id>`
 //! - `delete <tenant-name>`
 //! - `exists <tenant-name>`
 
@@ -19,7 +19,7 @@ use reallyme_foundationdb_kit::FoundationDbTenantName;
 use reallyme_foundationdb_kit::{FdbConfig, FdbContext, fdb::tenant::admin};
 use thiserror::Error;
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|recover-delete|delete|exists> <tenant>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists> <tenant> | recover-delete <tenant> <expected-tenant-id>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 enum AdminToolError {
@@ -27,6 +27,8 @@ enum AdminToolError {
     Usage,
     #[error("tenant name must use lowercase ASCII letters, digits, and interior hyphens")]
     InvalidTenant,
+    #[error("expected tenant ID must be a nonnegative integer")]
+    InvalidTenantId,
     #[error("invalid FoundationDB configuration")]
     InvalidConfig,
     #[error("failed to connect to FoundationDB")]
@@ -47,7 +49,13 @@ async fn run() -> Result<(), AdminToolError> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or(AdminToolError::Usage)?;
     let tenant = args.next().ok_or(AdminToolError::Usage)?;
-
+    let expected_tenant_id = if command == "recover-delete" {
+        Some(parse_expected_tenant_id(
+            args.next().ok_or(AdminToolError::Usage)?,
+        )?)
+    } else {
+        None
+    };
     if args.next().is_some() {
         return Err(AdminToolError::Usage);
     }
@@ -67,9 +75,13 @@ async fn run() -> Result<(), AdminToolError> {
         "repair" => admin::repair_tenant_metadata(&context, tenant)
             .await
             .map_err(|_| AdminToolError::RepairFailed),
-        "recover-delete" => admin::recover_interrupted_delete(&context, tenant)
-            .await
-            .map_err(|_| AdminToolError::RecoverDeleteFailed),
+        "recover-delete" => admin::recover_interrupted_delete(
+            &context,
+            tenant,
+            expected_tenant_id.ok_or(AdminToolError::Usage)?,
+        )
+        .await
+        .map_err(|_| AdminToolError::RecoverDeleteFailed),
         "delete" => admin::delete_tenant(&context, tenant)
             .await
             .map_err(|_| AdminToolError::DeleteFailed),
@@ -92,6 +104,14 @@ async fn run() -> Result<(), AdminToolError> {
 
 fn parse_tenant(value: String) -> Result<FoundationDbTenantName, AdminToolError> {
     FoundationDbTenantName::new(value.as_str()).map_err(|_| AdminToolError::InvalidTenant)
+}
+
+fn parse_expected_tenant_id(value: String) -> Result<i64, AdminToolError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id >= 0)
+        .ok_or(AdminToolError::InvalidTenantId)
 }
 
 #[tokio::main]

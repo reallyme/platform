@@ -38,6 +38,8 @@ const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGE_HANDLER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONNECTION_AGE: Duration = Duration::from_secs(3_600);
 
+#[path = "connection/handler_timeout.rs"]
+mod handler_timeout;
 #[path = "connection/handle_application_message.rs"]
 mod message_handler;
 #[path = "connection/model.rs"]
@@ -45,6 +47,7 @@ mod model;
 #[path = "connection/protocol_close.rs"]
 mod protocol_close;
 
+pub use handler_timeout::{WebSocketHandlerTimeoutError, WebSocketHandlerTimeoutErrorReason};
 use message_handler::{ApplicationMessageInput, handle_application_message};
 use model::{ApplicationMessageOutcome, OutboundWebSocketEvent};
 pub use model::{
@@ -70,6 +73,7 @@ pub struct WebSocketConnectionRuntime {
     shutdown: ShutdownToken,
     hooks: Arc<dyn WebSocketConnectionHooks>,
     connection_limiter: WebSocketConnectionLimiter,
+    handler_timeout: Duration,
 }
 
 impl WebSocketConnectionRuntime {
@@ -92,6 +96,7 @@ impl WebSocketConnectionRuntime {
             shutdown,
             hooks,
             connection_limiter,
+            handler_timeout: MESSAGE_HANDLER_TIMEOUT,
         }
     }
 
@@ -373,7 +378,7 @@ where
                             &mut receiver,
                             &mut socket,
                             &mut shutdown,
-                            MESSAGE_HANDLER_TIMEOUT,
+                            runtime.handler_timeout,
                         ).await {
                             ApplicationMessageOutcome::Continue => {}
                             ApplicationMessageOutcome::Close(reason) => {
@@ -417,7 +422,7 @@ where
                             &mut receiver,
                             &mut socket,
                             &mut shutdown,
-                            MESSAGE_HANDLER_TIMEOUT,
+                            runtime.handler_timeout,
                         ).await {
                             ApplicationMessageOutcome::Continue => {}
                             ApplicationMessageOutcome::Close(reason) => {

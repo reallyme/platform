@@ -96,8 +96,12 @@ fn hardened_builder() -> Result<reqwest::ClientBuilder, HttpsTransportError> {
     const MAXIMUM_IDLE_CONNECTIONS_PER_HOST: usize = 8;
 
     let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if roots.is_empty() {
+        // A configured host trust store remains authoritative; bundled roots
+        // only keep slim images without a store able to establish TLS.
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))

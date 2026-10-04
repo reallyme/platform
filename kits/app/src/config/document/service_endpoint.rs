@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::error::{AppConfigDocumentError, AppConfigDocumentErrorReason};
-use super::url::{validate_private_endpoint_url, validate_secure_url};
+use super::url::validate_secure_url;
 
 mod locator;
 mod validation;
@@ -66,23 +66,6 @@ impl AppServiceEndpointSource {
     pub fn from_document(
         document: AppServiceEndpointSourceDocument,
     ) -> Result<Self, AppConfigDocumentError> {
-        Self::from_document_with_policy(document, false)
-    }
-
-    /// Validates endpoints for a caller that has already established private transport.
-    ///
-    /// This is separate from the default constructor so public fallback paths
-    /// cannot silently accept plaintext endpoints.
-    pub fn from_private_transport_document(
-        document: AppServiceEndpointSourceDocument,
-    ) -> Result<Self, AppConfigDocumentError> {
-        Self::from_document_with_policy(document, true)
-    }
-
-    fn from_document_with_policy(
-        document: AppServiceEndpointSourceDocument,
-        private_transport: bool,
-    ) -> Result<Self, AppConfigDocumentError> {
         let endpoint_selection = document
             .endpoint_selection
             .as_deref()
@@ -100,16 +83,14 @@ impl AppServiceEndpointSource {
 
         let static_endpoints = if let Some(base_url) = document.base_url {
             Some(AppServiceStaticEndpoints::new(vec![
-                AppServiceEndpointUrl::for_transport(base_url, private_transport)?,
+                AppServiceEndpointUrl::new(base_url)?,
             ])?)
         } else if has_endpoints {
             Some(AppServiceStaticEndpoints::new(
                 document
                     .endpoints
                     .into_iter()
-                    .map(|endpoint| {
-                        AppServiceEndpointUrl::for_transport(endpoint, private_transport)
-                    })
+                    .map(AppServiceEndpointUrl::new)
                     .collect::<Result<Vec<_>, _>>()?,
             )?)
         } else {
@@ -313,22 +294,6 @@ impl AppServiceEndpointUrl {
     /// Constructs a validated endpoint URL.
     pub fn new(value: impl Into<String>) -> Result<Self, AppConfigDocumentError> {
         validate_secure_url(&value.into()).map(Self)
-    }
-
-    /// Constructs an endpoint URL after the caller has verified private transport.
-    pub fn new_private_transport(value: impl Into<String>) -> Result<Self, AppConfigDocumentError> {
-        validate_private_endpoint_url(&value.into()).map(Self)
-    }
-
-    fn for_transport(
-        value: impl Into<String>,
-        private_transport: bool,
-    ) -> Result<Self, AppConfigDocumentError> {
-        if private_transport {
-            Self::new_private_transport(value)
-        } else {
-            Self::new(value)
-        }
     }
 
     /// Returns the endpoint URL.

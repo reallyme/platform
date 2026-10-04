@@ -308,6 +308,56 @@ async fn malformed_forwarded_client_chain_is_rejected_instead_of_using_proxy_ide
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+#[test]
+fn forwarded_client_chain_accepts_port_forms_multiple_lines_and_unknown_hops() {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    let proxies = TrustedProxyHeaders::trust_configured_proxies(vec![
+        TrustedProxyRange::parse("10.0.0.0/8").expect("valid proxy range"),
+    ])
+    .expect("non-empty ranges");
+    for value in ["203.0.113.7:4567", "203.0.113.7", "[2001:db8::7]:4567"] {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            X_FORWARDED_FOR_HEADER,
+            HeaderValue::from_str(value).expect("valid header"),
+        );
+        headers.append(X_FORWARDED_FOR_HEADER, HeaderValue::from_static("10.1.2.4"));
+        let result = super::proxy_metadata::forwarded_client_ip_from_headers(&headers, &proxies);
+        assert!(
+            matches!(result, Ok(Some(_))),
+            "valid forwarded address: {value}"
+        );
+    }
+    for value in ["unknown", "_hidden"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_FOR_HEADER,
+            HeaderValue::from_str(value).expect("valid header"),
+        );
+        assert!(matches!(
+            super::proxy_metadata::forwarded_client_ip_from_headers(&headers, &proxies),
+            Ok(None)
+        ));
+    }
+    for value in ["for=\"1.2.3.4:5\"", "for=_hidden", "proto=https"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            FORWARDED_HEADER,
+            HeaderValue::from_str(value).expect("valid header"),
+        );
+        assert!(
+            super::proxy_metadata::forwarded_client_ip_from_headers(&headers, &proxies).is_ok()
+        );
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        FORWARDED_HEADER,
+        HeaderValue::from_static("for=bad-address"),
+    );
+    assert!(super::proxy_metadata::forwarded_client_ip_from_headers(&headers, &proxies).is_err());
+}
+
 #[tokio::test]
 async fn trusted_proxy_ignores_unselected_forwarded_family() {
     let config = trusted_proxy_metadata_config(vec![
@@ -433,7 +483,7 @@ async fn strict_mode_rejects_conflicting_forwarded_host_and_proto() {
 }
 
 #[tokio::test]
-async fn forwarded_family_rejects_client_and_proxy_field_lines_in_strict_mode() {
+async fn forwarded_family_uses_proxy_field_line_in_strict_mode() {
     let config = HttpSecurityConfig::new(
         SecurityHeadersConfig::secure_defaults(),
         HostAuthorityPolicy::allow_list(vec![
@@ -454,13 +504,16 @@ async fn forwarded_family_rejects_client_and_proxy_field_lines_in_strict_mode() 
         .uri("/app")
         .header("host", "internal-lb.local")
         .header("forwarded", "for=203.0.113.7;host=evil.example;proto=https")
-        .header("forwarded", "for=10.1.2.3;host=api.reallyme.net;proto=http")
+        .header(
+            "forwarded",
+            "for=10.1.2.3;host=api.reallyme.net;proto=https",
+        )
         .body(Body::empty())
         .expect("valid test request");
     request.extensions_mut().insert(ConnectInfo(trusted));
 
     let response = service.call(request).await.expect("infallible service");
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]

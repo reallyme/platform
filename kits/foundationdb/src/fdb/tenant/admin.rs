@@ -89,12 +89,26 @@ pub async fn repair_tenant_metadata(
 
 /// Operator recovery for an interrupted delete that left both metadata keys
 /// absent. Unlike initial provisioning repair, application data may be present.
-/// This reinitializes the metadata creation time; the caller must verify the
-/// tenant identity before invoking this action.
+/// This reinitializes the metadata creation time. The expected tenant ID must
+/// come from a trusted record captured before the interrupted deletion.
 pub async fn recover_interrupted_delete(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
+    expected_tenant_id: i64,
 ) -> FdbResult<()> {
+    let identity = tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        TenantManagement::get_tenant(connector.database(), tenant.as_bytes()),
+    )
+    .await
+    .map_err(|_| administration_failed(tenant))?
+    .map_err(|_| administration_failed(tenant))?;
+    if !identity
+        .and_then(Result::ok)
+        .is_some_and(|info| info.id == expected_tenant_id)
+    {
+        return Err(administration_failed(tenant));
+    }
     let inner = connector
         .database()
         .open_tenant(tenant.as_bytes())
@@ -274,14 +288,10 @@ async fn restore_metadata(
         .create_trx()
         .map_err(|_| administration_failed(tenant))?;
     for (key, value) in metadata {
-        if transaction
-            .get(key, false)
-            .await
-            .map_err(|_| administration_failed(tenant))?
-            .is_none()
-        {
-            transaction.set(key, value);
-        }
+        // Always stage the repair write. An earlier read could observe the
+        // old metadata before a pending phase-one clear commits; skipping the
+        // write would then allow that clear to strand a surviving tenant.
+        transaction.set(key, value);
     }
     transaction
         .commit()
