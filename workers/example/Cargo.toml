@@ -19,8 +19,10 @@ reallyme-app-kit.workspace = true
 example-app = { workspace = true, default-features = false, features = ["connect"] }
 reallyme-example-contract = { workspace = true, features = ["generated"] }
 serde.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 worker.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

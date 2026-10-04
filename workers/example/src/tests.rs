@@ -11,7 +11,8 @@ use crate::response::WorkerRouteResponse;
 use crate::routing::{
     allowed_method_for_path, allowed_origin, is_connect_content_type, is_known_app_path,
     is_known_operational_path, is_valid_hello_request, parse_connect_timeout_values,
-    route_example_app, route_example_app_with_deadline,
+    route_example_app, route_example_app_with_deadline, valid_operational_probe_headers,
+    valid_operational_probe_token,
 };
 use example_app::app::{ExampleAppConfig, new_context};
 use example_app::ports::ExamplePorts;
@@ -178,6 +179,42 @@ fn worker_operational_routes_are_known_for_method_mismatch_mapping() {
     assert!(!is_known_operational_path("/version"));
     assert!(!is_known_operational_path("/metrics"));
     assert!(!is_known_operational_path("/internal/stats"));
+}
+
+#[test]
+fn operational_probe_requires_a_configured_bearer_token() {
+    let token = "a".repeat(32);
+    let authorization = format!("Bearer {token}");
+    assert!(valid_operational_probe_headers(
+        std::slice::from_ref(&authorization),
+        &token
+    ));
+    assert!(!valid_operational_probe_headers(&[], &token));
+    assert!(!valid_operational_probe_headers(
+        &[authorization.clone(), authorization.clone()],
+        &token
+    ));
+    assert!(valid_operational_probe_token(&authorization, &token));
+    assert!(!valid_operational_probe_token("", &token));
+    assert!(!valid_operational_probe_token(&token, &token));
+    assert!(!valid_operational_probe_token(
+        &format!("Bearer {}", "b".repeat(32)),
+        &token
+    ));
+    assert!(!valid_operational_probe_token(
+        &format!("Bearer {}", "a".repeat(31)),
+        &token
+    ));
+    assert!(!valid_operational_probe_token(
+        &format!("Bearer {}", "a".repeat(32)),
+        "short"
+    ));
+    assert!(!valid_operational_probe_token(
+        &format!("Bearer {}", "a".repeat(257)),
+        &"a".repeat(257)
+    ));
+    assert_eq!(allowed_method_for_path("/healthz"), None);
+    assert_eq!(allowed_method_for_path("/readyz"), None);
 }
 
 #[test]
