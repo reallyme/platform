@@ -162,6 +162,8 @@ span metadata. Values and range result counts are bounded before reaching the
 FoundationDB client. Only the kit's private metadata operations receive raw
 tenant transactions. Operator-only administration remains behind the
 `tenant-admin` feature and does not expose the connector's database handle.
+The versionstamped-key atomic mutation is rejected because it changes a key
+after namespace validation.
 
 ## Metrics
 

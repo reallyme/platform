@@ -43,6 +43,9 @@ pub enum TenantDataAccessErrorReason {
     /// Range reads must have a bounded result count.
     #[error("tenant data range limit is invalid")]
     InvalidRangeLimit,
+    /// A mutation must not change a key after namespace validation.
+    #[error("tenant data mutation changes the validated key")]
+    KeyChangingMutation,
 }
 
 /// A borrowed application key validated against the kit's reserved namespace.
@@ -175,6 +178,7 @@ impl<'a> TenantDataTransaction<'a> {
         parameter: &[u8],
         mutation: MutationType,
     ) -> Result<(), TenantDataAccessErrorReason> {
+        validate_atomic_mutation(mutation)?;
         if parameter.len() > MAX_TENANT_VALUE_BYTES {
             return Err(TenantDataAccessErrorReason::ValueTooLong);
         }
@@ -194,6 +198,15 @@ impl<'a> TenantDataTransaction<'a> {
         options.target_bytes = MAX_RANGE_TARGET_BYTES;
         self.inner.get_range(&options, 1, snapshot).await
     }
+}
+
+fn validate_atomic_mutation(mutation: MutationType) -> Result<(), TenantDataAccessErrorReason> {
+    // FoundationDB replaces part of the key at commit time for this mutation.
+    // The resulting key has not passed our metadata-namespace validation.
+    if matches!(mutation, MutationType::SetVersionstampedKey) {
+        return Err(TenantDataAccessErrorReason::KeyChangingMutation);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

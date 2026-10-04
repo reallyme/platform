@@ -78,5 +78,7 @@ async fn live_connector_proves_cluster_and_tenant_readiness() -> FdbResult<()> {
             reason: reallyme_foundationdb_kit::FdbQueryErrorReason::TransactionFailed,
         })?;
     assert_eq!(stored.as_deref(), Some(b"value".as_slice()));
+    // Application data writes must leave the kit's metadata readable.
+    verify_ready(&connector, &[tenant]).await?;
     Ok(())
 }
