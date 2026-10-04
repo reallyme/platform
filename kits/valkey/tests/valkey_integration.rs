@@ -22,7 +22,7 @@ async fn cache_lease_and_counter_commands_are_atomic() {
         port: std::env::var("REALLYME_VALKEY_INTEGRATION_PORT")
             .map(|value| value.parse::<u16>().expect("valid test port"))
             .unwrap_or(6_379),
-        key_prefix: "reallyme:integration".to_owned(),
+        key_prefix: "reallyme-integration".to_owned(),
         transport_security: ValkeyTransportSecurity::AllowPlaintextForDevelopment,
         ..ValkeyConfigInput::default()
     })

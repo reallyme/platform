@@ -18,12 +18,19 @@ use foundationdb::{
 use crate::fdb::error::{FdbError, FdbResult, TenantErrorReason};
 use crate::fdb::transaction::TenantTransactionPolicy;
 
+mod data;
+mod data_transact;
 mod metadata;
 mod transact;
+pub use data::{
+    TenantDataAccessErrorReason, TenantDataKey, TenantDataRange, TenantDataRangeLimit,
+    TenantDataTransaction,
+};
+use data_transact::{TenantDataArcAdapter, TenantDataFnMutAdapter};
 use metadata::read_tenant_metadata;
 #[cfg(feature = "metrics")]
 use transact::record_tenant_open_failure;
-use transact::{TenantTransactArcData, TenantTransactFnMutData, tenant_handle_transact};
+use transact::{TenantTransactArcData, tenant_handle_transact};
 
 /// Explicit operator-only tenant lifecycle operations.
 #[cfg(feature = "tenant-admin")]
@@ -113,10 +120,8 @@ impl TenantHandle {
     ///   must avoid implicitly retrying a `maybe_committed` commit.
     /// - Cancellation of the caller future remains propagated into the FoundationDB
     ///   transaction.
-    /// - The closure receives a raw FoundationDB transaction. Tenant scoping does
-    ///   not reserve the kit's `__meta/v1/` keys against writes from code using
-    ///   this method. Callers must be trusted to keep application keys outside
-    ///   that namespace; use the tenant-admin API for metadata changes.
+    /// - The closure receives a restricted transaction view. Its key and range
+    ///   types prevent application callbacks from reaching kit metadata.
     ///
     /// Prefer [`Self::transact_boxed_arc`] for callsites where `D` is expensive
     /// to copy or should be reused read-only across retries.
@@ -128,7 +133,7 @@ impl TenantHandle {
     ) -> Result<T, E>
     where
         F: for<'a> FnMut(
-            &'a Transaction,
+            &'a TenantDataTransaction<'a>,
             &'a mut D,
         ) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>,
         E: TransactError + Send + 'trx,
@@ -143,7 +148,7 @@ impl TenantHandle {
 
         tenant_handle_transact(
             &self.inner,
-            TenantTransactFnMutData::new(f, data),
+            TenantDataFnMutAdapter::new(f, data),
             policy.to_transact_option(),
             operation_class,
             self.tenant,
@@ -163,7 +168,7 @@ impl TenantHandle {
     ) -> Result<T, E>
     where
         F: for<'a> FnMut(
-            &'a Transaction,
+            &'a TenantDataTransaction<'a>,
             &'a Arc<D>,
         ) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>,
         E: TransactError + Send + 'trx,
@@ -176,6 +181,40 @@ impl TenantHandle {
             TenantTransactionPolicy::Write(_) => TenantTransactionOperationClass::Write,
         };
 
+        tenant_handle_transact(
+            &self.inner,
+            TenantDataArcAdapter::new(f, data),
+            policy.to_transact_option(),
+            operation_class,
+            self.tenant,
+        )
+        .await
+    }
+
+    /// Runs kit-owned metadata work with the raw transaction capability.
+    ///
+    /// This method is deliberately private to the kit. Application callbacks
+    /// must use the validated data transaction view instead.
+    pub(super) async fn transact_boxed_arc_raw<'trx, F, D, T, E>(
+        &'trx self,
+        data: Arc<D>,
+        f: F,
+        policy: TenantTransactionPolicy,
+    ) -> Result<T, E>
+    where
+        F: for<'a> FnMut(
+            &'a Transaction,
+            &'a Arc<D>,
+        ) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>,
+        E: TransactError + Send + 'trx,
+        T: Send + 'trx,
+        D: Send + Sync + 'trx,
+        F: Send + 'trx,
+    {
+        let operation_class = match policy {
+            TenantTransactionPolicy::Read(_) => TenantTransactionOperationClass::Read,
+            TenantTransactionPolicy::Write(_) => TenantTransactionOperationClass::Write,
+        };
         tenant_handle_transact(
             &self.inner,
             TenantTransactArcData::new(f, data),

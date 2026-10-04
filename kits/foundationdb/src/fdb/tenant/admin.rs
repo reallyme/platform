@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use super::TenantHandle;
 use super::metadata::{read_tenant_metadata, repair_empty_tenant_metadata, write_tenant_metadata};
+use crate::fdb::connector::FoundationDbConnector;
 use crate::fdb::error::{FdbError, FdbResult, TenantErrorReason};
 use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, codec::KeyEncoder};
 
@@ -34,7 +35,11 @@ struct TenantPrefixRecord {
 ///
 /// Existing tenants are never modified implicitly. If an existing tenant has
 /// missing or incompatible metadata, the operation fails for explicit repair.
-pub async fn ensure_tenant(database: &Database, tenant: FoundationDbTenantName) -> FdbResult<()> {
+pub async fn ensure_tenant(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<()> {
+    let database = connector.database();
     let label = tenant.as_bytes();
     let was_created = match TenantManagement::get_tenant(database, label).await {
         Ok(Some(_info)) => false,
@@ -72,9 +77,10 @@ pub async fn ensure_tenant(database: &Database, tenant: FoundationDbTenantName) 
 /// This explicit operator action refuses nonempty tenants and never overwrites
 /// existing metadata. A normal `ensure_tenant` call remains fail closed.
 pub async fn repair_tenant_metadata(
-    database: &Database,
+    connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
 ) -> FdbResult<()> {
+    let database = connector.database();
     let inner = database
         .open_tenant(tenant.as_bytes())
         .map_err(|_| FdbError::Tenant {
@@ -94,7 +100,11 @@ pub async fn repair_tenant_metadata(
 /// Metadata clearing and tenant deletion share one FoundationDB transaction.
 /// If any app data remains, FoundationDB rejects the delete and retains the
 /// metadata. Operators can query `tenant_exists` after an uncertain timeout.
-pub async fn delete_tenant(database: &Database, tenant: FoundationDbTenantName) -> FdbResult<()> {
+pub async fn delete_tenant(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<()> {
+    let database = connector.database();
     tokio::time::timeout(TENANT_ADMIN_TIMEOUT, delete_empty_tenant(database, tenant))
         .await
         .map_err(|_| FdbError::Tenant {
@@ -185,7 +195,11 @@ fn prefixed_metadata_key(
 }
 
 /// Returns whether a tenant is explicitly provisioned.
-pub async fn tenant_exists(database: &Database, tenant: FoundationDbTenantName) -> FdbResult<bool> {
+pub async fn tenant_exists(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<bool> {
+    let database = connector.database();
     match TenantManagement::get_tenant(database, tenant.as_bytes()).await {
         Ok(Some(_)) => Ok(true),
         Ok(None) => Ok(false),
