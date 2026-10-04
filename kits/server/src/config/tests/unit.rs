@@ -6,14 +6,15 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::config::{
-    BindAddress, BodyLimitConfigField, ConfigError, ConfigValidationErrorReason, CorsConfig,
-    DEFAULT_METRICS_IDLE_TIMEOUT, Http3ServerConfig, Http3ServerConfigField, LogFormat,
-    LogFormatParseError, MetricsIdleTimeout, ObservabilityConfig, ObservabilityConfigField,
-    RequestBodyLimitBytes, RequestTimeout, SecretString, ServiceEnvironment,
-    ServiceEnvironmentParseError, TimeoutConfigField,
+    BindAddress, BodyLimitConfigField, ConfigError, ConfigValidationErrorReason,
+    DEFAULT_METRICS_IDLE_TIMEOUT, LogFormat, LogFormatParseError, MetricsIdleTimeout,
+    ObservabilityConfig, ObservabilityConfigField, RequestBodyLimitBytes, RequestTimeout,
+    SecretString, ServiceEnvironment, ServiceEnvironmentParseError, TimeoutConfigField,
 };
 #[cfg(feature = "tonic-grpc")]
 use crate::config::{BodyLimitConfig, GrpcServerConfig, HttpServerConfig, TimeoutConfig};
+#[cfg(feature = "http")]
+use crate::config::{CorsConfig, Http3ServerConfig, Http3ServerConfigField};
 
 #[test]
 fn config_rejects_invalid_timeout_body_limit_values() {
@@ -88,6 +89,7 @@ fn server_config_summaries_expose_inspectable_values() {
 }
 
 #[test]
+#[cfg(feature = "http")]
 fn http3_quic_enable_fails_closed_until_tls_runtime_support_exists() {
     assert_eq!(
         Http3ServerConfig::enable(),
@@ -205,6 +207,7 @@ fn log_format_and_service_environment_reject_unsupported_values_with_typed_error
 }
 
 #[test]
+#[cfg(feature = "http")]
 fn cors_config_accepts_exact_origin() {
     let result = CorsConfig::allow_exact_origin("https://reallyme.example");
 

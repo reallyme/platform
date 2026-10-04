@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::hash_map::{HashMap, RandomState};
+use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,10 +16,14 @@ use crate::observability::{record_rate_limit_buckets_live, record_rate_limit_mut
 use crate::runtime::{HttpRateLimitScope, HttpRateLimitTierPolicy};
 use crate::task::{ShutdownToken, TaskExecutionError};
 
+#[path = "rate_limit/state.rs"]
+mod state;
+use state::RateLimitBucketState;
+
 /// Maximum number of live rate-limit buckets per registry.
 pub const RATE_LIMIT_MAX_LIVE_BUCKETS: usize = 25_000;
 
-/// Idle bucket pruning window for sweep and request-time eviction.
+/// Idle bucket pruning window for the periodic sweep.
 pub const RATE_LIMIT_BUCKET_IDLE_TTL_SECS: u64 = 900;
 
 /// Periodic sweep cadence used by runtime-managed background tasks.
@@ -45,6 +49,7 @@ struct SourceRateBucket {
     fractional_tokens: u32,
     last_refill_at: Instant,
     last_activity_at: Instant,
+    last_admitted_at: Instant,
 }
 
 impl SourceRateBucket {
@@ -54,11 +59,10 @@ impl SourceRateBucket {
             fractional_tokens: 0,
             last_refill_at: now,
             last_activity_at: now,
+            last_admitted_at: now,
         }
     }
 }
-
-type RateLimitBucketMap = HashMap<HttpRateLimitTierName, HashMap<u64, SourceRateBucket>>;
 
 /// Shared request rate limiter used by HTTP and gRPC layers.
 #[derive(Debug)]
@@ -66,7 +70,7 @@ pub struct RateLimitRegistry {
     tier_policies: Arc<Vec<(HttpRateLimitTierName, HttpRateLimitTierPolicy)>>,
     bucket_identity_hasher: RandomState,
     max_live_buckets: usize,
-    buckets: Mutex<RateLimitBucketMap>,
+    buckets: Mutex<RateLimitBucketState>,
 }
 
 /// Result of an individual rate-limit decision.
@@ -95,11 +99,20 @@ impl RateLimitRegistry {
             tier_policies,
             bucket_identity_hasher: RandomState::new(),
             max_live_buckets,
-            buckets: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(RateLimitBucketState::default()),
         }
     }
 
+    #[cfg(test)]
     fn source_bucket_id(&self, source_identity: RateLimitSourceIdentity) -> u64 {
+        self.source_bucket_id_with_prefix(source_identity, 64)
+    }
+
+    fn source_bucket_id_with_prefix(
+        &self,
+        source_identity: RateLimitSourceIdentity,
+        ipv6_prefix_len: u8,
+    ) -> u64 {
         // SipHash-1-3 with process-randomized state avoids collision attacks
         // against caller-controlled identity values.
         let mut hasher = self.bucket_identity_hasher.build_hasher();
@@ -107,7 +120,7 @@ impl RateLimitRegistry {
             RateLimitSourceIdentity::ForwardedIp(value)
             | RateLimitSourceIdentity::PeerIp(value) => {
                 2u8.hash(&mut hasher);
-                rate_limit_network(value).hash(&mut hasher);
+                rate_limit_network_with_prefix(value, ipv6_prefix_len).hash(&mut hasher);
             }
             RateLimitSourceIdentity::Anonymous => {
                 3u8.hash(&mut hasher);
@@ -132,46 +145,38 @@ impl RateLimitRegistry {
         };
 
         let source_bucket = match policy.scope() {
-            HttpRateLimitScope::PerSource => self.source_bucket_id(source_identity),
+            HttpRateLimitScope::PerSource => {
+                self.source_bucket_id_with_prefix(source_identity, policy.ipv6_source_prefix_len())
+            }
             HttpRateLimitScope::Shared => 0,
         };
 
         let now = Instant::now();
         let mut buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
 
-        let mut creating_new_bucket = false;
-        {
-            if let Some(tier_buckets) = buckets.get_mut(tier) {
-                if !tier_buckets.contains_key(&source_bucket) {
-                    prune_tier_buckets_locked(tier_buckets, now);
-                    if tier_buckets.len() >= policy.max_distinct_sources() {
-                        return RateLimitDecision::SourceLimitReached;
-                    }
-                    creating_new_bucket = true;
-                }
-            } else {
-                if policy.max_distinct_sources() == 0 {
-                    return RateLimitDecision::SourceLimitReached;
-                }
-                if self.total_bucket_count_locked(&buckets) >= self.max_live_buckets {
+        let mut evicted = false;
+        if !buckets.contains(tier, source_bucket) {
+            if buckets.tier_len(tier) >= policy.max_distinct_sources() {
+                // Indexed oldest-admission eviction keeps new source work
+                // bounded even under large rotating IPv6 address ranges.
+                evicted = buckets.evict_tier(tier);
+            }
+            if buckets.len() >= self.max_live_buckets {
+                if !buckets.evict_global(tier) {
                     return RateLimitDecision::RegistryFull;
                 }
-                buckets.insert(tier.clone(), HashMap::new());
-                creating_new_bucket = true;
+                evicted = true;
             }
+            buckets.insert(
+                tier.clone(),
+                source_bucket,
+                SourceRateBucket::fresh(now, if evicted { 1 } else { policy.burst_tokens() }),
+            );
         }
 
-        if creating_new_bucket && self.total_bucket_count_locked(&buckets) >= self.max_live_buckets
-        {
-            return RateLimitDecision::RegistryFull;
-        }
-
-        let Some(tier_buckets) = buckets.get_mut(tier) else {
+        let Some(bucket) = buckets.bucket_mut(tier, source_bucket) else {
             return RateLimitDecision::SourceLimitReached;
         };
-        let bucket = tier_buckets
-            .entry(source_bucket)
-            .or_insert_with(|| SourceRateBucket::fresh(now, policy.burst_tokens()));
 
         refill_bucket(bucket, policy, now);
 
@@ -182,39 +187,21 @@ impl RateLimitRegistry {
 
         bucket.tokens = bucket.tokens.saturating_sub(1);
         bucket.last_activity_at = now;
+        buckets.record_admission(tier, source_bucket, now);
         RateLimitDecision::Allowed
     }
 
     /// Removes stale buckets from all tiers.
     pub fn prune_stale_buckets(&self) {
         let mut buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
-        prune_stale_buckets_locked(&mut buckets, Instant::now());
+        buckets.prune_stale(Instant::now());
     }
 
     /// Returns the live bucket count across all tiers.
     pub fn live_bucket_count(&self) -> usize {
         let buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
-        self.total_bucket_count_locked(&buckets)
+        buckets.len()
     }
-
-    fn total_bucket_count_locked(&self, buckets: &RateLimitBucketMap) -> usize {
-        buckets.values().map(|entries| entries.len()).sum()
-    }
-}
-
-fn prune_tier_buckets_locked(tier_buckets: &mut HashMap<u64, SourceRateBucket>, now: Instant) {
-    tier_buckets.retain(|_, bucket| {
-        now.saturating_duration_since(bucket.last_activity_at)
-            .as_secs()
-            < RATE_LIMIT_BUCKET_IDLE_TTL_SECS
-    });
-}
-
-fn prune_stale_buckets_locked(buckets: &mut RateLimitBucketMap, now: Instant) {
-    buckets.retain(|_, tier_buckets| {
-        prune_tier_buckets_locked(tier_buckets, now);
-        !tier_buckets.is_empty()
-    });
 }
 
 fn refill_bucket(bucket: &mut SourceRateBucket, policy: HttpRateLimitTierPolicy, now: Instant) {
@@ -239,14 +226,19 @@ fn refill_bucket(bucket: &mut SourceRateBucket, policy: HttpRateLimitTierPolicy,
 }
 
 pub(crate) fn rate_limit_network(address: IpAddr) -> IpAddr {
+    rate_limit_network_with_prefix(address, 64)
+}
+
+fn rate_limit_network_with_prefix(address: IpAddr, ipv6_prefix_len: u8) -> IpAddr {
     match address {
         IpAddr::V4(value) => IpAddr::V4(value),
         IpAddr::V6(value) => match value.to_ipv4_mapped() {
             Some(mapped) => IpAddr::V4(mapped),
             None => {
-                // A single client commonly controls an IPv6 /64. Treat its
-                // interface IDs as one source rather than fresh identities.
-                let network = u128::from(value) & (u128::MAX << 64);
+                // A client commonly controls a full IPv6 subnet. Group its
+                // addresses under the validated tier prefix.
+                let host_bits = 128_u32 - u32::from(ipv6_prefix_len);
+                let network = u128::from(value) & (u128::MAX << host_bits);
                 IpAddr::V6(Ipv6Addr::from(network))
             }
         },
@@ -254,8 +246,8 @@ pub(crate) fn rate_limit_network(address: IpAddr) -> IpAddr {
 }
 
 fn recover_rate_limit_buckets_lock(
-    result: LockResult<MutexGuard<'_, RateLimitBucketMap>>,
-) -> MutexGuard<'_, RateLimitBucketMap> {
+    result: LockResult<MutexGuard<'_, RateLimitBucketState>>,
+) -> MutexGuard<'_, RateLimitBucketState> {
     match result {
         Ok(guard) => guard,
         Err(poisoned) => {

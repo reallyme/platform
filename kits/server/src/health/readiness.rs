@@ -75,6 +75,7 @@ impl Readiness {
     }
 
     /// Updates the aggregate app-health gate used by both HTTP and gRPC probes.
+    #[cfg(feature = "http")]
     pub(crate) fn set_app_health(&self, ready: bool) {
         self.state_sender.send_if_modified(|snapshot| {
             if snapshot.apps_ready == ready {

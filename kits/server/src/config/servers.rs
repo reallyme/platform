@@ -7,7 +7,7 @@ use super::body::BodyLimitConfig;
 use super::concurrency::DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT;
 #[cfg(feature = "http")]
 use super::concurrency::DEFAULT_HTTP_IN_FLIGHT_REQUEST_LIMIT;
-use super::concurrency::RuntimeConcurrencyLimit;
+use super::concurrency::{ConnectionLimitConfig, RuntimeConcurrencyLimit};
 #[cfg(feature = "http")]
 use super::cors::CorsConfig;
 #[cfg(feature = "http")]
@@ -27,6 +27,7 @@ pub struct HttpServerConfig {
     timeout: TimeoutConfig,
     body_limit: BodyLimitConfig,
     concurrency_limit: RuntimeConcurrencyLimit,
+    connection_limits: ConnectionLimitConfig,
     http3: Http3ServerConfig,
     security: HttpSecurityConfig,
 }
@@ -46,6 +47,7 @@ impl HttpServerConfig {
             timeout,
             body_limit,
             concurrency_limit: DEFAULT_HTTP_IN_FLIGHT_REQUEST_LIMIT,
+            connection_limits: ConnectionLimitConfig::secure_defaults(),
             http3: Http3ServerConfig::disabled(),
             security: HttpSecurityConfig::secure_defaults(),
         }
@@ -65,6 +67,7 @@ impl HttpServerConfig {
             timeout,
             body_limit,
             concurrency_limit,
+            connection_limits: ConnectionLimitConfig::secure_defaults(),
             http3: Http3ServerConfig::disabled(),
             security: HttpSecurityConfig::secure_defaults(),
         }
@@ -83,6 +86,12 @@ impl HttpServerConfig {
     /// Returns a copy of this config with explicit HTTP security posture.
     pub fn with_security_config(mut self, security: HttpSecurityConfig) -> Self {
         self.security = security;
+        self
+    }
+
+    /// Returns a copy with validated listener connection admission bounds.
+    pub fn with_connection_limits(mut self, limits: ConnectionLimitConfig) -> Self {
+        self.connection_limits = limits;
         self
     }
 
@@ -111,6 +120,11 @@ impl HttpServerConfig {
         self.concurrency_limit
     }
 
+    /// Returns validated listener connection admission bounds.
+    pub fn connection_limits(&self) -> ConnectionLimitConfig {
+        self.connection_limits
+    }
+
     /// Returns the explicit HTTP/3 posture.
     pub fn http3(&self) -> Http3ServerConfig {
         self.http3
@@ -128,6 +142,7 @@ impl HttpServerConfig {
             timeout: self.timeout,
             body_limit: self.body_limit,
             concurrency_limit: self.concurrency_limit,
+            connection_limits: self.connection_limits,
             http3: self.http3,
             security: self.security.clone(),
             // The summary intentionally reuses the validated CORS policy rather
@@ -144,6 +159,7 @@ impl HttpServerConfig {
 pub struct GrpcServerConfig {
     bind_address: BindAddress,
     concurrency_limit: RuntimeConcurrencyLimit,
+    connection_limits: ConnectionLimitConfig,
 }
 
 #[cfg(feature = "tonic-grpc")]
@@ -153,6 +169,7 @@ impl GrpcServerConfig {
         Self {
             bind_address,
             concurrency_limit: DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT,
+            connection_limits: ConnectionLimitConfig::secure_defaults(),
         }
     }
 
@@ -164,7 +181,14 @@ impl GrpcServerConfig {
         Self {
             bind_address,
             concurrency_limit,
+            connection_limits: ConnectionLimitConfig::secure_defaults(),
         }
+    }
+
+    /// Returns a copy with validated listener connection admission bounds.
+    pub fn with_connection_limits(mut self, limits: ConnectionLimitConfig) -> Self {
+        self.connection_limits = limits;
+        self
     }
 
     /// Returns the validated bind address.
@@ -177,11 +201,17 @@ impl GrpcServerConfig {
         self.concurrency_limit
     }
 
+    /// Returns validated listener connection admission bounds.
+    pub fn connection_limits(&self) -> ConnectionLimitConfig {
+        self.connection_limits
+    }
+
     /// Returns a startup-safe configuration summary.
     pub fn startup_summary(&self) -> GrpcServerConfigSummary {
         GrpcServerConfigSummary {
             bind_address: self.bind_address,
             concurrency_limit: self.concurrency_limit,
+            connection_limits: self.connection_limits,
         }
     }
 }
@@ -195,6 +225,7 @@ pub struct HttpServerConfigSummary {
     body_limit: BodyLimitConfig,
     cors: CorsConfig,
     concurrency_limit: RuntimeConcurrencyLimit,
+    connection_limits: ConnectionLimitConfig,
     http3: Http3ServerConfig,
     security: HttpSecurityConfig,
 }
@@ -226,6 +257,11 @@ impl HttpServerConfigSummary {
         self.concurrency_limit
     }
 
+    /// Returns listener connection admission bounds.
+    pub fn connection_limits(&self) -> ConnectionLimitConfig {
+        self.connection_limits
+    }
+
     /// Returns the explicit HTTP/3 posture.
     pub fn http3(&self) -> Http3ServerConfig {
         self.http3
@@ -243,6 +279,7 @@ impl HttpServerConfigSummary {
 pub struct GrpcServerConfigSummary {
     bind_address: BindAddress,
     concurrency_limit: RuntimeConcurrencyLimit,
+    connection_limits: ConnectionLimitConfig,
 }
 
 #[cfg(feature = "tonic-grpc")]
@@ -255,5 +292,10 @@ impl GrpcServerConfigSummary {
     /// Returns the validated in-flight request limit.
     pub fn concurrency_limit(&self) -> RuntimeConcurrencyLimit {
         self.concurrency_limit
+    }
+
+    /// Returns listener connection admission bounds.
+    pub fn connection_limits(&self) -> ConnectionLimitConfig {
+        self.connection_limits
     }
 }

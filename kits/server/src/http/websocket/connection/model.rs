@@ -44,23 +44,22 @@ const MAX_CONNECTIONS_PER_SOURCE: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum WebSocketSource {
     Ip(IpAddr),
-    Anonymous,
 }
 
 impl WebSocketSource {
-    fn from_ip(source: Option<IpAddr>) -> Self {
+    fn from_ip(source: Option<IpAddr>) -> Option<Self> {
         match source {
-            Some(IpAddr::V4(ip)) => Self::Ip(IpAddr::V4(ip)),
+            Some(IpAddr::V4(ip)) => Some(Self::Ip(IpAddr::V4(ip))),
             Some(IpAddr::V6(ip)) => match ip.to_ipv4_mapped() {
-                Some(mapped) => Self::Ip(IpAddr::V4(mapped)),
+                Some(mapped) => Some(Self::Ip(IpAddr::V4(mapped))),
                 None => {
                     // A rotating IPv6 interface identifier must share one
                     // connection budget with its /64 network.
                     let network = u128::from(ip) & (u128::MAX << 64);
-                    Self::Ip(IpAddr::V6(Ipv6Addr::from(network)))
+                    Some(Self::Ip(IpAddr::V6(Ipv6Addr::from(network))))
                 }
             },
-            None => Self::Anonymous,
+            None => None,
         }
     }
 }
@@ -92,16 +91,20 @@ impl WebSocketConnectionLimiter {
                 )
             })?;
         let source = WebSocketSource::from_ip(source_ip);
-        let mut counts = self.source_counts.lock().map_err(|_| {
-            WebSocketConnectionLimitError::new(WebSocketConnectionLimitErrorReason::Internal)
-        })?;
-        let active = counts.entry(source).or_insert(0);
-        if *active >= MAX_CONNECTIONS_PER_SOURCE {
-            return Err(WebSocketConnectionLimitError::new(
-                WebSocketConnectionLimitErrorReason::TooManyActiveConnections,
-            ));
+        if let Some(source) = source {
+            let mut counts = self.source_counts.lock().map_err(|_| {
+                WebSocketConnectionLimitError::new(WebSocketConnectionLimitErrorReason::Internal)
+            })?;
+            let active = counts.entry(source).or_insert(0);
+            if *active >= MAX_CONNECTIONS_PER_SOURCE {
+                return Err(WebSocketConnectionLimitError::new(
+                    WebSocketConnectionLimitErrorReason::TooManyActiveConnections,
+                ));
+            }
+            *active = active.checked_add(1).ok_or_else(|| {
+                WebSocketConnectionLimitError::new(WebSocketConnectionLimitErrorReason::Internal)
+            })?;
         }
-        *active += 1;
         Ok(WebSocketConnectionPermit {
             _global_permit: global_permit,
             source_counts: Arc::clone(&self.source_counts),
@@ -115,7 +118,7 @@ impl WebSocketConnectionLimiter {
 pub struct WebSocketConnectionPermit {
     _global_permit: OwnedSemaphorePermit,
     source_counts: Arc<Mutex<HashMap<WebSocketSource, usize>>>,
-    source: WebSocketSource,
+    source: Option<WebSocketSource>,
 }
 
 impl WebSocketConnectionPermit {
@@ -126,12 +129,13 @@ impl WebSocketConnectionPermit {
 
 impl Drop for WebSocketConnectionPermit {
     fn drop(&mut self) {
-        if let Ok(mut counts) = self.source_counts.lock()
-            && let Some(active) = counts.get_mut(&self.source)
+        if let Some(source) = self.source
+            && let Ok(mut counts) = self.source_counts.lock()
+            && let Some(active) = counts.get_mut(&source)
         {
             *active -= 1;
             if *active == 0 {
-                counts.remove(&self.source);
+                counts.remove(&source);
             }
         }
     }

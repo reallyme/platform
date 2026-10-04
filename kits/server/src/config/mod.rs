@@ -32,6 +32,7 @@ mod timing;
 
 pub use body::{BodyLimitConfig, RequestBodyLimitBytes};
 pub use concurrency::{
+    ConnectionLimitConfig, ConnectionLimitError, ConnectionLimitErrorReason,
     DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT, DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT_VALUE,
     DEFAULT_HTTP_IN_FLIGHT_REQUEST_LIMIT, DEFAULT_HTTP_IN_FLIGHT_REQUEST_LIMIT_VALUE,
     DEFAULT_WEBSOCKET_CONNECTION_LIMIT, DEFAULT_WEBSOCKET_CONNECTION_LIMIT_VALUE,

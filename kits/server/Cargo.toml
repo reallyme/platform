@@ -12,7 +12,7 @@ repository.workspace = true
 keywords = ["server", "axum", "connect-rpc", "grpc", "observability"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 publish = ["crates-io"]
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [features]
 default = ["http", "connect", "websocket", "metrics"]
@@ -21,6 +21,7 @@ http = [
     "metrics",
     "dep:axum",
     "dep:futures-util",
+    "dep:http-body",
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
@@ -36,6 +37,7 @@ websocket = ["http", "axum/ws", "dep:bytes", "dep:futures-util", "dep:tungstenit
 [dependencies]
 axum = { workspace = true, optional = true }
 axum-test = { workspace = true, optional = true }
+http-body = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
@@ -66,10 +68,15 @@ uuid = { workspace = true, features = ["v4"] }
 zeroize.workspace = true
 
 [dev-dependencies]
+hyper = { workspace = true, features = ["client"] }
 axum-test.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
 tonic-prost.workspace = true
+
+[[example]]
+name = "minimal_server"
+required-features = ["http", "metrics"]
 
 [lints]
 workspace = true

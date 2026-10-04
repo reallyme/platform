@@ -44,3 +44,18 @@ The reference server in `servers/example` accepts validated JSONC for
 its profile, bind address, and bounded timeouts. A non-loopback bind requires a
 nonempty host allowlist; an external-origin policy requires trusted proxy
 ranges. Route visibility and rate-limit tiers remain host composition choices.
+
+HTTP and gRPC listeners also accept validated `ConnectionLimitConfig` values
+for total live TCP connections and per-source connections. The defaults are
+2,048 and 64. A configured trusted proxy peer, or a loopback sidecar, uses only
+the total limit so it can carry many client connections. The reference server
+accepts an optional `connection_limits` JSONC object with `max_live` and
+`max_per_source` fields. Request-level client policy should use the validated
+forwarded client identity after proxy normalization.
+When a listener reaches its total connection limit, it closes newly accepted
+sockets promptly. Idle HTTP and gRPC connections close after 60 seconds;
+stalled HTTP writes fail after 30 seconds. Active streams can finish during the
+configured drain window. Rate-limit source tables evict their least recently
+admitted source when full, with one initial token for a replacement source.
+Per-source tiers can set the IPv6 grouping prefix between `/48` and `/128`
+through `HttpRateLimitTierPolicy::with_ipv6_source_prefix_len`; the default is `/64`.

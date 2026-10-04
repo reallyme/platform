@@ -301,7 +301,8 @@ serialization stay with the application that owns them.
 Platform is actively developed and used in production at ReallyMe.
 
 Releases follow semantic versioning. Before 1.0, public APIs may evolve between
-minor releases; compatibility-impacting changes are documented in release notes.
+minor releases; compatibility-impacting changes are documented in the
+[changelog](CHANGELOG.md).
 
 ## License
 

@@ -13,7 +13,7 @@ use crate::http::{
 #[path = "http/serve.rs"]
 mod serve;
 
-pub(crate) use serve::serve_http;
+pub(crate) use serve::{HttpServePolicy, serve_http};
 
 /// HTTP server input owned by server composition and run by [`crate::runtime::ServerRuntime`].
 pub struct HttpServerSpec {
@@ -42,6 +42,7 @@ pub struct HttpRateLimitTierPolicy {
     burst_tokens: u32,
     max_distinct_sources: usize,
     scope: HttpRateLimitScope,
+    ipv6_source_prefix_len: u8,
 }
 
 /// Low-cardinality reason a rate-limit tier policy was rejected.
@@ -71,6 +72,27 @@ impl HttpRateLimitTierPolicyError {
 
     /// Returns the low-cardinality rejection reason.
     pub const fn reason(self) -> HttpRateLimitTierPolicyErrorReason {
+        self.reason
+    }
+}
+
+/// Low-cardinality reason an IPv6 rate-limit source prefix was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpIpv6SourcePrefixErrorReason {
+    /// Prefixes outside /48 through /128 either over-group clients or are invalid.
+    OutsideSupportedRange,
+}
+
+/// Typed validation error for per-source IPv6 rate-limit grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("invalid IPv6 rate-limit source prefix: {reason:?}")]
+pub struct HttpIpv6SourcePrefixError {
+    reason: HttpIpv6SourcePrefixErrorReason,
+}
+
+impl HttpIpv6SourcePrefixError {
+    /// Returns the low-cardinality rejection reason.
+    pub const fn reason(self) -> HttpIpv6SourcePrefixErrorReason {
         self.reason
     }
 }
@@ -108,6 +130,7 @@ impl HttpRateLimitTierPolicy {
             burst_tokens,
             max_distinct_sources,
             scope: HttpRateLimitScope::PerSource,
+            ipv6_source_prefix_len: 64,
         })
     }
 
@@ -115,6 +138,20 @@ impl HttpRateLimitTierPolicy {
     pub const fn with_scope(mut self, scope: HttpRateLimitScope) -> Self {
         self.scope = scope;
         self
+    }
+
+    /// Sets the IPv6 network prefix used to group per-source request buckets.
+    pub fn with_ipv6_source_prefix_len(
+        mut self,
+        prefix_len: u8,
+    ) -> Result<Self, HttpIpv6SourcePrefixError> {
+        if !(48..=128).contains(&prefix_len) {
+            return Err(HttpIpv6SourcePrefixError {
+                reason: HttpIpv6SourcePrefixErrorReason::OutsideSupportedRange,
+            });
+        }
+        self.ipv6_source_prefix_len = prefix_len;
+        Ok(self)
     }
 
     /// Returns how many tokens the bucket refills each second.
@@ -135,6 +172,11 @@ impl HttpRateLimitTierPolicy {
     /// Returns whether the tier keeps per-source or shared buckets.
     pub const fn scope(self) -> HttpRateLimitScope {
         self.scope
+    }
+
+    /// Returns the IPv6 prefix used for per-source request bucket identity.
+    pub const fn ipv6_source_prefix_len(self) -> u8 {
+        self.ipv6_source_prefix_len
     }
 }
 

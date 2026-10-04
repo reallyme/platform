@@ -112,6 +112,40 @@ fn trusted_proxy_jsonc_selects_exact_ranges_and_header_family()
 }
 
 #[test]
+fn listener_connection_limits_are_parsed_and_validated() {
+    let valid = ExampleServerConfig::from_jsonc_str(
+        r#"{
+            "application_profile": "local",
+            "bind_address": "127.0.0.1:8080",
+            "request_timeout_seconds": 30,
+            "request_body_limit_bytes": 1048576,
+            "metrics_idle_timeout_seconds": 30,
+            "shutdown_timeout_seconds": 10,
+            "connection_limits": { "max_live": 128, "max_per_source": 32 }
+        }"#,
+    )
+    .expect("valid TCP limits");
+    assert_eq!(valid.http().connection_limits().max_live(), 128);
+    assert_eq!(valid.http().connection_limits().max_per_source(), 32);
+
+    let invalid = ExampleServerConfig::from_jsonc_str(
+        r#"{
+            "application_profile": "local",
+            "bind_address": "127.0.0.1:8080",
+            "request_timeout_seconds": 30,
+            "request_body_limit_bytes": 1048576,
+            "metrics_idle_timeout_seconds": 30,
+            "shutdown_timeout_seconds": 10,
+            "connection_limits": { "max_live": 32, "max_per_source": 64 }
+        }"#,
+    );
+    assert!(matches!(
+        invalid,
+        Err(error) if error.reason() == ExampleServerErrorReason::ConnectionLimitsInvalid
+    ));
+}
+
+#[test]
 fn external_origin_policy_without_trusted_proxy_ranges_fails_closed() {
     let result = ExampleServerConfig::from_jsonc_str(
         r#"{

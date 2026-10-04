@@ -6,9 +6,7 @@
 use std::time::Duration;
 
 use crate::fdb::tenant_name::FoundationDbTenantName;
-use foundationdb::{Database, options::TransactionOption, tenant::TenantManagement};
-use reallyme_codec::base64::base64_to_bytes;
-use serde::Deserialize;
+use foundationdb::{Database, RangeOption, tenant::TenantManagement};
 
 use super::TenantHandle;
 use super::metadata::{read_tenant_metadata, repair_empty_tenant_metadata, write_tenant_metadata};
@@ -16,20 +14,9 @@ use crate::fdb::connector::FoundationDbConnector;
 use crate::fdb::error::{FdbError, FdbResult, TenantErrorReason};
 use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, codec::KeyEncoder};
 
-const TENANT_MAP_PREFIX: &[u8] = b"\xff\xff/management/tenant/map/";
 const TENANT_ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_TENANT_MAP_VALUE_BYTES: usize = 1_024;
-const MAX_TENANT_PREFIX_BYTES: usize = 64;
-
-#[derive(Deserialize)]
-struct TenantMapRecord {
-    prefix: TenantPrefixRecord,
-}
-
-#[derive(Deserialize)]
-struct TenantPrefixRecord {
-    base64: String,
-}
+const MAX_METADATA_VALUE_BYTES: usize = 64;
+const FDB_TENANT_NOT_EMPTY_CODE: i32 = 2133;
 
 /// Creates a tenant if absent and validates its versioned metadata.
 ///
@@ -95,52 +82,138 @@ pub async fn repair_tenant_metadata(
     .map_err(|_| administration_failed(tenant))?
 }
 
-/// Deletes an empty tenant, including only the kit's two metadata keys.
+/// Deletes a tenant containing only the kit's own metadata keys.
 ///
-/// Metadata clearing and tenant deletion share one FoundationDB transaction.
-/// If any app data remains, FoundationDB rejects the delete and retains the
-/// metadata. Operators can query `tenant_exists` after an uncertain timeout.
+/// FoundationDB checks emptiness before applying a tenant-map deletion, so
+/// metadata must be cleared in a committed tenant transaction first. A failed
+/// second phase restores those keys when the tenant still exists.
 pub async fn delete_tenant(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
 ) -> FdbResult<()> {
     let database = connector.database();
-    tokio::time::timeout(TENANT_ADMIN_TIMEOUT, delete_empty_tenant(database, tenant))
-        .await
-        .map_err(|_| FdbError::Tenant {
-            reason: TenantErrorReason::AdministrationFailed { tenant },
-        })?
+    let metadata = tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        clear_metadata_if_empty(database, tenant),
+    )
+    .await
+    .map_err(|_| administration_failed(tenant))??;
+    let deletion = tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        TenantManagement::delete_tenant(database, tenant.as_bytes()),
+    )
+    .await;
+    if matches!(deletion, Ok(Ok(()))) {
+        return Ok(());
+    }
+
+    // A concurrent delete may have completed even if the caller saw an
+    // uncertain timeout. Never recreate metadata for a removed tenant.
+    let existence = tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        TenantManagement::get_tenant(database, tenant.as_bytes()),
+    )
+    .await
+    .map_err(|_| administration_failed(tenant))?;
+    match existence {
+        Ok(None) => return Ok(()),
+        Ok(Some(_)) => {}
+        Err(_) => return Err(administration_failed(tenant)),
+    }
+    tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        restore_metadata(database, tenant, &metadata),
+    )
+    .await
+    .map_err(|_| administration_failed(tenant))??;
+    match deletion {
+        Ok(Err(error)) if error.code() == FDB_TENANT_NOT_EMPTY_CODE => Err(FdbError::Tenant {
+            reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
+        }),
+        _ => Err(administration_failed(tenant)),
+    }
 }
 
-async fn delete_empty_tenant(database: &Database, tenant: FoundationDbTenantName) -> FdbResult<()> {
-    let map_key = tenant_map_key(tenant)?;
-    let transaction = database
-        .create_trx()
-        .map_err(|_| administration_failed(tenant))?;
-    transaction
-        .set_option(TransactionOption::SpecialKeySpaceEnableWrites)
-        .map_err(|_| administration_failed(tenant))?;
-    let map_value = transaction
-        .get(&map_key, false)
-        .await
-        .map_err(|_| administration_failed(tenant))?
-        .ok_or(FdbError::Tenant {
-            reason: TenantErrorReason::NotProvisioned { tenant },
-        })?;
-    let prefix = decode_tenant_prefix(map_value.as_ref(), tenant)?;
-
-    for metadata_key in [
+fn metadata_keys(tenant: FoundationDbTenantName) -> FdbResult<[bytes::Bytes; 2]> {
+    Ok([
         TenantMetadataSchemaVersionKey::new()
             .map_err(|_| administration_failed(tenant))?
             .encode_key(),
         TenantMetadataCreatedAtKey::new()
             .map_err(|_| administration_failed(tenant))?
             .encode_key(),
-    ] {
-        let raw_key = prefixed_metadata_key(&prefix, metadata_key.as_ref(), tenant)?;
-        transaction.clear(&raw_key);
+    ])
+}
+
+async fn clear_metadata_if_empty(
+    database: &Database,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<Vec<(Vec<u8>, Vec<u8>)>> {
+    if TenantManagement::get_tenant(database, tenant.as_bytes())
+        .await
+        .map_err(|_| administration_failed(tenant))?
+        .is_none()
+    {
+        return Err(FdbError::Tenant {
+            reason: TenantErrorReason::NotProvisioned { tenant },
+        });
     }
-    transaction.clear(&map_key);
+    let handle = database
+        .open_tenant(tenant.as_bytes())
+        .map_err(|_| administration_failed(tenant))?;
+    let transaction = handle
+        .create_trx()
+        .map_err(|_| administration_failed(tenant))?;
+    let keys = metadata_keys(tenant)?;
+    let mut range = RangeOption::from((b"".as_slice(), b"\xff".as_slice()));
+    range.limit = Some(3);
+    let existing = transaction
+        .get_range(&range, 1, false)
+        .await
+        .map_err(|_| administration_failed(tenant))?;
+    let mut metadata = Vec::with_capacity(2);
+    for entry in &existing {
+        if entry.key() != keys[0].as_ref() && entry.key() != keys[1].as_ref() {
+            return Err(FdbError::Tenant {
+                reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
+            });
+        }
+        if entry.value().len() > MAX_METADATA_VALUE_BYTES {
+            return Err(administration_failed(tenant));
+        }
+        metadata.push((entry.key().to_vec(), entry.value().to_vec()));
+    }
+    for entry in &existing {
+        transaction.clear(entry.key());
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|_| administration_failed(tenant))?;
+    Ok(metadata)
+}
+
+async fn restore_metadata(
+    database: &Database,
+    tenant: FoundationDbTenantName,
+    metadata: &[(Vec<u8>, Vec<u8>)],
+) -> FdbResult<()> {
+    let handle = database
+        .open_tenant(tenant.as_bytes())
+        .map_err(|_| administration_failed(tenant))?;
+    let transaction = handle
+        .create_trx()
+        .map_err(|_| administration_failed(tenant))?;
+    for (key, value) in metadata {
+        if transaction
+            .get(key, false)
+            .await
+            .map_err(|_| administration_failed(tenant))?
+            .is_none()
+        {
+            transaction.set(key, value);
+        }
+    }
     transaction
         .commit()
         .await
@@ -152,46 +225,6 @@ fn administration_failed(tenant: FoundationDbTenantName) -> FdbError {
     FdbError::Tenant {
         reason: TenantErrorReason::AdministrationFailed { tenant },
     }
-}
-
-fn tenant_map_key(tenant: FoundationDbTenantName) -> FdbResult<Vec<u8>> {
-    let length = TENANT_MAP_PREFIX
-        .len()
-        .checked_add(tenant.as_bytes().len())
-        .ok_or_else(|| administration_failed(tenant))?;
-    let mut key = Vec::with_capacity(length);
-    key.extend_from_slice(TENANT_MAP_PREFIX);
-    key.extend_from_slice(tenant.as_bytes());
-    Ok(key)
-}
-
-fn decode_tenant_prefix(raw: &[u8], tenant: FoundationDbTenantName) -> FdbResult<Vec<u8>> {
-    if raw.len() > MAX_TENANT_MAP_VALUE_BYTES {
-        return Err(administration_failed(tenant));
-    }
-    let record: TenantMapRecord =
-        serde_json::from_slice(raw).map_err(|_| administration_failed(tenant))?;
-    let prefix =
-        base64_to_bytes(&record.prefix.base64).map_err(|_| administration_failed(tenant))?;
-    if prefix.is_empty() || prefix.len() > MAX_TENANT_PREFIX_BYTES {
-        return Err(administration_failed(tenant));
-    }
-    Ok(prefix)
-}
-
-fn prefixed_metadata_key(
-    prefix: &[u8],
-    metadata_key: &[u8],
-    tenant: FoundationDbTenantName,
-) -> FdbResult<Vec<u8>> {
-    let length = prefix
-        .len()
-        .checked_add(metadata_key.len())
-        .ok_or_else(|| administration_failed(tenant))?;
-    let mut key = Vec::with_capacity(length);
-    key.extend_from_slice(prefix);
-    key.extend_from_slice(metadata_key);
-    Ok(key)
 }
 
 /// Returns whether a tenant is explicitly provisioned.

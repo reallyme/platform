@@ -5,19 +5,9 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "LICENSE"
-      - "NOTICE"
   push:
     branches:
       - main
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "LICENSE"
-      - "NOTICE"
   workflow_dispatch:
 
 permissions:
@@ -30,17 +20,21 @@ env:
   BUF_LINUX_X86_64_SHA256: 8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
   FDB_CLIENT_SHA256: b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254
   FDB_VERSION: 7.3.77
+  CARGO_AUDIT_VERSION: 0.22.2
+  CARGO_DENY_VERSION: 0.20.2
+  CARGO_SEMVER_CHECKS_VERSION: 0.50.0
 
 jobs:
   rust-fast:
     name: Rust fast gate
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
@@ -121,6 +115,11 @@ jobs:
       - name: Generate Rust contracts
         run: scripts/generation/generate-rust-contracts.sh
 
+      - name: Verify generated contracts are current
+        run: |
+          git diff --exit-code -- apps/example/contract/src/generated
+          test -z "$(git ls-files --others --exclude-standard apps/example/contract/src/generated)"
+
       - name: Install pinned Worker build tool
         run: cargo install worker-build --version 0.8.7 --locked
 
@@ -141,11 +140,48 @@ jobs:
       - name: Cargo test
         run: cargo test --locked --workspace --all-features
 
+      - name: Cargo default and no-default feature tests
+        run: |
+          cargo test --locked --workspace
+          cargo test --locked --workspace --no-default-features
+          cargo test --locked -p reallyme-server-kit --no-default-features
+
       - name: Cargo doc tests
         run: cargo test --locked --workspace --all-features --doc
 
+      - name: Rustdoc warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
+
       - name: Cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
+
+      - name: Dependency and public API checks
+        run: |
+          cargo deny --all-features check
+          cargo audit
+          baseline_tag="$(git describe --tags --match 'v[0-9]*' --abbrev=0)"
+          cargo semver-checks check-release --workspace \
+            --baseline-rev "$baseline_tag" --release-type patch
+
+      - name: Feature separation
+        run: |
+          scripts/conformance/verify-example-app-feature-separation.sh
+          scripts/conformance/verify-server-kit-feature-separation.sh
 
       - name: Test release automation
         run: node --test scripts/release/*.test.mjs
@@ -371,6 +407,9 @@ jobs:
           cargo test --locked -p reallyme-foundationdb-kit \
             --test foundationdb_integration \
             live_connector_proves_cluster_and_tenant_readiness -- --ignored --exact
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --test foundationdb_integration \
+            live_tenant_delete_clears_metadata_but_refuses_application_data -- --ignored --exact
 
       - name: Start Typesense
         shell: bash

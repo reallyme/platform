@@ -51,6 +51,9 @@ pub enum ExampleServerErrorReason {
     /// A configured trusted proxy range is invalid.
     #[error("the trusted proxy ranges are invalid")]
     TrustedProxyRangesInvalid,
+    /// Listener-wide and per-source TCP admission bounds are invalid.
+    #[error("the HTTP connection admission limits are invalid")]
+    ConnectionLimitsInvalid,
     /// External origin forwarding was configured without trusted ingress peers.
     #[error("the external origin policy is invalid")]
     ExternalOriginPolicyInvalid,

@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use reallyme_app_kit::{AppConfigProfile, parse_jsonc_config};
 use reallyme_server_kit::config::{
-    BindAddress, BodyLimitConfig, CorsConfig, ExternalOriginPolicyConfig, HostAuthority,
-    HostAuthorityPolicy, HttpSecurityConfig, HttpServerConfig, LogFormat, MetricsIdleTimeout,
-    ObservabilityConfig, OperationalRouteAccess, RequestBodyLimitBytes, RequestTimeout,
-    SecurityHeadersConfig, ServiceEnvironment, TimeoutConfig, TrustedProxyHeaderFamily,
-    TrustedProxyHeaders, TrustedProxyRange,
+    BindAddress, BodyLimitConfig, ConnectionLimitConfig, CorsConfig, ExternalOriginPolicyConfig,
+    HostAuthority, HostAuthorityPolicy, HttpSecurityConfig, HttpServerConfig, LogFormat,
+    MetricsIdleTimeout, ObservabilityConfig, OperationalRouteAccess, RequestBodyLimitBytes,
+    RequestTimeout, SecurityHeadersConfig, ServiceEnvironment, TimeoutConfig,
+    TrustedProxyHeaderFamily, TrustedProxyHeaders, TrustedProxyRange,
 };
 use reallyme_server_kit::task::ShutdownTimeout;
 use serde::Deserialize;
@@ -31,11 +31,19 @@ struct RawExampleServerConfig {
     request_body_limit_bytes: usize,
     metrics_idle_timeout_seconds: u64,
     shutdown_timeout_seconds: u64,
+    connection_limits: Option<RawConnectionLimits>,
     #[serde(default)]
     allowed_hosts: Vec<String>,
     #[serde(default)]
     trusted_proxy_ranges: Vec<String>,
     external_origin_policy: Option<RawExternalOriginPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConnectionLimits {
+    max_live: usize,
+    max_per_source: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +169,13 @@ impl ExampleServerConfig {
             external_origin_policy,
             OperationalRouteAccess::local_only(),
         );
+        let connection_limits = match raw.connection_limits {
+            Some(limits) => ConnectionLimitConfig::new(limits.max_live, limits.max_per_source)
+                .map_err(|_| {
+                    ExampleServerError::new(ExampleServerErrorReason::ConnectionLimitsInvalid)
+                })?,
+            None => ConnectionLimitConfig::secure_defaults(),
+        };
         let request_timeout = RequestTimeout::new(Duration::from_secs(raw.request_timeout_seconds))
             .map_err(|_| {
                 ExampleServerError::new(ExampleServerErrorReason::RequestTimeoutInvalid)
@@ -202,7 +217,8 @@ impl ExampleServerConfig {
                 TimeoutConfig::new(request_timeout),
                 BodyLimitConfig::new(request_body_limit),
             )
-            .with_security_config(security),
+            .with_security_config(security)
+            .with_connection_limits(connection_limits),
             observability,
             shutdown_timeout,
         })

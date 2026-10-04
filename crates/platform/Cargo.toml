@@ -13,7 +13,7 @@ keywords = ["application", "architecture", "server", "connect-rpc", "cloudflare-
 categories = ["asynchronous", "development-tools", "web-programming"]
 publish = ["crates-io"]
 readme = "README.md"
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [features]
 default = []
