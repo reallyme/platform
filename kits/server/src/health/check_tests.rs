@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#![cfg(feature = "testing")]
+
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
