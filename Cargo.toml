@@ -20,7 +20,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.99.0"
 license = "MIT OR Apache-2.0"
@@ -56,7 +56,6 @@ tempfile = "3"
 subtle = { version = "2", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = { version = "0.1", features = ["net"] }
 tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime", "with-serde_json-1", "with-uuid-1"] }
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
 tokio-tungstenite = "0.30"
@@ -91,16 +90,16 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Workspace-local crates use the same release version and are declared here so
 # member manifests express only their feature requirements, not path/version policy.
-example-app = { path = "apps/example", version = "0.2.0", default-features = false }
-reallyme-app-kit = { path = "kits/app", version = "0.2.0" }
-reallyme-example-contract = { path = "apps/example/contract", version = "0.2.0" }
-reallyme-foundationdb-kit = { path = "kits/foundationdb", version = "0.2.0" }
-reallyme-nats-kit = { path = "kits/nats", version = "0.2.0" }
-reallyme-postgres-kit = { path = "kits/postgres", version = "0.2.0" }
-reallyme-s3-kit = { path = "kits/s3", version = "0.2.0", default-features = false }
-reallyme-server-kit = { path = "kits/server", version = "0.2.0", default-features = false }
-reallyme-typesense-kit = { path = "kits/typesense", version = "0.2.0" }
-reallyme-valkey-kit = { path = "kits/valkey", version = "0.2.0" }
+example-app = { path = "apps/example", version = "0.3.0", default-features = false }
+reallyme-app-kit = { path = "kits/app", version = "0.3.0" }
+reallyme-example-contract = { path = "apps/example/contract", version = "0.3.0" }
+reallyme-foundationdb-kit = { path = "kits/foundationdb", version = "0.3.0" }
+reallyme-nats-kit = { path = "kits/nats", version = "0.3.0" }
+reallyme-postgres-kit = { path = "kits/postgres", version = "0.3.0" }
+reallyme-s3-kit = { path = "kits/s3", version = "0.3.0", default-features = false }
+reallyme-server-kit = { path = "kits/server", version = "0.3.0", default-features = false }
+reallyme-typesense-kit = { path = "kits/typesense", version = "0.3.0" }
+reallyme-valkey-kit = { path = "kits/valkey", version = "0.3.0" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
