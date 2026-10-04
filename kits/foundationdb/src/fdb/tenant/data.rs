@@ -201,12 +201,26 @@ impl<'a> TenantDataTransaction<'a> {
 }
 
 fn validate_atomic_mutation(mutation: MutationType) -> Result<(), TenantDataAccessErrorReason> {
-    // FoundationDB replaces part of the key at commit time for this mutation.
-    // The resulting key has not passed our metadata-namespace validation.
-    if matches!(mutation, MutationType::SetVersionstampedKey) {
-        return Err(TenantDataAccessErrorReason::KeyChangingMutation);
+    // Only reviewed value mutations may pass. This upstream enum is non-exhaustive:
+    // accepting a future variant by default could let it change a validated key.
+    match mutation {
+        MutationType::Add
+        | MutationType::And
+        | MutationType::BitAnd
+        | MutationType::Or
+        | MutationType::BitOr
+        | MutationType::Xor
+        | MutationType::BitXor
+        | MutationType::AppendIfFits
+        | MutationType::Max
+        | MutationType::Min
+        | MutationType::SetVersionstampedValue
+        | MutationType::ByteMin
+        | MutationType::ByteMax
+        | MutationType::CompareAndClear => Ok(()),
+        MutationType::SetVersionstampedKey => Err(TenantDataAccessErrorReason::KeyChangingMutation),
+        _ => Err(TenantDataAccessErrorReason::KeyChangingMutation),
     }
-    Ok(())
 }
 
 #[cfg(test)]

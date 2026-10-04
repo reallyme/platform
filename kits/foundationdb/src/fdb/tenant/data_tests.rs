@@ -91,6 +91,22 @@ fn atomic_mutations_cannot_change_validated_keys() {
         validate_atomic_mutation(MutationType::SetVersionstampedKey),
         Err(TenantDataAccessErrorReason::KeyChangingMutation)
     ));
-    assert!(validate_atomic_mutation(MutationType::SetVersionstampedValue).is_ok());
-    assert!(validate_atomic_mutation(MutationType::Add).is_ok());
+    for value_mutation in [
+        MutationType::Add,
+        MutationType::And,
+        MutationType::BitAnd,
+        MutationType::Or,
+        MutationType::BitOr,
+        MutationType::Xor,
+        MutationType::BitXor,
+        MutationType::AppendIfFits,
+        MutationType::Max,
+        MutationType::Min,
+        MutationType::SetVersionstampedValue,
+        MutationType::ByteMin,
+        MutationType::ByteMax,
+        MutationType::CompareAndClear,
+    ] {
+        assert!(validate_atomic_mutation(value_mutation).is_ok());
+    }
 }

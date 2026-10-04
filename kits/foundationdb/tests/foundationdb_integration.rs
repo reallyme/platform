@@ -4,10 +4,11 @@
 #![deny(unsafe_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use foundationdb::options::MutationType;
 use reallyme_foundationdb_kit::fdb::transaction::{TenantTransactionPolicy, WriteTxnPolicy};
 use reallyme_foundationdb_kit::{
-    FdbConfig, FdbResult, FoundationDbConnector, FoundationDbTenantName, TenantDataKey,
-    verify_ready,
+    FdbConfig, FdbResult, FoundationDbConnector, FoundationDbTenantName,
+    TenantDataAccessErrorReason, TenantDataKey, TenantDataRange, verify_ready,
 };
 
 const INTEGRATION_TENANT: &str = "foundationdb-kit-integration";
@@ -41,8 +42,26 @@ async fn live_connector_proves_cluster_and_tenant_readiness() -> FdbResult<()> {
             (),
             |transaction, _| {
                 Box::pin(async move {
+                    // Check the public application boundary against a live tenant: the
+                    // metadata namespace must remain inaccessible even during a write.
+                    assert!(matches!(
+                        TenantDataKey::new(b"__meta/v1/schema_version"),
+                        Err(TenantDataAccessErrorReason::ReservedKey)
+                    ));
+                    assert!(matches!(
+                        TenantDataRange::new(b"__met", b"__metb"),
+                        Err(TenantDataAccessErrorReason::ReservedRange)
+                    ));
                     let key = TenantDataKey::new(b"kit-integration/data")
                         .expect("integration data key must remain valid");
+                    assert!(matches!(
+                        transaction.atomic_op(
+                            key,
+                            b"versionstamp",
+                            MutationType::SetVersionstampedKey
+                        ),
+                        Err(TenantDataAccessErrorReason::KeyChangingMutation)
+                    ));
                     transaction
                         .set(key, b"value")
                         .expect("integration value must remain valid");
