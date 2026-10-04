@@ -103,11 +103,6 @@ impl RateLimitRegistry {
         }
     }
 
-    #[cfg(test)]
-    fn source_bucket_id(&self, source_identity: RateLimitSourceIdentity) -> u64 {
-        self.source_bucket_id_with_prefix(source_identity, 64)
-    }
-
     fn source_bucket_id_with_prefix(
         &self,
         source_identity: RateLimitSourceIdentity,

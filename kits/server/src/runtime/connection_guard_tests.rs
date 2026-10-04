@@ -23,6 +23,14 @@ use crate::config::{TrustedProxyHeaders, TrustedProxyRange};
 
 const TEST_SOURCE_LIMIT: usize = 64;
 
+#[cfg(feature = "tonic-grpc")]
+impl BoundedTcpListener {
+    fn with_grpc_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.grpc_idle_timeout = timeout;
+        self
+    }
+}
+
 #[test]
 fn configured_non_loopback_proxy_is_exempt_from_source_cap() {
     let trusted = TrustedProxyHeaders::trust_configured_proxies(vec![

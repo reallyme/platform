@@ -121,24 +121,6 @@ impl RateLimitBucketState {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn indexes_are_consistent(&self) -> bool {
-        let mapped = self.by_tier.values().map(HashMap::len).sum::<usize>();
-        let tier_indexed = self.tier_age.values().map(BTreeSet::len).sum::<usize>();
-        mapped == self.global_age.len()
-            && mapped == tier_indexed
-            && self.by_tier.iter().all(|(tier, entries)| {
-                entries.iter().all(|(source, bucket)| {
-                    self.global_age
-                        .contains(&(bucket.last_admitted_at, tier.clone(), *source))
-                        && self
-                            .tier_age
-                            .get(tier)
-                            .is_some_and(|age| age.contains(&(bucket.last_admitted_at, *source)))
-                })
-            })
-    }
-
     fn remove(&mut self, tier: &HttpRateLimitTierName, source: u64) -> bool {
         let Some(entries) = self.by_tier.get_mut(tier) else {
             return false;
@@ -158,3 +140,7 @@ impl RateLimitBucketState {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "state_tests.rs"]
+pub(super) mod tests;

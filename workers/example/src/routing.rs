@@ -340,14 +340,6 @@ fn authorized_operational_probe(req: &Request, env: &Env) -> Result<bool> {
     Ok(valid_operational_probe_token(&authorization, &expected))
 }
 
-#[cfg(test)]
-pub(crate) fn valid_operational_probe_headers(headers: &[String], expected: &str) -> bool {
-    let [authorization] = headers else {
-        return false;
-    };
-    valid_operational_probe_token(authorization, expected)
-}
-
 pub(crate) fn valid_operational_probe_token(authorization: &str, expected: &str) -> bool {
     // Compare fixed-length credential bytes without leaking token content through timing.
     if !(MIN_OPERATIONAL_PROBE_TOKEN_BYTES..=MAX_OPERATIONAL_PROBE_TOKEN_BYTES)
