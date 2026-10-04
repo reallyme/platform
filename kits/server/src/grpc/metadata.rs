@@ -15,10 +15,8 @@ pub const GRPC_TRACE_ID_METADATA_KEY: &str = "x-trace-id";
 
 /// Stable correlation IDs attached to a gRPC request.
 ///
-/// The server kit deliberately replaces malformed or missing inbound
-/// correlation IDs rather than rejecting the request. This keeps correlation
-/// available for public-facing APIs without trusting caller-provided IDs for
-/// any security-sensitive decisions.
+/// The server kit generates these IDs at ingress. Caller-supplied metadata is
+/// never authoritative for server logs or downstream correlation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GrpcCorrelationIds {
     request_id: RequestId,
@@ -82,14 +80,14 @@ pub fn trace_id_from_request<T>(request: &Request<T>) -> Option<TraceId> {
 
 /// Ensures that the request carries valid request and trace identifiers.
 ///
-/// Missing or malformed inbound identifiers are replaced with freshly
-/// generated values, and the normalized values are written back to metadata and
-/// request extensions for downstream handlers.
+/// Fresh identifiers replace inbound values, including well-formed values from
+/// untrusted peers. The generated values are written to metadata and request
+/// extensions for downstream handlers.
 pub fn attach_correlation_ids<T>(
     request: &mut Request<T>,
 ) -> Result<GrpcCorrelationIds, GrpcMetadataError> {
-    let request_id = resolve_request_id(request.metadata());
-    let trace_id = resolve_trace_id(request.metadata());
+    let request_id = RequestId::generate();
+    let trace_id = TraceId::generate();
 
     insert_request_id(request.metadata_mut(), request_id)?;
     insert_trace_id(request.metadata_mut(), trace_id)?;
@@ -108,20 +106,6 @@ pub fn attach_correlation_ids_to_status(
     insert_request_id(status.metadata_mut(), correlation_ids.request_id())?;
     insert_trace_id(status.metadata_mut(), correlation_ids.trace_id())?;
     Ok(status)
-}
-
-fn resolve_request_id(metadata: &MetadataMap) -> RequestId {
-    match request_id_from_metadata(metadata) {
-        Ok(Some(request_id)) => request_id,
-        Ok(None) | Err(_) => RequestId::generate(),
-    }
-}
-
-fn resolve_trace_id(metadata: &MetadataMap) -> TraceId {
-    match trace_id_from_metadata(metadata) {
-        Ok(Some(trace_id)) => trace_id,
-        Ok(None) | Err(_) => TraceId::generate(),
-    }
 }
 
 fn parse_request_id_metadata(value: &MetadataValue<Ascii>) -> Result<RequestId, GrpcMetadataError> {

@@ -26,7 +26,15 @@ const TEST_SOURCE_LIMIT: usize = 64;
 #[cfg(feature = "tonic-grpc")]
 impl BoundedTcpListener {
     fn with_grpc_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.grpc_idle_timeout = timeout;
+        self.grpc_transport_timeouts = super::super::grpc::GrpcTransportTimeouts::new(
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+            Duration::from_secs(60),
+            Duration::from_secs(600),
+            timeout,
+            Duration::from_secs(5),
+        )
+        .expect("valid fixture timeout");
         self
     }
 }

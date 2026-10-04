@@ -42,7 +42,7 @@ pub enum PostgresTransportSecurity {
 /// Certificate roots trusted by PostgreSQL TLS connections.
 #[derive(Clone, PartialEq, Eq)]
 pub enum PostgresTlsTrust {
-    /// Use the operating system's maintained certificate roots.
+    /// Use operating-system roots, or bundled public roots if none are usable.
     NativeRoots,
     /// Trust only certificates chaining to this private CA PEM file.
     CustomRootCertificate(PathBuf),

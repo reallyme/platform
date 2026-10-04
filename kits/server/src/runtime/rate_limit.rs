@@ -12,7 +12,10 @@ use tokio::time::{Duration, MissedTickBehavior, interval};
 
 use crate::http::HttpRateLimitTierName;
 #[cfg(feature = "metrics")]
-use crate::observability::{record_rate_limit_buckets_live, record_rate_limit_mutex_poisoned};
+use crate::observability::{
+    record_rate_limit_buckets_live, record_rate_limit_mutex_poisoned,
+    record_rate_limit_overflow_decision,
+};
 use crate::runtime::{HttpRateLimitScope, HttpRateLimitTierPolicy};
 use crate::task::{ShutdownToken, TaskExecutionError};
 
@@ -22,9 +25,14 @@ use state::RateLimitBucketState;
 
 /// Maximum number of retained per-source buckets per registry.
 ///
-/// A full tier may also hold one shared newcomer bucket, bounded by the
-/// number of configured tiers rather than by caller-controlled identities.
+/// A full tier may also hold a fixed number of newcomer shards, bounded by
+/// the number of configured tiers rather than caller-controlled identities.
 pub const RATE_LIMIT_MAX_LIVE_BUCKETS: usize = 25_000;
+const OVERFLOW_SHARD_LIMIT: u32 = 8;
+// Reserve a bounded, separate allowance for clients arriving while retained
+// sources still owe debt. Churn can spend at most this aggregate allowance;
+// it cannot obtain a fresh bucket for each forged source address.
+const OVERFLOW_BUDGET_MULTIPLIER: u32 = 2;
 
 /// Idle bucket pruning window for the periodic sweep.
 pub const RATE_LIMIT_BUCKET_IDLE_TTL_SECS: u64 = 900;
@@ -49,7 +57,7 @@ pub enum RateLimitSourceIdentity {
 #[derive(Debug, Clone, Copy)]
 struct SourceRateBucket {
     tokens: u32,
-    fractional_tokens: u32,
+    fractional_tokens: u64,
     last_refill_at: Instant,
     last_activity_at: Instant,
 }
@@ -96,6 +104,20 @@ impl RateLimitRegistry {
         tier_policies: Arc<Vec<(HttpRateLimitTierName, HttpRateLimitTierPolicy)>>,
         max_live_buckets: usize,
     ) -> Self {
+        let configured_source_capacity =
+            tier_policies.iter().fold(0_usize, |total, (_, policy)| {
+                total.saturating_add(policy.max_distinct_sources())
+            });
+        if configured_source_capacity > max_live_buckets {
+            // Existing policy constructors are infallible at composition time.
+            // Surface overcommit explicitly: the global cap wins and excess
+            // newcomer traffic enters the bounded overflow shards.
+            tracing::warn!(
+                configured_source_capacity,
+                max_live_buckets,
+                "rate_limit_source_capacity_exceeds_registry"
+            );
+        }
         Self {
             tier_policies,
             bucket_identity_hasher: RandomState::new(),
@@ -185,7 +207,25 @@ impl RateLimitRegistry {
         }
 
         if use_overflow {
-            return consume_overflow_bucket(buckets.overflow_bucket(tier, now), policy, now);
+            let overflow_burst = policy
+                .burst_tokens()
+                .saturating_mul(OVERFLOW_BUDGET_MULTIPLIER);
+            let shard_count = overflow_burst.min(OVERFLOW_SHARD_LIMIT);
+            let Ok(shard) = u32::try_from(source_bucket % u64::from(shard_count)) else {
+                return RateLimitDecision::SourceLimitReached;
+            };
+            let capacity =
+                overflow_burst / shard_count + u32::from(shard < overflow_burst % shard_count);
+            let decision = consume_overflow_bucket(
+                buckets.overflow_bucket(tier, shard, now, capacity),
+                policy,
+                now,
+                shard_count,
+                capacity,
+            );
+            #[cfg(feature = "metrics")]
+            record_rate_limit_overflow_decision(decision == RateLimitDecision::Allowed);
+            return decision;
         }
 
         let Some(bucket) = buckets.bucket_mut(tier, source_bucket) else {
@@ -221,8 +261,17 @@ fn consume_overflow_bucket(
     bucket: &mut SourceRateBucket,
     policy: HttpRateLimitTierPolicy,
     now: Instant,
+    shard_count: u32,
+    capacity: u32,
 ) -> RateLimitDecision {
-    refill_bucket(bucket, policy, now);
+    refill_bucket_scaled(
+        bucket,
+        policy,
+        now,
+        shard_count,
+        capacity,
+        OVERFLOW_BUDGET_MULTIPLIER,
+    );
     bucket.last_activity_at = now;
     if bucket.tokens == 0 {
         return RateLimitDecision::SourceLimitReached;
@@ -232,22 +281,32 @@ fn consume_overflow_bucket(
 }
 
 fn refill_bucket(bucket: &mut SourceRateBucket, policy: HttpRateLimitTierPolicy, now: Instant) {
+    refill_bucket_scaled(bucket, policy, now, 1, policy.burst_tokens(), 1);
+}
+
+fn refill_bucket_scaled(
+    bucket: &mut SourceRateBucket,
+    policy: HttpRateLimitTierPolicy,
+    now: Instant,
+    divisor: u32,
+    capacity: u32,
+    refill_multiplier: u32,
+) {
     let elapsed = now.saturating_duration_since(bucket.last_refill_at);
     const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let denominator = NANOS_PER_SECOND.saturating_mul(u128::from(divisor));
     let accrued = elapsed
         .as_nanos()
         .saturating_mul(u128::from(policy.refill_tokens_per_second()))
+        .saturating_mul(u128::from(refill_multiplier))
         .saturating_add(u128::from(bucket.fractional_tokens));
-    let refill = accrued / NANOS_PER_SECOND;
+    let refill = accrued / denominator;
     let refill_u32 = u32::try_from(refill).unwrap_or(u32::MAX);
-    bucket.tokens = bucket
-        .tokens
-        .saturating_add(refill_u32)
-        .min(policy.burst_tokens());
-    bucket.fractional_tokens = if bucket.tokens == policy.burst_tokens() {
+    bucket.tokens = bucket.tokens.saturating_add(refill_u32).min(capacity);
+    bucket.fractional_tokens = if bucket.tokens == capacity {
         0
     } else {
-        u32::try_from(accrued % NANOS_PER_SECOND).unwrap_or_default()
+        u64::try_from(accrued % denominator).unwrap_or_default()
     };
     bucket.last_refill_at = now;
 }

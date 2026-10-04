@@ -66,6 +66,18 @@ pub fn strip_jsonc_comments(value: &str) -> Result<String, AppConfigParseError> 
     if value.len() > MAX_APP_JSONC_BYTES {
         return Err(AppConfigParseError::new(AppConfigParseErrorReason::TooLong));
     }
+    // CR-only comments changed how existing documents parse. Require CRLF so
+    // an ambiguous line ending cannot expose a previously commented key.
+    if value
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'\r' && pair[1] != b'\n')
+        || value.as_bytes().last() == Some(&b'\r')
+    {
+        return Err(AppConfigParseError::new(
+            AppConfigParseErrorReason::InvalidJson,
+        ));
+    }
     let mut output = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
     let mut in_string = false;

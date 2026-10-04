@@ -75,10 +75,12 @@ pub async fn connect_with_credentials(
 fn nats_tls_config() -> Result<rustls::ClientConfig, JetStreamError> {
     let native = rustls_native_certs::load_native_certs();
     let mut roots = rustls::RootCertStore::empty();
-    // Bundled public roots keep TLS available in slim containers; local
-    // private roots remain available through the operating system store.
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let _ = roots.add_parsable_certificates(native.certs);
+    if roots.is_empty() {
+        // Bundled roots are a fallback for slim containers, not an addition
+        // to an explicitly maintained host trust store.
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     build_nats_tls_config(roots)
 }
 

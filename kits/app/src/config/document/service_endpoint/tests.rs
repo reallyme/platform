@@ -43,24 +43,33 @@ fn service_endpoint_rejects_remote_plaintext_and_normalizes_equivalent_urls() {
 }
 
 #[test]
-fn private_transport_endpoint_allows_plaintext_without_weakening_public_validation() {
-    let private = AppServiceEndpointSource::from_private_transport_document(
-        AppServiceEndpointSourceDocument {
-            base_url: Some("http://search.internal:8108".to_owned()),
-            endpoints: Vec::new(),
-            endpoint_selection: None,
-            locator: None,
-        },
-    )
-    .expect("private transport may use plaintext within its authenticated network");
+fn service_source_rejects_plaintext_nonlocal_url_and_locator() {
+    let private = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
+        base_url: Some("http://search.internal:8108".to_owned()),
+        endpoints: Vec::new(),
+        endpoint_selection: None,
+        locator: None,
+    });
     assert_eq!(
-        private.primary_static_endpoint().map(|url| url.as_str()),
-        Some("http://search.internal:8108")
+        private.map_err(|error| error.reason()),
+        Err(AppConfigDocumentErrorReason::InsecureNonLocalHttpOrigin)
     );
     assert!(super::AppServiceEndpointUrl::new("http://search.internal:8108").is_err());
-    assert!(
-        super::AppServiceEndpointUrl::new_private_transport("http://user@search.internal:8108")
-            .is_err()
+    let locator = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
+        base_url: None,
+        endpoints: Vec::new(),
+        endpoint_selection: None,
+        locator: Some(AppServiceLocatorDocument {
+            mode: "tailscale_service".to_owned(),
+            service: "search".to_owned(),
+            tags: Vec::new(),
+            port: Some(8108),
+            scheme: Some("http".to_owned()),
+        }),
+    });
+    assert_eq!(
+        locator.map_err(|error| error.reason()),
+        Err(AppConfigDocumentErrorReason::InvalidServiceEndpointSource)
     );
 }
 

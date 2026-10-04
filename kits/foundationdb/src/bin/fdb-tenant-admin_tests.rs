@@ -3,7 +3,7 @@
 
 use reallyme_foundationdb_kit::FoundationDbTenantName;
 
-use super::{AdminToolError, parse_tenant};
+use super::{AdminToolError, parse_expected_tenant_id, parse_tenant};
 
 #[test]
 fn parses_valid_tenant() {
@@ -22,4 +22,15 @@ fn rejects_invalid_dynamic_tenant() {
         parse_tenant(String::from("Customer_Supplied")),
         Err(AdminToolError::InvalidTenant)
     );
+}
+
+#[test]
+fn recovery_requires_a_valid_recorded_tenant_id() {
+    assert_eq!(parse_expected_tenant_id(String::from("42")), Ok(42));
+    for value in ["-1", "foreign", "18446744073709551616"] {
+        assert_eq!(
+            parse_expected_tenant_id(String::from(value)),
+            Err(AdminToolError::InvalidTenantId)
+        );
+    }
 }

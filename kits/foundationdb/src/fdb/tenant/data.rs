@@ -4,6 +4,7 @@
 //! Application key access inside a FoundationDB tenant.
 
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use foundationdb::{
     RangeOption, Transaction,
@@ -44,24 +45,12 @@ pub enum TenantDataAccessErrorReason {
     /// A range could read or clear the kit's metadata keys.
     #[error("tenant data range overlaps reserved metadata")]
     ReservedRange,
-    /// Range reads must have a bounded result count.
-    #[error("tenant data range limit is invalid")]
+    /// Range reads and transaction options must have bounded limits.
+    #[error("tenant data limit is invalid")]
     InvalidRangeLimit,
-    /// A mutation must not change a key after namespace validation.
-    #[error("tenant data mutation changes the validated key")]
+    /// A mutation is prohibited by the transaction policy or key boundary.
+    #[error("tenant data mutation is prohibited")]
     KeyChangingMutation,
-    /// A versionstamped key template was malformed or could change the reserved prefix.
-    #[error("tenant versionstamped key template is invalid")]
-    InvalidVersionstampedKey,
-    /// Transaction byte limit must be positive and within the driver maximum.
-    #[error("tenant transaction size limit is invalid")]
-    InvalidTransactionSizeLimit,
-    /// Range target bytes must be positive and remain bounded.
-    #[error("tenant range target bytes are invalid")]
-    InvalidRangeTargetBytes,
-    /// A read transaction cannot perform a mutation.
-    #[error("tenant read transaction cannot mutate data")]
-    ReadOnlyMutation,
 }
 
 /// Validated cluster-side transaction byte ceiling.
@@ -72,7 +61,7 @@ impl TenantTransactionSizeLimit {
     /// Validates the positive FoundationDB transaction size limit.
     pub fn new(bytes: i32) -> Result<Self, TenantDataAccessErrorReason> {
         if !(1..=MAX_TRANSACTION_SIZE_LIMIT).contains(&bytes) {
-            return Err(TenantDataAccessErrorReason::InvalidTransactionSizeLimit);
+            return Err(TenantDataAccessErrorReason::InvalidRangeLimit);
         }
         Ok(Self(bytes))
     }
@@ -87,7 +76,7 @@ impl TenantDataRangeTargetBytes {
     pub fn new(bytes: usize) -> Result<Self, TenantDataAccessErrorReason> {
         let bytes = NonZeroUsize::new(bytes)
             .filter(|bytes| bytes.get() <= MAX_RANGE_TARGET_BYTES)
-            .ok_or(TenantDataAccessErrorReason::InvalidRangeTargetBytes)?;
+            .ok_or(TenantDataAccessErrorReason::InvalidRangeLimit)?;
         Ok(Self(bytes))
     }
 }
@@ -180,11 +169,31 @@ impl TenantDataRangeLimit {
 pub struct TenantDataTransaction<'a> {
     inner: &'a Transaction,
     writable: bool,
+    mutation_rejected: AtomicBool,
 }
 
 impl<'a> TenantDataTransaction<'a> {
-    pub(super) const fn new(inner: &'a Transaction, writable: bool) -> Self {
-        Self { inner, writable }
+    pub(super) fn new(inner: &'a Transaction, writable: bool) -> Self {
+        Self {
+            inner,
+            writable,
+            mutation_rejected: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn mutation_rejected(&self) -> bool {
+        self.mutation_rejected.load(Ordering::Relaxed)
+    }
+
+    fn require_write(&self) -> Result<(), TenantDataAccessErrorReason> {
+        if self.writable {
+            Ok(())
+        } else {
+            // Callbacks can ignore a method's Result. The retry adapter must
+            // still abort the transaction before it can commit.
+            self.mutation_rejected.store(true, Ordering::Relaxed);
+            Err(TenantDataAccessErrorReason::KeyChangingMutation)
+        }
     }
 
     /// Applies a validated cluster-side size ceiling before application operations.
@@ -207,9 +216,7 @@ impl<'a> TenantDataTransaction<'a> {
         key: TenantDataKey<'_>,
         value: &[u8],
     ) -> Result<(), TenantDataAccessErrorReason> {
-        if !self.writable {
-            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
-        }
+        self.require_write()?;
         if value.len() > MAX_TENANT_VALUE_BYTES {
             return Err(TenantDataAccessErrorReason::ValueTooLong);
         }
@@ -217,23 +224,31 @@ impl<'a> TenantDataTransaction<'a> {
         Ok(())
     }
 
-    /// Removes one application key.
-    pub fn clear(&self, key: TenantDataKey<'_>) -> Result<(), TenantDataAccessErrorReason> {
-        if !self.writable {
-            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
-        }
+    /// Removes one application key. A read-policy attempt aborts the enclosing
+    /// transaction even though this compatibility method returns no result.
+    pub fn clear(&self, key: TenantDataKey<'_>) {
+        let _ = self.try_clear(key);
+    }
+
+    /// Checks the write policy before removing one application key.
+    pub fn try_clear(&self, key: TenantDataKey<'_>) -> Result<(), TenantDataAccessErrorReason> {
+        self.require_write()?;
         self.inner.clear(key.as_bytes());
         Ok(())
     }
 
-    /// Removes only the validated application interval.
-    pub fn clear_range(
+    /// Removes only the validated application interval. A read-policy attempt
+    /// aborts the enclosing transaction even though this method returns no result.
+    pub fn clear_range(&self, range: &TenantDataRange<'_>) {
+        let _ = self.try_clear_range(range);
+    }
+
+    /// Checks the write policy before clearing an application interval.
+    pub fn try_clear_range(
         &self,
         range: &TenantDataRange<'_>,
     ) -> Result<(), TenantDataAccessErrorReason> {
-        if !self.writable {
-            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
-        }
+        self.require_write()?;
         self.inner.clear_range(range.begin(), range.end());
         Ok(())
     }
@@ -245,9 +260,7 @@ impl<'a> TenantDataTransaction<'a> {
         parameter: &[u8],
         mutation: MutationType,
     ) -> Result<(), TenantDataAccessErrorReason> {
-        if !self.writable {
-            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
-        }
+        self.require_write()?;
         validate_atomic_mutation(mutation)?;
         if parameter.len() > MAX_TENANT_VALUE_BYTES {
             return Err(TenantDataAccessErrorReason::ValueTooLong);
@@ -265,9 +278,7 @@ impl<'a> TenantDataTransaction<'a> {
         key_template: &[u8],
         value: &[u8],
     ) -> Result<(), TenantDataAccessErrorReason> {
-        if !self.writable {
-            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
-        }
+        self.require_write()?;
         validate_versionstamped_key_template(key_template)?;
         if value.len() > MAX_TENANT_VALUE_BYTES {
             return Err(TenantDataAccessErrorReason::ValueTooLong);
@@ -320,21 +331,21 @@ fn validate_versionstamped_key_template(
     let key_bytes = key_template
         .len()
         .checked_sub(VERSIONSTAMP_OFFSET_BYTES)
-        .ok_or(TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+        .ok_or(TenantDataAccessErrorReason::KeyChangingMutation)?;
     TenantDataKey::new(&key_template[..key_bytes])?;
     let offset_bytes: [u8; VERSIONSTAMP_OFFSET_BYTES] = key_template[key_bytes..]
         .try_into()
-        .map_err(|_| TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+        .map_err(|_| TenantDataAccessErrorReason::KeyChangingMutation)?;
     let offset = usize::try_from(u32::from_le_bytes(offset_bytes))
-        .map_err(|_| TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+        .map_err(|_| TenantDataAccessErrorReason::KeyChangingMutation)?;
     let end = offset
         .checked_add(VERSIONSTAMP_BYTES)
-        .ok_or(TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+        .ok_or(TenantDataAccessErrorReason::KeyChangingMutation)?;
     if offset < MIN_STABLE_KEY_PREFIX_BYTES
         || end > key_bytes
         || key_template[offset..end].iter().any(|byte| *byte != 0xff)
     {
-        return Err(TenantDataAccessErrorReason::InvalidVersionstampedKey);
+        return Err(TenantDataAccessErrorReason::KeyChangingMutation);
     }
     Ok(())
 }

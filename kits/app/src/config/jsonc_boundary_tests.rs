@@ -1,12 +1,19 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{MAX_APP_JSONC_BYTES, parse_jsonc_config, strip_jsonc_comments};
+use super::{
+    AppConfigParseErrorReason, MAX_APP_JSONC_BYTES, parse_jsonc_config, strip_jsonc_comments,
+};
 
 #[test]
-fn cr_only_line_endings_preserve_following_object_keys() {
+fn bare_cr_line_endings_are_rejected() {
     let document = "{\r\"first\": 1, // comment\r\"second\": 2\r}";
-    let parsed = parse_jsonc_config::<serde_json::Value>(document).expect("valid JSONC");
+    assert_eq!(
+        parse_jsonc_config::<serde_json::Value>(document).map_err(|error| error.reason()),
+        Err(AppConfigParseErrorReason::InvalidJson)
+    );
+    let crlf = "{\r\n\"first\": 1, // comment\r\n\"second\": 2\r\n}";
+    let parsed = parse_jsonc_config::<serde_json::Value>(crlf).expect("valid CRLF JSONC");
     assert_eq!(parsed["first"], 1);
     assert_eq!(parsed["second"], 2);
 }

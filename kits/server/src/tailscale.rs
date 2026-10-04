@@ -28,7 +28,7 @@ const DEFAULT_PORT: u16 = 443;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TailscaleServiceResolverConfigDocument {
-    /// Required MagicDNS suffix, for example `<tailnet>.ts.net`.
+    /// Required DNS suffix for the configured tailnet or Headscale domain.
     #[serde(default)]
     pub dns_suffix: Option<String>,
     /// Default endpoint scheme used when a locator omits `scheme`.
@@ -77,8 +77,7 @@ impl TailscaleServiceResolver {
                     )
                 })
                 .and_then(|endpoint| {
-                    // The validated MagicDNS suffix keeps this plaintext option on the tailnet.
-                    AppServiceEndpointUrl::new_private_transport(endpoint).map_err(|_| {
+                    AppServiceEndpointUrl::new(endpoint).map_err(|_| {
                         record_resolve_metric("tailscale_service", "failure");
                         AppServiceEndpointResolutionError::new(
                             AppServiceEndpointResolutionErrorReason::InvalidEndpointUrl,
@@ -175,7 +174,6 @@ fn build_tailscale_service_url(
 fn parse_scheme(value: &str) -> Result<AppServiceEndpointScheme, TailscaleResolverConfigError> {
     match value {
         "https" => Ok(AppServiceEndpointScheme::Https),
-        "http" => Ok(AppServiceEndpointScheme::Http),
         _ => Err(TailscaleResolverConfigError::new(
             TailscaleResolverConfigErrorReason::InvalidScheme,
         )),
@@ -188,20 +186,15 @@ fn validate_dns_suffix(value: String) -> Result<String, TailscaleResolverConfigE
             TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
         ));
     }
-    // Plain HTTP is permitted through this resolver. Require the exact
-    // MagicDNS tailnet shape so config cannot redirect credentials to a
-    // syntactically valid public DNS suffix.
-    let Some((tailnet, zone)) = value.split_once('.') else {
-        return Err(TailscaleResolverConfigError::new(
-            TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
-        ));
-    };
-    if zone != "ts.net" {
+    // Require a complete DNS suffix, never a search-path-dependent bare label.
+    if !value.contains('.') {
         return Err(TailscaleResolverConfigError::new(
             TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
         ));
     }
-    validate_dns_label(tailnet)?;
+    for label in value.split('.') {
+        validate_dns_label(label)?;
+    }
     Ok(value)
 }
 

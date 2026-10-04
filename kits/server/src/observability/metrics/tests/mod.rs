@@ -3,6 +3,8 @@
 
 //! Metrics test modules.
 
+#[cfg(feature = "http")]
 mod exporter;
+#[cfg(feature = "http")]
 mod fixtures;
 mod labels;

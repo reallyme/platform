@@ -21,16 +21,14 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, futures::OwnedNotifie
 use tokio::time::{Sleep, sleep};
 
 #[cfg(feature = "tonic-grpc")]
+use super::grpc::GrpcTransportTimeouts;
+#[cfg(feature = "tonic-grpc")]
 use super::grpc_idle::{GrpcConnectionActivity, GrpcRequestActivityGuard};
 use super::rate_limit::rate_limit_network;
 use crate::config::{ConnectionLimitConfig, TrustedProxyHeaders};
 
 const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
-#[cfg(feature = "tonic-grpc")]
-// This is a fallback after tonic's 60-second age GOAWAY. Active streams retain
-// their separate grace and do not become idle merely because GOAWAY was sent.
-const GRPC_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The protocol parser's request dispatch is the only reliable indication
 /// that an HTTP/1 head or HTTP/2 HEADERS frame was completed.
@@ -110,7 +108,7 @@ pub(super) struct BoundedTcpListener {
     trusted_proxies: TrustedProxyHeaders,
     force_close: Option<Arc<ForceCloseConnections>>,
     #[cfg(feature = "tonic-grpc")]
-    grpc_idle_timeout: Duration,
+    grpc_transport_timeouts: GrpcTransportTimeouts,
 }
 
 impl BoundedTcpListener {
@@ -123,12 +121,18 @@ impl BoundedTcpListener {
             trusted_proxies: TrustedProxyHeaders::ignore_all(),
             force_close: None,
             #[cfg(feature = "tonic-grpc")]
-            grpc_idle_timeout: GRPC_IDLE_TIMEOUT,
+            grpc_transport_timeouts: GrpcTransportTimeouts::default(),
         }
     }
 
     pub(super) fn with_trusted_proxies(mut self, trusted_proxies: TrustedProxyHeaders) -> Self {
         self.trusted_proxies = trusted_proxies;
+        self
+    }
+
+    #[cfg(feature = "tonic-grpc")]
+    pub(super) fn with_grpc_transport_timeouts(mut self, timeouts: GrpcTransportTimeouts) -> Self {
+        self.grpc_transport_timeouts = timeouts;
         self
     }
 
@@ -183,7 +187,7 @@ impl Listener for BoundedTcpListener {
                                 slot,
                                 self.force_close.clone(),
                                 #[cfg(feature = "tonic-grpc")]
-                                self.grpc_idle_timeout,
+                                self.grpc_transport_timeouts,
                             ),
                             peer,
                         );
@@ -264,6 +268,8 @@ pub(super) struct BoundedTcpStream {
     grpc_idle_since: Option<tokio::time::Instant>,
     #[cfg(feature = "tonic-grpc")]
     grpc_idle_timeout: Duration,
+    #[cfg(feature = "tonic-grpc")]
+    grpc_hard_deadline: Option<Pin<Box<Sleep>>>,
 }
 
 impl BoundedTcpStream {
@@ -272,7 +278,7 @@ impl BoundedTcpStream {
         permit: OwnedSemaphorePermit,
         source_slot: Option<SourceSlot>,
         force_close: Option<Arc<ForceCloseConnections>>,
-        #[cfg(feature = "tonic-grpc")] grpc_idle_timeout: Duration,
+        #[cfg(feature = "tonic-grpc")] grpc_transport_timeouts: GrpcTransportTimeouts,
     ) -> Self {
         let close_notified = force_close
             .as_ref()
@@ -280,8 +286,27 @@ impl BoundedTcpStream {
         let first_request = FirstRequestTracker::new();
         #[cfg(feature = "tonic-grpc")]
         let grpc_activity = force_close.as_ref().map(|_| GrpcConnectionActivity::new());
+        #[cfg(feature = "tonic-grpc")]
+        let grpc_hard_deadline = grpc_activity
+            .as_ref()
+            .map(|_| Box::pin(sleep(grpc_transport_timeouts.hard_cap())));
         Self {
-            io: DeadlineIo::new(stream, FIRST_REQUEST_TIMEOUT, first_request.clone()),
+            io: DeadlineIo::new(
+                stream,
+                if force_close.is_some() {
+                    #[cfg(feature = "tonic-grpc")]
+                    {
+                        grpc_transport_timeouts.first_request_timeout()
+                    }
+                    #[cfg(not(feature = "tonic-grpc"))]
+                    {
+                        FIRST_REQUEST_TIMEOUT
+                    }
+                } else {
+                    FIRST_REQUEST_TIMEOUT
+                },
+                first_request.clone(),
+            ),
             first_request,
             _permit: permit,
             _source_slot: source_slot,
@@ -290,13 +315,15 @@ impl BoundedTcpStream {
             #[cfg(feature = "tonic-grpc")]
             grpc_idle_deadline: grpc_activity
                 .as_ref()
-                .map(|_| Box::pin(sleep(grpc_idle_timeout))),
+                .map(|_| Box::pin(sleep(grpc_transport_timeouts.idle_timeout()))),
             #[cfg(feature = "tonic-grpc")]
             grpc_activity,
             #[cfg(feature = "tonic-grpc")]
             grpc_idle_since: None,
             #[cfg(feature = "tonic-grpc")]
-            grpc_idle_timeout,
+            grpc_idle_timeout: grpc_transport_timeouts.idle_timeout(),
+            #[cfg(feature = "tonic-grpc")]
+            grpc_hard_deadline,
         }
     }
 
@@ -306,7 +333,16 @@ impl BoundedTcpStream {
 
     fn poll_force_close(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         #[cfg(feature = "tonic-grpc")]
-        self.poll_grpc_idle(cx)?;
+        {
+            if self
+                .grpc_hard_deadline
+                .as_mut()
+                .is_some_and(|deadline| deadline.as_mut().poll(cx).is_ready())
+            {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            self.poll_grpc_idle(cx)?;
+        }
         let Some(force_close) = &self.force_close else {
             return Ok(());
         };

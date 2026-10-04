@@ -256,19 +256,18 @@ pub(super) async fn repair_absent_tenant_metadata(
         .map_err(|_| FdbError::Tenant {
             reason: TenantErrorReason::AdministrationFailed { tenant },
         })?;
-    let schema = transaction
-        .get(&keys.schema_version_key, false)
+    // No metadata key may exist, including keys from a foreign application or
+    // a newer kit schema. The range read conflicts with concurrent writes.
+    let mut metadata_range =
+        foundationdb::RangeOption::from((b"__meta".as_slice(), b"__metb".as_slice()));
+    metadata_range.limit = Some(1);
+    let existing = transaction
+        .get_range(&metadata_range, 1, false)
         .await
         .map_err(|_| FdbError::Tenant {
             reason: TenantErrorReason::AdministrationFailed { tenant },
         })?;
-    let created = transaction
-        .get(&keys.created_at_key, false)
-        .await
-        .map_err(|_| FdbError::Tenant {
-            reason: TenantErrorReason::AdministrationFailed { tenant },
-        })?;
-    if schema.is_some() || created.is_some() {
+    if !existing.is_empty() {
         return Err(FdbError::Tenant {
             reason: TenantErrorReason::AdministrationFailed { tenant },
         });

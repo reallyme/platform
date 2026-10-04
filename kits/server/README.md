@@ -32,6 +32,13 @@ the stalled-write deadline for bytes queued to a slow reader. The server closes
 excess sockets promptly and reports public HTTP errors in the stable JSON
 envelope.
 
+Native gRPC listeners accept validated `GrpcTransportTimeouts` through
+`GrpcServerSpec::with_transport_timeouts`. The settings cover keepalive,
+first-request, idle, age, and age-grace deadlines. Tonic 0.14.6 forcefully
+retires a connection at the age-grace limit; clients should retry idempotent
+calls after transport failure. The correlation interceptor replaces inbound
+request and trace IDs with server-generated values.
+
 ## Validation
 
 Run the workspace formatting, check, test, doctest, and Clippy gates before

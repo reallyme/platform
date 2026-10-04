@@ -55,7 +55,12 @@ forwarded client identity after proxy normalization.
 When a listener reaches its total connection limit, it closes newly accepted
 sockets promptly. Idle HTTP and gRPC connections close after 60 seconds;
 stalled HTTP writes fail after 30 seconds. Active streams can finish during the
-configured drain window. Rate-limit source tables evict their least recently
-admitted source when full, with one initial token for a replacement source.
+configured drain window. Rate-limit source tables replace fully refilled
+sources when full. New sources otherwise share fixed overflow shards with a
+bounded allowance; `reallyme_rate_limit_overflow_decisions_total` reports
+admissions and rejections from that allowance.
+Keep the sum of configured `max_distinct_sources` values at or below 25,000
+per listener. The runtime warns on overcommit, and the shared registry cap
+takes precedence when multiple tiers compete for source buckets.
 Per-source tiers can set the IPv6 grouping prefix between `/48` and `/128`
 through `HttpRateLimitTierPolicy::with_ipv6_source_prefix_len`; the default is `/64`.

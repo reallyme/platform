@@ -110,11 +110,11 @@ async fn live_connector_proves_cluster_and_tenant_readiness() -> FdbResult<()> {
                         .expect("fixed integration data key");
                     assert_eq!(
                         transaction.set(key, b"changed"),
-                        Err(TenantDataAccessErrorReason::ReadOnlyMutation)
+                        Err(TenantDataAccessErrorReason::KeyChangingMutation)
                     );
                     assert_eq!(
-                        transaction.clear(key),
-                        Err(TenantDataAccessErrorReason::ReadOnlyMutation)
+                        transaction.try_clear(key),
+                        Err(TenantDataAccessErrorReason::KeyChangingMutation)
                     );
                     Ok::<(), foundationdb::FdbError>(())
                 })
@@ -124,9 +124,24 @@ async fn live_connector_proves_cluster_and_tenant_readiness() -> FdbResult<()> {
             ),
         )
         .await
-        .map_err(|_| reallyme_foundationdb_kit::FdbError::Query {
-            reason: reallyme_foundationdb_kit::FdbQueryErrorReason::TransactionFailed,
-        })?;
+        .expect_err("read-policy mutation must fail even if callback ignores its error");
+    handle
+        .transact_boxed(
+            (),
+            |transaction, _| {
+                Box::pin(async move {
+                    let key = TenantDataKey::new(b"kit-integration/data")
+                        .expect("fixed integration data key");
+                    transaction.clear(key);
+                    Ok::<(), foundationdb::FdbError>(())
+                })
+            },
+            TenantTransactionPolicy::Read(
+                reallyme_foundationdb_kit::fdb::transaction::ReadTxnPolicy::default(),
+            ),
+        )
+        .await
+        .expect_err("compatibility clear must abort a read-policy transaction");
     // Application data writes must leave the kit's metadata readable.
     verify_ready(&connector, &[tenant]).await?;
     Ok(())
@@ -179,9 +194,7 @@ async fn live_tenant_delete_clears_metadata_but_refuses_application_data() -> Fd
                 Box::pin(async move {
                     let key =
                         TenantDataKey::new(b"delete-integration/data").expect("fixed data key");
-                    transaction
-                        .clear(key)
-                        .expect("write transaction permits clear");
+                    transaction.clear(key);
                     Ok::<(), foundationdb::FdbError>(())
                 })
             },

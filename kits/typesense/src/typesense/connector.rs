@@ -107,8 +107,11 @@ impl TypesenseConnector {
 
 pub(crate) fn tls_config() -> Result<rustls::ClientConfig, ConnectorBuildError> {
     let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if roots.is_empty() {
+        // A host-managed trust store must not be widened by bundled roots.
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
         .map(|builder| {

@@ -59,6 +59,7 @@ where
             event = receiver.recv() => {
                 match event {
                     Some(OutboundWebSocketEvent::Message(message)) => {
+                        let output_started = tokio::time::Instant::now();
                         if !matches!(
                             tokio::time::timeout(
                                 super::SOCKET_WRITE_TIMEOUT,
@@ -69,6 +70,15 @@ where
                         ) {
                             return ApplicationMessageOutcome::TransportError;
                         }
+                        // Socket backpressure has its own bounded write timeout.
+                        // It must not spend the application handler's CPU/I/O budget.
+                        let Some(resumed_deadline) = handler_deadline
+                            .deadline()
+                            .checked_add(output_started.elapsed())
+                        else {
+                            return ApplicationMessageOutcome::HandlerTimeout;
+                        };
+                        handler_deadline.as_mut().reset(resumed_deadline);
                     }
                     Some(OutboundWebSocketEvent::Close(reason)) => {
                         return ApplicationMessageOutcome::Close(reason);

@@ -30,6 +30,9 @@ use super::labels::{
 };
 use super::names::MetricName;
 
+pub(super) const RATE_LIMIT_OVERFLOW_DECISION_COUNT: &str =
+    "reallyme_rate_limit_overflow_decisions_total";
+
 #[cfg(feature = "http")]
 fn listener_metric_label(listener_name: &HttpListenerName) -> SharedString {
     // metrics 0.24's SharedString has an explicit shared Arc<str> variant.
@@ -279,6 +282,17 @@ pub fn record_rate_limit_buckets_live(listener_name: Arc<str>, live_buckets: usi
         METRIC_LABEL_LISTENER_NAME => SharedString::from_shared(listener_name),
     )
     .set(live_buckets as f64);
+}
+
+/// Records newcomer pressure without exposing source identities or tier names.
+#[cfg(feature = "http")]
+pub(crate) fn record_rate_limit_overflow_decision(allowed: bool) {
+    let outcome = if allowed { "allowed" } else { "rejected" };
+    counter!(
+        RATE_LIMIT_OVERFLOW_DECISION_COUNT,
+        "outcome" => outcome
+    )
+    .increment(1);
 }
 
 /// Records recovery from a poisoned rate-limit registry mutex.

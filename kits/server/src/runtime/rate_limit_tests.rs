@@ -87,14 +87,14 @@ fn sweep_keeps_stale_source_debt_until_its_bucket_is_fully_refilled() {
             last_activity_at: stale_at,
         },
     );
-    buckets.overflow_bucket(&tier, stale_at).tokens = 0;
+    buckets.overflow_bucket(&tier, 0, stale_at, 1).tokens = 0;
 
     buckets.prune_stale(&[(tier.clone(), policy)], now);
     assert!(
         buckets.contains(&tier, 1),
         "token debt must survive the idle sweep"
     );
-    assert!(buckets.overflow.contains_key(&tier));
+    assert!(buckets.overflow.contains_key(&(tier.clone(), 0)));
     assert!(indexes_are_consistent(&buckets));
 
     buckets.prune_stale(&[(tier.clone(), policy)], now + Duration::from_secs(10_000));
@@ -102,7 +102,7 @@ fn sweep_keeps_stale_source_debt_until_its_bucket_is_fully_refilled() {
         !buckets.contains(&tier, 1),
         "fully refilled debt may be evicted"
     );
-    assert!(!buckets.overflow.contains_key(&tier));
+    assert!(!buckets.overflow.contains_key(&(tier.clone(), 0)));
     assert!(indexes_are_consistent(&buckets));
 }
 
@@ -281,32 +281,107 @@ fn registry_full_does_not_forgive_source_token_debt() {
         registry.allow(&tier, source(1))
     );
     assert_eq!(1, registry.live_bucket_count());
+    let first_newcomer = (2..=254_u8)
+        .map(source)
+        .find(|identity| source_bucket_id(&registry, *identity) % 8 >= 4)
+        .expect("fixture contains a shard with two reserved tokens");
+    let target_shard = source_bucket_id(&registry, first_newcomer) % 8;
+    let peers: Vec<_> = (2..=254_u8)
+        .map(source)
+        .filter(|identity| source_bucket_id(&registry, *identity) % 8 == target_shard)
+        .take(5)
+        .collect();
     assert_eq!(
         super::RateLimitDecision::Allowed,
-        registry.allow(&tier, source(2))
+        registry.allow(&tier, peers[0])
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, peers[1]),
+        "the newcomer reserve admits a second source in this shard"
     );
     assert_eq!(
         super::RateLimitDecision::SourceLimitReached,
-        registry.allow(&tier, source(3)),
-        "newcomers share the same initial token"
+        registry.allow(&tier, peers[2]),
+        "newcomers cannot mint tokens beyond the fixed reserve"
     );
     {
         let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
-        let overflow = buckets.overflow.get_mut(&tier).expect("overflow exists");
-        overflow.last_refill_at -= Duration::from_secs(1);
+        for ((name, _), overflow) in &mut buckets.overflow {
+            if name == &tier {
+                overflow.last_refill_at -= Duration::from_secs(8);
+            }
+        }
     }
     assert_eq!(
         super::RateLimitDecision::Allowed,
-        registry.allow(&tier, source(3)),
-        "new sources share the configured refill rate"
+        registry.allow(&tier, peers[2]),
+        "new sources share the shard's configured refill rate"
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, peers[3]),
+        "a refilled reserve admits only its fixed capacity"
     );
     assert_eq!(
         super::RateLimitDecision::SourceLimitReached,
-        registry.allow(&tier, source(4)),
-        "another identity cannot obtain a fresh overflow token"
+        registry.allow(&tier, peers[4])
     );
     assert_eq!(2, registry.live_bucket_count());
     assert_eq!(1, tier_map_count(&registry));
+}
+
+#[test]
+fn overflow_shards_isolate_newcomers_with_bounded_reserved_burst() {
+    let tier = HttpRateLimitTierName::new("overflow-fairness").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 8, 1).expect("valid policy");
+    let registry = super::RateLimitRegistry::new(Arc::new(vec![(tier.clone(), policy)]));
+    assert_eq!(
+        registry.allow(&tier, source(1)),
+        super::RateLimitDecision::Allowed
+    );
+    for _ in 1..8 {
+        assert_eq!(
+            registry.allow(&tier, source(1)),
+            super::RateLimitDecision::Allowed
+        );
+    }
+
+    let mut first_by_shard = [None; 8];
+    for number in 2..=254_u8 {
+        let identity = source(number);
+        let shard =
+            usize::try_from(source_bucket_id(&registry, identity) % 8).expect("shard index fits");
+        if first_by_shard[shard].is_none() {
+            first_by_shard[shard] = Some(identity);
+        }
+    }
+    let first = first_by_shard[0].expect("fixture covers shard zero");
+    let second = first_by_shard[1].expect("fixture covers shard one");
+    assert_eq!(
+        registry.allow(&tier, first),
+        super::RateLimitDecision::Allowed
+    );
+    assert_eq!(
+        registry.allow(&tier, second),
+        super::RateLimitDecision::Allowed
+    );
+    let first_shard_peer = (2..=254_u8)
+        .map(source)
+        .find(|identity| {
+            *identity != first && source_bucket_id(&registry, *identity).is_multiple_of(8)
+        })
+        .expect("fixture has a same-shard peer");
+    assert_eq!(
+        registry.allow(&tier, first_shard_peer),
+        super::RateLimitDecision::Allowed
+    );
+    assert_eq!(
+        registry.allow(&tier, first_shard_peer),
+        super::RateLimitDecision::SourceLimitReached,
+        "two reserved tokens per shard must be the complete initial allowance"
+    );
+    assert!(registry.live_bucket_count() <= 9);
 }
 
 #[test]
@@ -523,7 +598,7 @@ fn global_cap_preserves_existing_source_buckets() {
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
     assert_eq!(buckets.by_tier.get(&first).expect("first tier").len(), 2);
     assert!(!buckets.by_tier.contains_key(&second));
-    assert!(buckets.overflow.contains_key(&second));
+    assert!(buckets.overflow.keys().any(|(tier, _)| tier == &second));
     assert!(indexes_are_consistent(&buckets));
 }
 
@@ -562,7 +637,7 @@ fn global_cap_does_not_evict_unreplenished_sources() {
     assert!(first_entries.contains_key(&source_bucket_id(&registry, source(1))));
     assert!(first_entries.contains_key(&source_bucket_id(&registry, source(2))));
     assert_eq!(second_entries.len(), 1);
-    assert!(buckets.overflow.contains_key(&second));
+    assert!(buckets.overflow.keys().any(|(tier, _)| tier == &second));
     assert!(indexes_are_consistent(&buckets));
 }
 
@@ -586,21 +661,24 @@ fn rotating_ipv6_networks_share_a_rate_limited_overflow() {
             registry.allow_at(&tier, RateLimitSourceIdentity::PeerIp(address.into()), now)
                 == super::RateLimitDecision::Allowed,
         );
-        assert!(registry.live_bucket_count() <= LIVE_BUCKET_LIMIT + 1);
+        assert!(registry.live_bucket_count() <= LIVE_BUCKET_LIMIT + 8);
     }
 
-    assert_eq!(allowed, LIVE_BUCKET_LIMIT + 1);
+    assert_eq!(allowed, LIVE_BUCKET_LIMIT + 8);
     let new_client: std::net::IpAddr = "192.0.2.200".parse().expect("valid IPv4 fixture");
     {
         let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
-        let overflow = buckets.overflow.get_mut(&tier).expect("overflow exists");
-        overflow.last_refill_at -= Duration::from_secs(1);
+        for ((name, _), overflow) in &mut buckets.overflow {
+            if name == &tier {
+                overflow.last_refill_at -= Duration::from_secs(4);
+            }
+        }
     }
     assert_eq!(
         super::RateLimitDecision::Allowed,
         registry.allow_at(&tier, RateLimitSourceIdentity::PeerIp(new_client), now)
     );
-    assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT + 1);
+    assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT + 8);
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
     assert!(indexes_are_consistent(&buckets));
 }

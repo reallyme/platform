@@ -22,6 +22,8 @@ pub use labels::{
 };
 pub use names::MetricName;
 #[cfg(feature = "http")]
+pub(crate) use record::record_rate_limit_overflow_decision;
+#[cfg(feature = "http")]
 pub use record::record_runtime_phase;
 pub use record::{
     record_http_request_completed, record_http_request_error, record_http_request_outcome,

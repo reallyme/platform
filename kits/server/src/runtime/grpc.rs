@@ -4,7 +4,6 @@
 use axum::serve::Listener;
 use futures_util::stream;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::service::Routes;
 use tonic::transport::Server;
@@ -28,14 +27,11 @@ use crate::task::{ShutdownToken, TaskExecutionError, TaskExecutionErrorKind};
 
 const DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 const DEFAULT_GRPC_MAX_CONCURRENT_STREAMS: u32 = 128;
-const GRPC_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-const GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
-// Tonic emits GOAWAY at max age. It has no idle GOAWAY hook, so retire
-// connections gracefully before the IO fallback can close an idle socket.
-// Keep a long grace for active streams after GOAWAY; the short age must not
-// turn a healthy server stream into an early transport failure.
-const GRPC_CONNECTION_MAX_AGE: Duration = Duration::from_secs(60);
-const GRPC_CONNECTION_MAX_AGE_GRACE: Duration = Duration::from_secs(600);
+#[path = "grpc/transport_timeouts.rs"]
+mod transport_timeouts;
+pub use transport_timeouts::{
+    GrpcTransportTimeouts, GrpcTransportTimeoutsError, GrpcTransportTimeoutsErrorReason,
+};
 
 struct CloseConnectionsOnDrop(Arc<ForceCloseConnections>);
 
@@ -75,6 +71,7 @@ pub struct GrpcServerSpec {
     method_policies: Vec<GrpcMethodPolicy>,
     rate_limit_policies: std::sync::Arc<Vec<(HttpRateLimitTierName, HttpRateLimitTierPolicy)>>,
     trusted_proxy_headers: TrustedProxyHeaders,
+    transport_timeouts: GrpcTransportTimeouts,
 }
 
 impl GrpcServerSpec {
@@ -91,6 +88,7 @@ impl GrpcServerSpec {
             method_policies: Vec::new(),
             rate_limit_policies: std::sync::Arc::new(Vec::new()),
             trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
+            transport_timeouts: GrpcTransportTimeouts::default(),
         }
     }
 
@@ -116,6 +114,7 @@ impl GrpcServerSpec {
             method_policies: Vec::new(),
             rate_limit_policies: std::sync::Arc::new(Vec::new()),
             trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
+            transport_timeouts: GrpcTransportTimeouts::default(),
         }
     }
     /// Attaches optional HTTP/2 concurrent stream cap.
@@ -160,6 +159,16 @@ impl GrpcServerSpec {
     pub fn with_trusted_proxy_headers(mut self, headers: TrustedProxyHeaders) -> Self {
         self.trusted_proxy_headers = headers;
         self
+    }
+
+    /// Selects validated keepalive, age, grace, and idle transport deadlines.
+    pub fn with_transport_timeouts(mut self, timeouts: GrpcTransportTimeouts) -> Self {
+        self.transport_timeouts = timeouts;
+        self
+    }
+
+    pub(crate) fn transport_timeouts(&self) -> GrpcTransportTimeouts {
+        self.transport_timeouts
     }
 
     pub(crate) fn trusted_proxy_headers(&self) -> TrustedProxyHeaders {
@@ -258,16 +267,20 @@ pub(crate) async fn serve_health_grpc(
                 .max_concurrent_streams
                 .unwrap_or(DEFAULT_GRPC_MAX_CONCURRENT_STREAMS),
         )
-        .http2_keepalive_interval(Some(GRPC_KEEPALIVE_INTERVAL))
-        .http2_keepalive_timeout(Some(GRPC_KEEPALIVE_TIMEOUT))
-        .max_connection_age(GRPC_CONNECTION_MAX_AGE)
-        .max_connection_age_grace(GRPC_CONNECTION_MAX_AGE_GRACE);
+        .http2_keepalive_interval(Some(policy.transport_timeouts.keepalive_interval()))
+        .http2_keepalive_timeout(Some(policy.transport_timeouts.keepalive_timeout()))
+        // Tonic 0.14.6 re-polls a completed timeout future after graceful
+        // connection-age retirement, which panics a connection task. Keep
+        // its finite force-close grace until an upstream fix is published.
+        .max_connection_age(policy.transport_timeouts.max_age())
+        .max_connection_age_grace(policy.transport_timeouts.drain_grace());
     if let Some(max_timeout) = policy.max_timeout {
         builder = builder.timeout(max_timeout.as_duration());
     }
     let incoming = stream::unfold(
         BoundedTcpListener::with_force_close(listener, force_close, policy.connection_limits)
-            .with_trusted_proxies(trusted_proxies),
+            .with_trusted_proxies(trusted_proxies)
+            .with_grpc_transport_timeouts(policy.transport_timeouts),
         |mut listener| async move {
             let (stream, _peer) = listener.accept().await;
             Some((Ok::<_, std::io::Error>(stream), listener))
@@ -323,6 +336,7 @@ pub(crate) struct GrpcServePolicy {
     pub(crate) rate_limit_registry: Arc<RateLimitRegistry>,
     pub(crate) trusted_proxy_headers: TrustedProxyHeaders,
     pub(crate) connection_limits: ConnectionLimitConfig,
+    pub(crate) transport_timeouts: GrpcTransportTimeouts,
 }
 
 /// Native gRPC method-level runtime policy.

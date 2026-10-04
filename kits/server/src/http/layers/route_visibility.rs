@@ -139,7 +139,7 @@ where
                     transport_label_for_request(&request),
                     HttpMethodLabel::from_method(request.method()),
                     &route_template,
-                    HttpRejectionReason::MalformedRequestPath,
+                    HttpRejectionReason::BlockedRouteVisibility,
                 );
                 return RouteVisibilityResponseFuture::ready(
                     JsonErrorResponse::from_public_error(PublicHttpError::from_code(
@@ -156,11 +156,25 @@ where
             &self.listener_visibility,
             canonical_path.as_ref(),
         );
-        if !self.policy.allows_request(
+        // Axum selects handlers using the raw URI. A decoded spelling may
+        // select a more permissive exact rule than the handler actually uses.
+        let raw_matching_rule = self.policy.matching_rule_for_request(
             &self.listener_name,
             &self.listener_visibility,
-            canonical_path.as_ref(),
-        ) {
+            request_path,
+        );
+        if raw_matching_rule != matching_rule
+            || !self.policy.allows_request(
+                &self.listener_name,
+                &self.listener_visibility,
+                request_path,
+            )
+            || !self.policy.allows_request(
+                &self.listener_name,
+                &self.listener_visibility,
+                canonical_path.as_ref(),
+            )
+        {
             let request_id = request_id_from_headers(request.headers());
             record_http_request_rejected_for_route_template_with_transport(
                 SharedString::from_shared(self.listener_name.clone_shared()),
@@ -472,6 +486,8 @@ fn transport_label_for_request(request: &Request<Body>) -> TransportLabel {
 
 #[cfg(test)]
 mod body_limit_tests;
+#[cfg(test)]
+mod encoded_carve_out_tests;
 #[cfg(test)]
 mod path_canonicalization_tests;
 #[cfg(test)]

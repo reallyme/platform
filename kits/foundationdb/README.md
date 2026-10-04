@@ -132,9 +132,10 @@ then clears only the kit metadata keys in a tenant transaction. It deletes the
 empty tenant in a second operation and attempts metadata restoration if that
 operation fails. Between those two commits, concurrent opens fail closed and a
 concurrent writer can leave data in the tenant. If an outage prevents automatic
-restoration, `recover-delete` recreates both metadata keys only when both are
-absent; it permits application data and requires the operator to verify the
-intended tenant before use. This recovery records a new metadata creation time.
+restoration, `recover-delete <tenant> <expected-tenant-id>` recreates both
+metadata keys only when the entire reserved metadata namespace is absent. It
+permits application data but requires a trusted tenant ID recorded before the
+interrupted deletion. This recovery records a new metadata creation time.
 Application data present before deletion produces a typed empty-tenant error
 without clearing metadata.
 

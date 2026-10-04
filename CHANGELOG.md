@@ -5,35 +5,56 @@
 - Refresh compatible Rust dependencies and the workspace lockfile, and update
   Worker tooling to pnpm 12.9.1.
 - Rate-limit source churn no longer grants a fresh token while existing buckets
-  retain debt. New sources share bounded overflow capacity until a tracked
-  bucket has fully refilled. A bounded candidate search admits newcomers when
-  a refilled bucket follows an older source that still owes tokens.
+  retain debt. New sources use fixed overflow shards with a separate, bounded
+  allowance of twice the tier's burst and refill budget. A low-cardinality
+  counter reports allowed and rejected overflow decisions. A bounded candidate
+  search admits newcomers when a refilled
+  bucket follows an older source that still owes tokens. Overcommitted source
+  caps are reported at registry construction; the global 25,000-bucket cap wins.
 - HTTP/2 WebSocket upgrades survive HTTP keep-alive retirement, and slow
   response readers continue while socket writes progress. Flow-control stalls
-  release the connection within the configured write-stall deadline.
-- Native gRPC sends GOAWAY before its idle socket fallback closes a connection;
-  active streams retain a separate grace period after GOAWAY.
-- Route visibility evaluates a single decoded path: ordinary escaped characters
-  are accepted, while encoded separators, percent signs, NUL, and dot segments
-  receive a bad-request response.
-- Over-cap sockets no longer pause the listener's shared accept loop. Invalid
-  forwarded client chains are rejected rather than assigned to the proxy's
-  rate-limit identity.
+  receive a longer protocol allowance and GOAWAY with bounded drain.
+- Native gRPC keepalive, first-request, idle, connection-age, and age-grace
+  deadlines can be configured per listener. Connection age and idle retirement
+  remain forceful with Tonic 0.14.6; active streams retain a finite age grace.
+- The reference Worker's oversized Connect request response matches native
+  Connect's 413 status and resource-exhausted error envelope.
+- Route visibility requires the raw and decoded path to select the same rule:
+  ordinary escaped characters are accepted, while encoded separators, percent
+  signs, NUL, and dot segments receive a bad-request response.
+- Over-cap sockets no longer pause the listener's shared accept loop. Trusted
+  proxy client chains accept port forms, multiple field lines, and unspecified
+  identities; malformed addresses are rejected. The nearest proxy field line
+  controls the external host and scheme.
 - FoundationDB delete attempts bounded metadata restoration after any failed
-  phase. Operators can recreate both missing keys with `recover-delete` after
-  verifying tenant identity, even when application data remains; recovery
-  records a new metadata creation time.
+  phase. Operators can recreate missing metadata with `recover-delete` only
+  when they supply a previously recorded tenant ID and the entire reserved
+  metadata namespace is empty; application data may remain. Recovery records
+  a new metadata creation time. Tenant creation and metadata initialization
+  remain separate FoundationDB operations; an interrupted `ensure` requires
+  explicit repair of an empty tenant.
   Application transactions opened with a read policy reject mutations.
 - Explicit plaintext NATS connections ignore discovered servers. Native TLS
-  clients include bundled public roots alongside OS roots; HTTP clients offer
-  HTTP/2 and HTTP/1.1 through ALPN.
+  clients use host certificate roots when available, with bundled public roots
+  only as a fallback; HTTP clients offer HTTP/2 and HTTP/1.1 through ALPN.
 - HTTP transport deadlines are configurable through validated server settings.
-  JSONC line comments now preserve CR-only line endings.
+  JSONC rejects bare CR line endings to avoid ambiguous comment boundaries.
+- Valkey TLS again installs the ring crypto provider when the host has not
+  selected a process-wide provider, preserving the 0.3.1 default behavior.
+- Service locators and Tailscale resolver configuration continue to require
+  HTTPS; an unverified private transport cannot enable plain HTTP endpoints.
+  Tailscale resolver suffixes also accept validated custom DNS domains.
+- Preserve the 0.3.1 FoundationDB data-error enum and `clear` signatures while
+  aborting any read-policy transaction that attempts a mutation, including
+  when a callback ignores the method result.
 - HTTP listeners answer liveness requests while application critical tasks are
-  still becoming ready. Overdue HTTP connection tasks are cancelled and joined
-  before application cleanup starts. A saturated gRPC method responds with
+  still becoming ready. App routes and `/metrics` may also respond during this
+  interval; `/readyz` remains unavailable until startup completes. Overdue
+  HTTP connection tasks are cancelled and joined before application cleanup
+  starts. A saturated gRPC method responds with
   `RESOURCE_EXHAUSTED` instead of reaching the first-request transport deadline.
-- WebSocket message handlers have a bounded execution deadline. Browser Connect
+- WebSocket message handlers have a configurable bounded execution deadline
+  that excludes bounded outbound socket writes. Browser Connect
   preflight permits protocol and timeout headers on both reference hosts.
 - The reference Worker loads protobuf DTOs without the native Connect router
   dependency. Authenticated Typesense integration coverage exercises a collection

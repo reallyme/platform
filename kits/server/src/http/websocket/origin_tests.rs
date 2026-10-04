@@ -3,13 +3,14 @@
 
 use axum::http::{HeaderMap, HeaderValue, Uri, header};
 
-use super::websocket_same_origin;
+use super::{websocket_same_origin, websocket_same_origin_with_external_origin};
 
 #[test]
 fn websocket_origin_check_rejects_cross_site_and_malformed_origins() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("api.example.com"));
-    assert!(websocket_same_origin(
+    assert!(websocket_same_origin(&headers, &Uri::from_static("/ws")));
+    assert!(websocket_same_origin_with_external_origin(
         &headers,
         &Uri::from_static("/ws"),
         None
@@ -19,7 +20,7 @@ fn websocket_origin_check_rejects_cross_site_and_malformed_origins() {
         header::ORIGIN,
         HeaderValue::from_static("http://api.example.com"),
     );
-    assert!(websocket_same_origin(
+    assert!(websocket_same_origin_with_external_origin(
         &headers,
         &Uri::from_static("/ws"),
         None
@@ -37,7 +38,7 @@ fn websocket_origin_check_rejects_cross_site_and_malformed_origins() {
             HeaderValue::from_str(origin).expect("test origin header"),
         );
         assert!(
-            !websocket_same_origin(&headers, &Uri::from_static("/ws"), None),
+            !websocket_same_origin_with_external_origin(&headers, &Uri::from_static("/ws"), None),
             "{origin}"
         );
     }
@@ -51,8 +52,12 @@ fn websocket_origin_uses_http2_authority_and_scheme_without_host() {
         HeaderValue::from_static("https://api.example.com"),
     );
     let uri = Uri::from_static("https://api.example.com/ws");
-    assert!(websocket_same_origin(&headers, &uri, None));
+    assert!(websocket_same_origin_with_external_origin(
+        &headers, &uri, None
+    ));
 
     headers.insert(header::HOST, HeaderValue::from_static("other.example.com"));
-    assert!(!websocket_same_origin(&headers, &uri, None));
+    assert!(!websocket_same_origin_with_external_origin(
+        &headers, &uri, None
+    ));
 }

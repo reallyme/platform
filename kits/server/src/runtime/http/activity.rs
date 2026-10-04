@@ -29,6 +29,7 @@ pub(super) struct ConnectionActivitySnapshot {
     pub(super) idle_since: Instant,
     pub(super) has_h2_websocket: bool,
     pub(super) oldest_unconsumed_frame_at: Option<Instant>,
+    pub(super) pending_frame_count: usize,
 }
 
 #[derive(Clone)]
@@ -45,6 +46,7 @@ impl ConnectionActivity {
             idle_since: Instant::now(),
             has_h2_websocket: false,
             oldest_unconsumed_frame_at: None,
+            pending_frame_count: 0,
         });
         (
             Self {
@@ -149,6 +151,7 @@ impl RequestActivityGuard {
             }
             self.sender.send_modify(|snapshot| {
                 snapshot.oldest_unconsumed_frame_at = oldest;
+                snapshot.pending_frame_count = pending.frames.len();
             });
         }
     }
@@ -163,6 +166,7 @@ impl RequestActivityGuard {
         let oldest = pending.frames.values().copied().min();
         self.sender.send_modify(|snapshot| {
             snapshot.oldest_unconsumed_frame_at = oldest;
+            snapshot.pending_frame_count = pending.frames.len();
         });
     }
 }

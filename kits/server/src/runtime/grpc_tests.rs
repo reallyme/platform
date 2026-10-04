@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    GrpcServePolicy, grpc_health_status_for_readiness, serve_health_grpc,
+    GrpcServePolicy, GrpcTransportTimeouts, grpc_health_status_for_readiness, serve_health_grpc,
     set_registered_health_status, sync_grpc_health_with_readiness,
 };
 use crate::config::{
@@ -175,6 +175,7 @@ async fn aborting_grpc_serve_closes_detached_watch_connections() {
         rate_limit_registry,
         trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
         connection_limits: ConnectionLimitConfig::secure_defaults(),
+        transport_timeouts: GrpcTransportTimeouts::default(),
     };
     let serve = tokio::spawn(serve_health_grpc(
         listener,
@@ -231,6 +232,7 @@ async fn routed_grpc_watch_survives_first_request_deadline() {
         rate_limit_registry: Arc::new(RateLimitRegistry::new(Arc::new(Vec::new()))),
         trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
         connection_limits: ConnectionLimitConfig::secure_defaults(),
+        transport_timeouts: GrpcTransportTimeouts::default(),
     };
     let serve = tokio::spawn(serve_health_grpc(
         listener,
@@ -294,6 +296,7 @@ async fn aborting_grpc_serve_cancels_in_flight_app_handler() {
         rate_limit_registry: Arc::new(RateLimitRegistry::new(Arc::new(Vec::new()))),
         trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
         connection_limits: ConnectionLimitConfig::secure_defaults(),
+        transport_timeouts: GrpcTransportTimeouts::default(),
     };
     let controller = ShutdownController::new();
     let serve = tokio::spawn(serve_health_grpc(

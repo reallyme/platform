@@ -5,9 +5,35 @@ use super::{
     MAX_TLS_CA_PEM_BYTES, decode_bounded_get_result, decode_deleted_count, read_custom_root,
 };
 use crate::{
-    ValkeyCommandErrorReason, ValkeyDataErrorReason, ValkeyDataKind, ValkeyError,
-    ValkeySetupErrorReason,
+    ValkeyCommandErrorReason, ValkeyConfig, ValkeyConfigInput, ValkeyDataErrorReason,
+    ValkeyDataKind, ValkeyError, ValkeySetupErrorReason,
 };
+
+#[tokio::test]
+async fn default_tls_connection_initializes_a_crypto_provider() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("ephemeral test port should be available");
+    let port = listener.local_addr().expect("test listener address").port();
+    drop(listener);
+    let config = ValkeyConfig::new(ValkeyConfigInput {
+        host: "127.0.0.1".to_owned(),
+        port,
+        connection_timeout_millis: 100,
+        response_timeout_millis: 100,
+        retry_attempts: 0,
+        ..ValkeyConfigInput::default()
+    })
+    .expect("test TLS configuration should validate");
+
+    let result = super::ValkeyConnector::connect(&config).await;
+    assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    assert!(matches!(
+        result,
+        Err(ValkeyError::Setup {
+            reason: ValkeySetupErrorReason::ConnectionUnavailable,
+        })
+    ));
+}
 
 #[test]
 fn bounded_get_decodes_missing_empty_and_oversized_values() {

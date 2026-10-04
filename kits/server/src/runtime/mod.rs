@@ -46,6 +46,7 @@ pub use error::{
 #[cfg(feature = "tonic-grpc")]
 pub use grpc::{
     GrpcAppRoutes, GrpcAppRoutesError, GrpcAppRoutesErrorReason, GrpcMethodPolicy, GrpcServerSpec,
+    GrpcTransportTimeouts, GrpcTransportTimeoutsError, GrpcTransportTimeoutsErrorReason,
 };
 pub use http::{
     HttpIpv6SourcePrefixError, HttpIpv6SourcePrefixErrorReason, HttpRateLimitScope,

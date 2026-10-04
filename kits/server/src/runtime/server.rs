@@ -218,9 +218,7 @@ impl ServerRuntime {
                 let serve_policy = HttpServePolicy::from_config(
                     http_server.name().clone(),
                     http_server.config(),
-                    shutdown_timeout
-                        .as_duration()
-                        .min(fast_shutdown_timeout.as_duration()),
+                    shutdown_timeout.as_duration(),
                 );
                 let rate_limit_policies = http_server.rate_limit_policies();
                 let rate_limit_registry =
@@ -284,6 +282,7 @@ impl ServerRuntime {
                     let method_policies = grpc_server.method_policies();
                     let rate_limit_policies = grpc_server.rate_limit_policies();
                     let trusted_proxy_headers = grpc_server.trusted_proxy_headers();
+                    let transport_timeouts = grpc_server.transport_timeouts();
                     let rate_limit_registry =
                         Arc::new(RateLimitRegistry::new(rate_limit_policies.clone()));
                     let rate_limit_registry_for_policy = Arc::clone(&rate_limit_registry);
@@ -316,6 +315,7 @@ impl ServerRuntime {
                                     rate_limit_registry: rate_limit_registry_for_policy,
                                     trusted_proxy_headers,
                                     connection_limits,
+                                    transport_timeouts,
                                 },
                                 concurrency_limit,
                                 shutdown,
