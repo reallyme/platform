@@ -287,7 +287,12 @@ jobs:
       - name: Run nats integration tests
         env:
           REALLYME_RUN_NATS_INTEGRATION: "1"
-        run: cargo test -p reallyme-nats-kit
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-nats-kit --features testing --lib -- --list \
+            | rg '^consumer::tests::real_publish_consume_and_ack_round_trip: test$'
+          cargo test --locked -p reallyme-nats-kit --features testing --lib \
+            consumer::tests::real_publish_consume_and_ack_round_trip -- --ignored --exact
 
       - name: Start PostgreSQL
         run: |
@@ -311,7 +316,120 @@ jobs:
           REALLYME_RUN_POSTGRES_INTEGRATION: "1"
           REALLYME_POSTGRES_INTEGRATION_URI: >-
             postgres://postgres:reallyme-integration-password@127.0.0.1:5432/reallyme_integration
-        run: cargo test -p reallyme-postgres-kit --test postgres_integration
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-postgres-kit --test postgres_integration -- --list \
+            | rg '^live_pool_transactions_and_error_classification: test$'
+          cargo test --locked -p reallyme-postgres-kit --test postgres_integration \
+            live_pool_transactions_and_error_classification -- --ignored --exact
+
+      - name: Start FoundationDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name reallyme-ci-fdb \
+            --network host \
+            --env FDB_CLUSTER_FILE=/var/fdb/fdb.cluster \
+            --env FDB_NETWORKING_MODE=host \
+            --env FDB_PORT=4500 \
+            --tmpfs /var/fdb/data:rw,size=2g \
+            --tmpfs /var/fdb/logs:rw,size=2g \
+            "foundationdb/foundationdb:${FDB_VERSION}"
+          configured=0
+          for _attempt in {1..30}; do
+            if docker exec reallyme-ci-fdb fdbcli --exec 'configure new single memory' 2>&1 \
+              | rg 'Database created'; then
+              configured=1
+              break
+            fi
+            sleep 1
+          done
+          if ((configured == 0)); then
+            docker logs reallyme-ci-fdb
+            exit 1
+          fi
+          docker exec reallyme-ci-fdb fdbcli --exec 'configure tenant_mode=optional_experimental'
+          docker exec reallyme-ci-fdb cat /var/fdb/fdb.cluster > "$RUNNER_TEMP/fdb.cluster"
+          printf 'FDB_CLUSTER_FILE=%s\n' "$RUNNER_TEMP/fdb.cluster" >> "$GITHUB_ENV"
+
+      - name: Provision FoundationDB integration tenant
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --quiet -p reallyme-foundationdb-kit \
+            --features tenant-admin --bin fdb-tenant-admin -- \
+            ensure foundationdb-kit-integration
+
+      - name: Run FoundationDB integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --test foundationdb_integration -- --list \
+            | rg '^live_connector_proves_cluster_and_tenant_readiness: test$'
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --test foundationdb_integration \
+            live_connector_proves_cluster_and_tenant_readiness -- --ignored --exact
+
+      - name: Start Typesense
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name reallyme-ci-typesense \
+            --publish 127.0.0.1:8108:8108 \
+            --tmpfs /data:rw,size=1g \
+            typesense/typesense@sha256:dea1b62b7b6e374939349ba58843218473942501b3a17cd07170e9ca70dbbc0c \
+            --data-dir /data --api-key=platform-integration-key
+          for _attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8108/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs reallyme-ci-typesense
+          exit 1
+
+      - name: Run Typesense integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-typesense-kit \
+            --test typesense_integration -- --list \
+            | rg '^connector_reports_live_typesense_ready: test$'
+          cargo test --locked -p reallyme-typesense-kit \
+            --test typesense_integration \
+            connector_reports_live_typesense_ready -- --ignored --exact
+
+      - name: Start Valkey
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name reallyme-ci-valkey \
+            --publish 127.0.0.1:6379:6379 \
+            valkey/valkey@sha256:475ee65cc75c327407458f5096cdd36954b3de3fc83f4c8ac31a4a8edecbf49e \
+            valkey-server --save '' --appendonly no
+          for _attempt in {1..30}; do
+            if docker exec reallyme-ci-valkey valkey-cli ping | rg '^PONG$'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs reallyme-ci-valkey
+          exit 1
+
+      - name: Run Valkey integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-valkey-kit \
+            --test valkey_integration -- --list \
+            | rg '^cache_lease_and_counter_commands_are_atomic: test$'
+          cargo test --locked -p reallyme-valkey-kit \
+            --test valkey_integration \
+            cache_lease_and_counter_commands_are_atomic -- --ignored --exact
 
       - name: Cargo doc tests
         run: cargo test --locked --workspace --all-features --doc
