@@ -44,11 +44,11 @@ const publicMetadata = (name, dependencies = []) => ({
   license: "MIT OR Apache-2.0",
   dependencies,
 });
-const localDependency = (name, req = "^0.1.0") => ({
+const localDependency = (name, req = "^0.1.0", kind = null) => ({
   name,
   source: null,
   path: name,
-  kind: null,
+  kind,
   req,
 });
 Atomics.wait = (_array, _index, _value, delay) => {
@@ -78,7 +78,9 @@ childProcess.spawnSync = (command, args) => {
       ]),
       publicMetadata("reallyme-foundationdb-kit"),
       publicMetadata("reallyme-postgres-kit"),
-      publicMetadata("reallyme-nats-kit"),
+      publicMetadata("reallyme-nats-kit", [
+        localDependency("reallyme-typesense-kit", "^0.1.0", "dev"),
+      ]),
       publicMetadata("reallyme-typesense-kit"),
       publicMetadata("reallyme-valkey-kit"),
       publicMetadata("reallyme-s3-kit"),
@@ -148,6 +150,7 @@ test("successful publication respects every local dependency edge", () => {
   assert.ok(indexOf("reallyme-app-kit") < indexOf("reallyme-server-kit"));
   assert.ok(indexOf("reallyme-app-kit") < indexOf("reallyme-platform"));
   assert.ok(indexOf("reallyme-server-kit") < indexOf("reallyme-platform"));
+  assert.ok(indexOf("reallyme-typesense-kit") < indexOf("reallyme-nats-kit"));
   assert.ok(indexOf("reallyme-s3-kit") < indexOf("reallyme-platform"));
   assert.equal(published.length, 9);
 });

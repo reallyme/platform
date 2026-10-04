@@ -30,6 +30,7 @@ const REQUIRED_PUBLISH_ORDER_EDGES = Object.freeze([
   ["reallyme-app-kit", "reallyme-server-kit"],
   ["reallyme-app-kit", "reallyme-platform"],
   ["reallyme-foundationdb-kit", "reallyme-platform"],
+  ["reallyme-typesense-kit", "reallyme-nats-kit"],
   ["reallyme-nats-kit", "reallyme-platform"],
   ["reallyme-postgres-kit", "reallyme-platform"],
   ["reallyme-s3-kit", "reallyme-platform"],
@@ -196,10 +197,11 @@ function dependencyPackageName(dependency) {
 }
 
 function isPublishOrderingDependency(dependency) {
+  // Cargo resolves packaged dev-dependencies during verification, so they
+  // must be available before a dependent crate is inspected or published.
   return (
     dependency.source === null &&
     typeof dependency.path === "string" &&
-    dependency.kind !== "dev" &&
     publishable.has(dependencyPackageName(dependency))
   );
 }
