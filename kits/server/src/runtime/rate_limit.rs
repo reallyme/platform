@@ -74,9 +74,15 @@ impl SourceRateBucket {
 }
 
 /// Shared request rate limiter used by HTTP and gRPC layers.
+///
+/// Source-address limits bound unauthenticated churn but cannot distinguish a
+/// legitimate newcomer from an attacker controlling many addresses. Sensitive
+/// operations must also enforce a limit tied to an authenticated or validated
+/// application identity.
 #[derive(Debug)]
 pub struct RateLimitRegistry {
     tier_policies: Arc<Vec<(HttpRateLimitTierName, HttpRateLimitTierPolicy)>>,
+    effective_source_caps: Vec<usize>,
     bucket_identity_hasher: RandomState,
     max_live_buckets: usize,
     buckets: Mutex<RateLimitBucketState>,
@@ -110,8 +116,9 @@ impl RateLimitRegistry {
             });
         if configured_source_capacity > max_live_buckets {
             // Existing policy constructors are infallible at composition time.
-            // Surface overcommit explicitly: the global cap wins and excess
-            // newcomer traffic enters the bounded overflow shards.
+            // Reserve finite slots per tier so one overcommitted tier cannot
+            // consume another tier's entire source allowance. Newcomers
+            // beyond an effective cap use bounded overflow shards.
             tracing::warn!(
                 configured_source_capacity,
                 max_live_buckets,
@@ -119,6 +126,10 @@ impl RateLimitRegistry {
             );
         }
         Self {
+            effective_source_caps: effective_source_caps(
+                tier_policies.as_slice(),
+                max_live_buckets,
+            ),
             tier_policies,
             bucket_identity_hasher: RandomState::new(),
             max_live_buckets,
@@ -162,10 +173,11 @@ impl RateLimitRegistry {
         source_identity: RateLimitSourceIdentity,
         now: Instant,
     ) -> RateLimitDecision {
-        let Some(policy) = self
+        let Some((tier_index, policy)) = self
             .tier_policies
             .iter()
-            .find_map(|(name, policy)| (name == tier).then_some(*policy))
+            .enumerate()
+            .find_map(|(index, (name, policy))| (name == tier).then_some((index, *policy)))
         else {
             // A stale or misspelled tier must never turn a configured guard off.
             return RateLimitDecision::SourceLimitReached;
@@ -185,7 +197,7 @@ impl RateLimitRegistry {
 
         let mut use_overflow = false;
         if !buckets.contains(tier, source_bucket) {
-            let tier_full = buckets.tier_len(tier) >= policy.max_distinct_sources();
+            let tier_full = buckets.tier_len(tier) >= self.effective_source_caps[tier_index];
             let registry_full = buckets.len() >= self.max_live_buckets;
             if tier_full || registry_full {
                 let evicted = if tier_full {
@@ -255,6 +267,34 @@ impl RateLimitRegistry {
         let buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
         buckets.len().saturating_add(buckets.overflow.len())
     }
+}
+
+fn effective_source_caps(
+    policies: &[(HttpRateLimitTierName, HttpRateLimitTierPolicy)],
+    registry_cap: usize,
+) -> Vec<usize> {
+    let configured_total = policies.iter().fold(0_usize, |total, (_, policy)| {
+        total.saturating_add(policy.max_distinct_sources())
+    });
+    if configured_total <= registry_cap {
+        return policies
+            .iter()
+            .map(|(_, policy)| policy.max_distinct_sources())
+            .collect();
+    }
+
+    let mut remaining = registry_cap;
+    policies
+        .iter()
+        .enumerate()
+        .map(|(index, (_, policy))| {
+            let remaining_tiers = policies.len().saturating_sub(index).max(1);
+            let fair_share = remaining.div_ceil(remaining_tiers);
+            let allocated = policy.max_distinct_sources().min(fair_share);
+            remaining = remaining.saturating_sub(allocated);
+            allocated
+        })
+        .collect()
 }
 
 fn consume_overflow_bucket(

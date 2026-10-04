@@ -10,7 +10,8 @@
   counter reports allowed and rejected overflow decisions. A bounded candidate
   search admits newcomers when a refilled
   bucket follows an older source that still owes tokens. Overcommitted source
-  caps are reported at registry construction; the global 25,000-bucket cap wins.
+  caps are reported at registry construction and partitioned across tiers so
+  one tier cannot consume another tier's reserved source slots.
 - HTTP/2 WebSocket upgrades survive HTTP keep-alive retirement; an idle
   connection sends GOAWAY while an active upgrade may finish within its age
   bound. Slow response readers continue while socket writes progress.

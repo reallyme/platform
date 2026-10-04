@@ -60,7 +60,8 @@ sources when full. New sources otherwise share fixed overflow shards with a
 bounded allowance; `reallyme_rate_limit_overflow_decisions_total` reports
 admissions and rejections from that allowance.
 Keep the sum of configured `max_distinct_sources` values at or below 25,000
-per listener. The runtime warns on overcommit, and the shared registry cap
-takes precedence when multiple tiers compete for source buckets.
+per listener. The runtime warns on overcommit and partitions the 25,000
+retained source slots across tiers; excess identities use bounded overflow
+shards. The configured tier cap remains an upper bound.
 Per-source tiers can set the IPv6 grouping prefix between `/48` and `/128`
 through `HttpRateLimitTierPolicy::with_ipv6_source_prefix_len`; the default is `/64`.
