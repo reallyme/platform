@@ -3091,26 +3091,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reallyme-codec"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38c02806da39eddae9dac51a4537c6a55101227fb69437da077f540d183bc4d1"
-dependencies = [
- "reallyme-codec-base64",
-]
-
-[[package]]
-name = "reallyme-codec-base64"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "984d96702a3ab572c46d41c0303b723e451e11210de957faab8264f8cfc9e186"
-dependencies = [
- "base64 0.23.1",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
 name = "reallyme-codec-base64url"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3732,9 +3712,6 @@ dependencies = [
  "bytes",
  "foundationdb",
  "metrics",
- "reallyme-codec",
- "serde",
- "serde_json",
  "temp-env",
  "thiserror",
  "tokio",
