@@ -82,3 +82,38 @@ async fn ordinary_options_reaches_handler_while_browser_preflight_is_answered() 
         Some(&"https://app.example.com".parse().expect("valid origin")),
     );
 }
+
+#[tokio::test]
+async fn connect_browser_preflight_allows_protocol_and_timeout_headers() {
+    let layer = PreflightCorsLayer::new(base_cors_layer().allow_origin(AllowOrigin::exact(
+        "https://app.example.com".parse().expect("valid origin"),
+    )));
+    let router = Router::new()
+        .route("/rpc", options(|| async { StatusCode::NO_CONTENT }))
+        .layer(layer);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/rpc")
+                .header(header::ORIGIN, "https://app.example.com")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(
+                    header::ACCESS_CONTROL_REQUEST_HEADERS,
+                    "content-type, connect-timeout-ms, connect-protocol-version",
+                )
+                .body(Body::empty())
+                .expect("valid preflight request"),
+        )
+        .await
+        .expect("infallible router");
+    assert_eq!(response.status(), StatusCode::OK);
+    let allowed = response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .expect("allow headers present")
+        .to_str()
+        .expect("header is ASCII");
+    assert!(allowed.contains("connect-timeout-ms"));
+    assert!(allowed.contains("connect-protocol-version"));
+}

@@ -24,7 +24,7 @@ mod metadata;
 mod transact;
 pub use data::{
     TenantDataAccessErrorReason, TenantDataKey, TenantDataRange, TenantDataRangeLimit,
-    TenantDataTransaction,
+    TenantDataRangeTargetBytes, TenantDataTransaction, TenantTransactionSizeLimit,
 };
 use data_transact::{TenantDataArcAdapter, TenantDataFnMutAdapter};
 use metadata::read_tenant_metadata;
@@ -148,7 +148,11 @@ impl TenantHandle {
 
         tenant_handle_transact(
             &self.inner,
-            TenantDataFnMutAdapter::new(f, data),
+            TenantDataFnMutAdapter::new(
+                f,
+                data,
+                matches!(policy, TenantTransactionPolicy::Write(_)),
+            ),
             policy.to_transact_option(),
             operation_class,
             self.tenant,
@@ -183,7 +187,7 @@ impl TenantHandle {
 
         tenant_handle_transact(
             &self.inner,
-            TenantDataArcAdapter::new(f, data),
+            TenantDataArcAdapter::new(f, data, matches!(policy, TenantTransactionPolicy::Write(_))),
             policy.to_transact_option(),
             operation_class,
             self.tenant,

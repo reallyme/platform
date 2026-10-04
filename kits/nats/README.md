@@ -36,6 +36,11 @@ derives the TLS policy from the URL scheme. Configs return `JetStreamError`;
 model the error rather than unwrapping (the crate denies `unwrap`/`expect` in
 non-test code).
 
+The `Disabled` TLS policy is an explicit plaintext opt-in for local NATS
+connections. It does not follow server-advertised addresses, so a local seed
+cannot redirect credentials to another host. Use `Required` for non-local
+deployments.
+
 ```rust
 use std::time::Duration;
 use reallyme_nats_kit::config::JetStreamPublisherConfig;

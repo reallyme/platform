@@ -83,16 +83,6 @@ pub struct ServerRuntime {
 }
 
 impl ServerRuntime {
-    /// Creates a new server runtime builder.
-    pub fn builder() -> ServerRuntimeBuilder {
-        ServerRuntimeBuilder::default()
-    }
-
-    /// Runs the server process until an operating-system shutdown signal is received.
-    pub async fn run(self) -> Result<(), ServerRuntimeError> {
-        signals::run_with_os_signals(self).await
-    }
-
     async fn run_until_shutdown<F>(
         self,
         shutdown_signal_future: F,
@@ -183,11 +173,9 @@ impl ServerRuntime {
             background_tasks.extend(app_parts.background_tasks);
             background_tasks
         };
-        let mut critical_tasks = {
-            let mut critical_tasks = critical_tasks;
-            critical_tasks.extend(app_parts.critical_tasks);
-            critical_tasks
-        };
+        let mut app_critical_tasks = critical_tasks;
+        app_critical_tasks.extend(app_parts.critical_tasks);
+        let mut critical_tasks = Vec::new();
 
         let metrics = install_prometheus_recorder(&observability_config)?;
         record_startup_info(&server_name, &build_info);
@@ -227,8 +215,13 @@ impl ServerRuntime {
                 let listener = bind_http_listener(&http_server).await?;
                 log_http_listener_started(&server_name, http_server.config().bind_address());
                 let task_name = TaskName::new(format!("http-{}", http_server.name().as_str()))?;
-                let serve_policy =
-                    HttpServePolicy::from_config(http_server.name().clone(), http_server.config());
+                let serve_policy = HttpServePolicy::from_config(
+                    http_server.name().clone(),
+                    http_server.config(),
+                    shutdown_timeout
+                        .as_duration()
+                        .min(fast_shutdown_timeout.as_duration()),
+                );
                 let rate_limit_policies = http_server.rate_limit_policies();
                 let rate_limit_registry =
                     Arc::new(RateLimitRegistry::new(Arc::clone(&rate_limit_policies)));
@@ -384,6 +377,9 @@ impl ServerRuntime {
             .await);
         }
 
+        // Start listeners before long-running app readiness tasks so liveness
+        // remains observable while readiness is still false.
+        critical_tasks.extend(app_critical_tasks);
         let mut critical_task_monitor =
             match start_critical_tasks(critical_tasks, &mut tasks, &server_name).await {
                 Ok(monitor) => monitor,

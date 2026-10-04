@@ -18,6 +18,10 @@ use proxy_metadata::{
 
 #[path = "security/request_policy.rs"]
 mod request_policy;
+#[path = "security/response_headers.rs"]
+mod response_headers;
+use response_headers::apply_security_headers;
+
 use request_policy::{
     host_authority_is_allowed, is_operational_route, operational_route_is_blocked,
     peer_ip_from_request, record_security_rejection, request_host_header_is_valid,
@@ -30,7 +34,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
 use axum::body::Body;
-use axum::http::{HeaderName, HeaderValue, Request, header};
+use axum::http::{HeaderName, Request, header};
 use axum::response::{IntoResponse, Response};
 use pin_project_lite::pin_project;
 use tower::{Layer, Service};
@@ -51,22 +55,6 @@ const X_FORWARDED_HOST_HEADER: HeaderName = HeaderName::from_static("x-forwarded
 const X_FORWARDED_PORT_HEADER: HeaderName = HeaderName::from_static("x-forwarded-port");
 const X_FORWARDED_PROTO_HEADER: HeaderName = HeaderName::from_static("x-forwarded-proto");
 const X_REAL_IP_HEADER: HeaderName = HeaderName::from_static("x-real-ip");
-const X_CONTENT_TYPE_OPTIONS_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
-const REFERRER_POLICY_HEADER: HeaderName = HeaderName::from_static("referrer-policy");
-const X_FRAME_OPTIONS_HEADER: HeaderName = HeaderName::from_static("x-frame-options");
-const CONTENT_SECURITY_POLICY_HEADER: HeaderName =
-    HeaderName::from_static("content-security-policy");
-const CROSS_ORIGIN_RESOURCE_POLICY_HEADER: HeaderName =
-    HeaderName::from_static("cross-origin-resource-policy");
-const CACHE_CONTROL_HEADER: HeaderName = HeaderName::from_static("cache-control");
-
-const NOSNIFF_VALUE: HeaderValue = HeaderValue::from_static("nosniff");
-const REFERRER_POLICY_VALUE: HeaderValue =
-    HeaderValue::from_static("strict-origin-when-cross-origin");
-const DENY_VALUE: HeaderValue = HeaderValue::from_static("DENY");
-const FRAME_ANCESTORS_NONE_VALUE: HeaderValue = HeaderValue::from_static("frame-ancestors 'none'");
-const SAME_SITE_VALUE: HeaderValue = HeaderValue::from_static("same-site");
-const NO_STORE_VALUE: HeaderValue = HeaderValue::from_static("no-store");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProxyMetadataError {
@@ -339,10 +327,36 @@ where
         }
 
         if trusted_peer {
-            if let Some(client_ip) = forwarded_client_ip_from_headers(
+            let selected_client_header_present = match proxy_request_metadata.header_family() {
+                TrustedProxyHeaderFamily::Forwarded => {
+                    request.headers().contains_key(FORWARDED_HEADER)
+                }
+                TrustedProxyHeaderFamily::XForwarded => {
+                    request.headers().contains_key(X_FORWARDED_FOR_HEADER)
+                }
+            };
+            let client_ip = forwarded_client_ip_from_headers(
                 request.headers(),
                 self.config.trusted_proxy_headers(),
-            ) {
+            );
+            if selected_client_header_present && client_ip.is_none() {
+                // Falling back to the proxy's own address would merge many
+                // clients into one rate-limit bucket and weaken admission.
+                record_security_rejection(
+                    &request,
+                    method,
+                    HttpRejectionReason::UntrustedProxyHeaders,
+                );
+                return HttpSecurityResponseFuture::ready(
+                    JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                        ErrorCode::BadRequest,
+                    ))
+                    .with_optional_request_id(request_id)
+                    .into_response(),
+                    self.config.security_headers(),
+                );
+            }
+            if let Some(client_ip) = client_ip {
                 request.extensions_mut().insert(client_ip);
             }
         } else if contains_proxy_headers {
@@ -450,35 +464,6 @@ where
         apply_security_headers(&mut response, *this.security_headers);
 
         Poll::Ready(Ok(response))
-    }
-}
-
-fn apply_security_headers(response: &mut Response, config: SecurityHeadersConfig) {
-    if !config.enabled() {
-        return;
-    }
-
-    let should_disable_error_caching =
-        response.status().is_client_error() || response.status().is_server_error();
-    let headers = response.headers_mut();
-    headers
-        .entry(X_CONTENT_TYPE_OPTIONS_HEADER)
-        .or_insert(NOSNIFF_VALUE);
-    headers
-        .entry(REFERRER_POLICY_HEADER)
-        .or_insert(REFERRER_POLICY_VALUE);
-    headers.entry(X_FRAME_OPTIONS_HEADER).or_insert(DENY_VALUE);
-    headers
-        .entry(CONTENT_SECURITY_POLICY_HEADER)
-        .or_insert(FRAME_ANCESTORS_NONE_VALUE);
-    headers
-        .entry(CROSS_ORIGIN_RESOURCE_POLICY_HEADER)
-        .or_insert(SAME_SITE_VALUE);
-
-    if should_disable_error_caching {
-        headers
-            .entry(CACHE_CONTROL_HEADER)
-            .or_insert(NO_STORE_VALUE);
     }
 }
 

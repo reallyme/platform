@@ -94,8 +94,8 @@ pub fn strip_jsonc_comments(value: &str) -> Result<String, AppConfigParseError> 
             '/' if chars.peek() == Some(&'/') => {
                 let _ = chars.next();
                 for next in chars.by_ref() {
-                    if next == '\n' {
-                        output.push('\n');
+                    if matches!(next, '\n' | '\r') {
+                        output.push(next);
                         break;
                     }
                 }
@@ -108,8 +108,8 @@ pub fn strip_jsonc_comments(value: &str) -> Result<String, AppConfigParseError> 
                 let mut closed = false;
                 let mut previous = '\0';
                 for next in chars.by_ref() {
-                    if next == '\n' {
-                        output.push('\n');
+                    if matches!(next, '\n' | '\r') {
+                        output.push(next);
                     }
 
                     if previous == '*' && next == '/' {

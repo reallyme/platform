@@ -4,6 +4,7 @@
 //! Runs one ordered application handler while draining its outbound queue.
 
 use futures_util::{Sink, SinkExt};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::{
@@ -13,21 +14,38 @@ use super::{
 };
 use crate::task::ShutdownToken;
 
-pub(super) async fn handle_application_message<Handler, Socket>(
-    handler: &mut Handler,
+/// One inbound application event with its connection identity.
+pub(super) struct ApplicationMessageInput {
     context: WebSocketConnectionContext,
     message: WebSocketApplicationMessage,
+}
+
+impl ApplicationMessageInput {
+    pub(super) const fn new(
+        context: WebSocketConnectionContext,
+        message: WebSocketApplicationMessage,
+    ) -> Self {
+        Self { context, message }
+    }
+}
+
+pub(super) async fn handle_application_message<Handler, Socket>(
+    handler: &mut Handler,
+    input: ApplicationMessageInput,
     outbound: &WebSocketConnectionHandle,
     receiver: &mut mpsc::Receiver<OutboundWebSocketEvent>,
     socket: &mut Socket,
     shutdown: &mut ShutdownToken,
+    handler_timeout: Duration,
 ) -> ApplicationMessageOutcome
 where
     Handler: WebSocketMessageHandler,
     Socket: Sink<WebSocketMessage> + Unpin,
 {
-    let handling = handler.on_message(context, message, outbound);
+    let handling = handler.on_message(input.context, input.message, outbound);
     tokio::pin!(handling);
+    let handler_deadline = tokio::time::sleep(handler_timeout);
+    tokio::pin!(handler_deadline);
 
     loop {
         tokio::select! {
@@ -59,6 +77,7 @@ where
                 }
             }
             _ = shutdown.cancelled() => return ApplicationMessageOutcome::ShutdownRequested,
+            _ = &mut handler_deadline => return ApplicationMessageOutcome::HandlerTimeout,
         }
     }
 }

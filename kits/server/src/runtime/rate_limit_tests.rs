@@ -53,20 +53,56 @@ fn sweep_reduces_bucket_count_after_ttl() {
     let tier = HttpRateLimitTierName::new("ttl-test").expect("tier name should be valid");
     let mut buckets = super::state::RateLimitBucketState::default();
     buckets.insert(
-        tier,
+        tier.clone(),
         1,
         super::SourceRateBucket {
             tokens: 0,
             fractional_tokens: 0,
             last_refill_at: stale_at,
             last_activity_at: stale_at,
-            last_admitted_at: stale_at,
         },
     );
-    buckets.prune_stale(Instant::now());
+    let policy = HttpRateLimitTierPolicy::new(1, 1, 1).expect("valid policy");
+    buckets.prune_stale(&[(tier, policy)], Instant::now());
 
     assert_eq!(buckets.len(), 0);
     assert!(buckets.by_tier.is_empty());
+    assert!(indexes_are_consistent(&buckets));
+}
+
+#[test]
+fn sweep_keeps_stale_source_debt_until_its_bucket_is_fully_refilled() {
+    let now = Instant::now();
+    let stale_at = now - Duration::from_secs(super::RATE_LIMIT_BUCKET_IDLE_TTL_SECS + 1);
+    let tier = HttpRateLimitTierName::new("debt-ttl").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 10_000, 1).expect("valid policy");
+    let mut buckets = super::state::RateLimitBucketState::default();
+    buckets.insert(
+        tier.clone(),
+        1,
+        super::SourceRateBucket {
+            tokens: 0,
+            fractional_tokens: 0,
+            last_refill_at: stale_at,
+            last_activity_at: stale_at,
+        },
+    );
+    buckets.overflow_bucket(&tier, stale_at).tokens = 0;
+
+    buckets.prune_stale(&[(tier.clone(), policy)], now);
+    assert!(
+        buckets.contains(&tier, 1),
+        "token debt must survive the idle sweep"
+    );
+    assert!(buckets.overflow.contains_key(&tier));
+    assert!(indexes_are_consistent(&buckets));
+
+    buckets.prune_stale(&[(tier.clone(), policy)], now + Duration::from_secs(10_000));
+    assert!(
+        !buckets.contains(&tier, 1),
+        "fully refilled debt may be evicted"
+    );
+    assert!(!buckets.overflow.contains_key(&tier));
     assert!(indexes_are_consistent(&buckets));
 }
 
@@ -184,7 +220,7 @@ fn source_bucket_ids_vary_between_registries() {
 }
 
 #[test]
-fn global_cap_rejects_new_tier_without_expanding_live_tier_maps() {
+fn global_cap_routes_new_tier_through_bounded_overflow() {
     let tier_a = HttpRateLimitTierName::new("tier-a").expect("tier name should be valid");
     let tier_b = HttpRateLimitTierName::new("tier-b").expect("tier name should be valid");
     let registry = super::RateLimitRegistry::new_with_max_live_buckets(
@@ -207,15 +243,30 @@ fn global_cap_rejects_new_tier_without_expanding_live_tier_maps() {
     );
     assert_eq!(1, tier_map_count(&registry));
     assert_eq!(
-        super::RateLimitDecision::RegistryFull,
+        super::RateLimitDecision::Allowed,
         registry.allow(&tier_b, source(2))
     );
-    assert_eq!(1, registry.live_bucket_count());
+    assert_eq!(2, registry.live_bucket_count());
     assert_eq!(1, tier_map_count(&registry));
 }
 
 #[test]
-fn registry_full_rotates_sources_within_an_existing_tier() {
+fn zero_registry_capacity_fails_closed() {
+    let tier = HttpRateLimitTierName::new("zero-capacity").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 1, 1).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(tier.clone(), policy)]),
+        0,
+    );
+    assert_eq!(
+        super::RateLimitDecision::RegistryFull,
+        registry.allow(&tier, source(1))
+    );
+    assert_eq!(registry.live_bucket_count(), 0);
+}
+
+#[test]
+fn registry_full_does_not_forgive_source_token_debt() {
     let tier = HttpRateLimitTierName::new("registry-full").expect("tier name should be valid");
     let policy = HttpRateLimitTierPolicy::new(1, 10, 10)
         .expect("valid rate-limit tier policy")
@@ -236,15 +287,30 @@ fn registry_full_rotates_sources_within_an_existing_tier() {
     );
     assert_eq!(
         super::RateLimitDecision::SourceLimitReached,
-        registry.allow(&tier, source(2)),
-        "an evicted source receives one initial token, not a fresh burst"
+        registry.allow(&tier, source(3)),
+        "newcomers share the same initial token"
     );
-    assert_eq!(1, registry.live_bucket_count());
+    {
+        let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+        let overflow = buckets.overflow.get_mut(&tier).expect("overflow exists");
+        overflow.last_refill_at -= Duration::from_secs(1);
+    }
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(3)),
+        "new sources share the configured refill rate"
+    );
+    assert_eq!(
+        super::RateLimitDecision::SourceLimitReached,
+        registry.allow(&tier, source(4)),
+        "another identity cannot obtain a fresh overflow token"
+    );
+    assert_eq!(2, registry.live_bucket_count());
     assert_eq!(1, tier_map_count(&registry));
 }
 
 #[test]
-fn full_tier_evicts_its_least_recently_used_source() {
+fn full_tier_preserves_throttled_source_debt() {
     let tier = HttpRateLimitTierName::new("tier-lru").expect("valid tier");
     let policy = HttpRateLimitTierPolicy::new(1, 3, 2).expect("valid policy");
     let registry = super::RateLimitRegistry::new_with_max_live_buckets(
@@ -278,7 +344,7 @@ fn full_tier_evicts_its_least_recently_used_source() {
     assert_eq!(
         super::RateLimitDecision::SourceLimitReached,
         registry.allow(&tier, source(2)),
-        "denied traffic must not refresh eviction priority"
+        "denied traffic retains the source's token debt"
     );
 
     assert_eq!(
@@ -289,13 +355,151 @@ fn full_tier_evicts_its_least_recently_used_source() {
     let entries = buckets.by_tier.get(&tier).expect("tier remains");
     assert_eq!(entries.len(), 2);
     assert!(entries.contains_key(&first_id));
-    assert!(!entries.contains_key(&second_id));
-    assert!(entries.contains_key(&third_id));
+    assert!(entries.contains_key(&second_id));
+    assert!(!entries.contains_key(&third_id));
+    assert_eq!(buckets.overflow.len(), 1);
     assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
-fn global_cap_keeps_a_bucket_for_each_configured_tier() {
+fn refilled_source_can_be_replaced_without_forgiving_rate_limit_debt() {
+    let tier = HttpRateLimitTierName::new("safe-replacement").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 1, 1).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(tier.clone(), policy)]),
+        1,
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(1))
+    );
+    {
+        let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+        let first = source_bucket_id(&registry, source(1));
+        let bucket = buckets.bucket_mut(&tier, first).expect("source exists");
+        bucket.last_refill_at -= Duration::from_secs(1);
+    }
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(2))
+    );
+    assert_eq!(registry.live_bucket_count(), 1);
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    assert!(!buckets.contains(&tier, source_bucket_id(&registry, source(1))));
+    assert!(buckets.contains(&tier, source_bucket_id(&registry, source(2))));
+    assert!(indexes_are_consistent(&buckets));
+}
+
+#[test]
+fn full_tier_replaces_a_refilled_source_behind_an_older_debtor() {
+    let tier = HttpRateLimitTierName::new("refilled-candidate").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 2, 2).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(tier.clone(), policy)]),
+        2,
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(1))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(2))
+    );
+    let first_id = source_bucket_id(&registry, source(1));
+    let second_id = source_bucket_id(&registry, source(2));
+    {
+        let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+        buckets
+            .bucket_mut(&tier, second_id)
+            .expect("second source exists")
+            .last_refill_at -= Duration::from_secs(1);
+    }
+
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(3))
+    );
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    assert!(
+        buckets.contains(&tier, first_id),
+        "the indebted source remains"
+    );
+    assert!(
+        !buckets.contains(&tier, second_id),
+        "the refilled source makes room"
+    );
+    assert!(buckets.contains(&tier, source_bucket_id(&registry, source(3))));
+    assert!(indexes_are_consistent(&buckets));
+}
+
+#[test]
+fn full_registry_replaces_a_refilled_source_behind_an_older_debtor() {
+    let first = HttpRateLimitTierName::new("older-debtor-tier").expect("valid tier");
+    let second = HttpRateLimitTierName::new("newcomer-tier").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 2, 2).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(first.clone(), policy), (second.clone(), policy)]),
+        2,
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&first, source(1))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&first, source(2))
+    );
+    let first_id = source_bucket_id(&registry, source(1));
+    let second_id = source_bucket_id(&registry, source(2));
+    {
+        let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+        buckets
+            .bucket_mut(&first, second_id)
+            .expect("second source exists")
+            .last_refill_at -= Duration::from_secs(1);
+    }
+
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&second, source(3))
+    );
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    assert!(
+        buckets.contains(&first, first_id),
+        "the indebted source remains"
+    );
+    assert!(
+        !buckets.contains(&first, second_id),
+        "the refilled source makes room"
+    );
+    assert!(buckets.contains(&second, source_bucket_id(&registry, source(3))));
+    assert!(indexes_are_consistent(&buckets));
+}
+
+#[test]
+fn rotating_one_more_source_than_the_tier_tracks_cannot_bypass_the_limit() {
+    let tier = HttpRateLimitTierName::new("rotating-sources").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 1, 2).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(tier.clone(), policy)]),
+        2,
+    );
+
+    let admitted = (0..300)
+        .filter(|attempt| {
+            registry.allow(
+                &tier,
+                source(u8::try_from(attempt % 3 + 1).expect("small source")),
+            ) == super::RateLimitDecision::Allowed
+        })
+        .count();
+    assert!(admitted < 10, "identity rotation must not mint free tokens");
+    assert_eq!(registry.live_bucket_count(), 3);
+}
+
+#[test]
+fn global_cap_preserves_existing_source_buckets() {
     let first = HttpRateLimitTierName::new("first").expect("valid tier");
     let second = HttpRateLimitTierName::new("second").expect("valid tier");
     let policy = HttpRateLimitTierPolicy::new(1, 2, 3).expect("valid policy");
@@ -317,13 +521,14 @@ fn global_cap_keeps_a_bucket_for_each_configured_tier() {
     );
 
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
-    assert_eq!(buckets.by_tier.get(&first).expect("first tier").len(), 1);
-    assert_eq!(buckets.by_tier.get(&second).expect("second tier").len(), 1);
+    assert_eq!(buckets.by_tier.get(&first).expect("first tier").len(), 2);
+    assert!(!buckets.by_tier.contains_key(&second));
+    assert!(buckets.overflow.contains_key(&second));
     assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
-fn global_eviction_preserves_recent_sources_and_each_tiers_last_bucket() {
+fn global_cap_does_not_evict_unreplenished_sources() {
     let first = HttpRateLimitTierName::new("global-first").expect("valid tier");
     let second = HttpRateLimitTierName::new("global-second").expect("valid tier");
     let policy = HttpRateLimitTierPolicy::new(1, 3, 3).expect("valid policy");
@@ -355,13 +560,14 @@ fn global_eviction_preserves_recent_sources_and_each_tiers_last_bucket() {
     let first_entries = buckets.by_tier.get(&first).expect("first tier remains");
     let second_entries = buckets.by_tier.get(&second).expect("second tier remains");
     assert!(first_entries.contains_key(&source_bucket_id(&registry, source(1))));
-    assert!(!first_entries.contains_key(&source_bucket_id(&registry, source(2))));
-    assert_eq!(second_entries.len(), 2);
+    assert!(first_entries.contains_key(&source_bucket_id(&registry, source(2))));
+    assert_eq!(second_entries.len(), 1);
+    assert!(buckets.overflow.contains_key(&second));
     assert!(indexes_are_consistent(&buckets));
 }
 
 #[test]
-fn rotating_ipv6_networks_cannot_lock_out_new_sources() {
+fn rotating_ipv6_networks_share_a_rate_limited_overflow() {
     let tier = HttpRateLimitTierName::new("ipv6-rotation").expect("valid tier");
     const LIVE_BUCKET_LIMIT: usize = 2_048;
     let policy = HttpRateLimitTierPolicy::new(1, 4, LIVE_BUCKET_LIMIT).expect("valid policy");
@@ -370,23 +576,33 @@ fn rotating_ipv6_networks_cannot_lock_out_new_sources() {
         LIVE_BUCKET_LIMIT,
     );
 
+    let mut allowed = 0_usize;
     for network in 0..32_768_u128 {
         let address = std::net::Ipv6Addr::from(
             (u128::from(0x2001_0db8_0001_u64) << 80) | (network << 64) | 1,
         );
-        assert_eq!(
-            super::RateLimitDecision::Allowed,
+        allowed += usize::from(
             registry.allow(&tier, RateLimitSourceIdentity::PeerIp(address.into()))
+                == super::RateLimitDecision::Allowed,
         );
-        assert!(registry.live_bucket_count() <= LIVE_BUCKET_LIMIT);
+        assert!(registry.live_bucket_count() <= LIVE_BUCKET_LIMIT + 1);
     }
 
+    assert!(
+        allowed < 4_096,
+        "source rotation cannot mint a token per identity"
+    );
     let new_client: std::net::IpAddr = "192.0.2.200".parse().expect("valid IPv4 fixture");
+    {
+        let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+        let overflow = buckets.overflow.get_mut(&tier).expect("overflow exists");
+        overflow.last_refill_at -= Duration::from_secs(1);
+    }
     assert_eq!(
         super::RateLimitDecision::Allowed,
         registry.allow(&tier, RateLimitSourceIdentity::PeerIp(new_client))
     );
-    assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT);
+    assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT + 1);
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
     assert!(indexes_are_consistent(&buckets));
 }

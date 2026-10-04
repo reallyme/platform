@@ -8,7 +8,7 @@ use std::num::NonZeroUsize;
 use foundationdb::{
     RangeOption, Transaction,
     future::{FdbSlice, FdbValues},
-    options::MutationType,
+    options::{MutationType, TransactionOption},
 };
 use thiserror::Error;
 
@@ -18,6 +18,10 @@ const MAX_TENANT_KEY_BYTES: usize = 10_000;
 const MAX_TENANT_VALUE_BYTES: usize = 100_000;
 const MAX_RANGE_RESULTS: usize = 64;
 const MAX_RANGE_TARGET_BYTES: usize = 1_000_000;
+const MAX_TRANSACTION_SIZE_LIMIT: i32 = 10_000_000;
+const VERSIONSTAMP_BYTES: usize = 10;
+const VERSIONSTAMP_OFFSET_BYTES: usize = 4;
+const MIN_STABLE_KEY_PREFIX_BYTES: usize = 6;
 
 /// A finite reason for rejecting an application key or range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -46,6 +50,46 @@ pub enum TenantDataAccessErrorReason {
     /// A mutation must not change a key after namespace validation.
     #[error("tenant data mutation changes the validated key")]
     KeyChangingMutation,
+    /// A versionstamped key template was malformed or could change the reserved prefix.
+    #[error("tenant versionstamped key template is invalid")]
+    InvalidVersionstampedKey,
+    /// Transaction byte limit must be positive and within the driver maximum.
+    #[error("tenant transaction size limit is invalid")]
+    InvalidTransactionSizeLimit,
+    /// Range target bytes must be positive and remain bounded.
+    #[error("tenant range target bytes are invalid")]
+    InvalidRangeTargetBytes,
+    /// A read transaction cannot perform a mutation.
+    #[error("tenant read transaction cannot mutate data")]
+    ReadOnlyMutation,
+}
+
+/// Validated cluster-side transaction byte ceiling.
+#[derive(Clone, Copy)]
+pub struct TenantTransactionSizeLimit(i32);
+
+impl TenantTransactionSizeLimit {
+    /// Validates the positive FoundationDB transaction size limit.
+    pub fn new(bytes: i32) -> Result<Self, TenantDataAccessErrorReason> {
+        if !(1..=MAX_TRANSACTION_SIZE_LIMIT).contains(&bytes) {
+            return Err(TenantDataAccessErrorReason::InvalidTransactionSizeLimit);
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// Validated maximum response bytes for one range request.
+#[derive(Clone, Copy)]
+pub struct TenantDataRangeTargetBytes(NonZeroUsize);
+
+impl TenantDataRangeTargetBytes {
+    /// Rejects unbounded or empty response targets.
+    pub fn new(bytes: usize) -> Result<Self, TenantDataAccessErrorReason> {
+        let bytes = NonZeroUsize::new(bytes)
+            .filter(|bytes| bytes.get() <= MAX_RANGE_TARGET_BYTES)
+            .ok_or(TenantDataAccessErrorReason::InvalidRangeTargetBytes)?;
+        Ok(Self(bytes))
+    }
 }
 
 /// A borrowed application key validated against the kit's reserved namespace.
@@ -111,6 +155,9 @@ impl<'a> TenantDataRange<'a> {
 pub struct TenantDataRangeLimit(NonZeroUsize);
 
 impl TenantDataRangeLimit {
+    /// Largest page accepted by the tenant data capability.
+    pub const MAX: usize = MAX_RANGE_RESULTS;
+
     /// Rejects zero and unbounded result counts.
     pub fn new(value: usize) -> Result<Self, TenantDataAccessErrorReason> {
         let value = NonZeroUsize::new(value)
@@ -132,11 +179,17 @@ impl TenantDataRangeLimit {
 /// range so application callbacks cannot modify kit metadata.
 pub struct TenantDataTransaction<'a> {
     inner: &'a Transaction,
+    writable: bool,
 }
 
 impl<'a> TenantDataTransaction<'a> {
-    pub(super) const fn new(inner: &'a Transaction) -> Self {
-        Self { inner }
+    pub(super) const fn new(inner: &'a Transaction, writable: bool) -> Self {
+        Self { inner, writable }
+    }
+
+    /// Applies a validated cluster-side size ceiling before application operations.
+    pub fn set_size_limit(&self, limit: TenantTransactionSizeLimit) -> foundationdb::FdbResult<()> {
+        self.inner.set_option(TransactionOption::SizeLimit(limit.0))
     }
 
     /// Reads an application key, preserving FoundationDB's retryable error.
@@ -154,6 +207,9 @@ impl<'a> TenantDataTransaction<'a> {
         key: TenantDataKey<'_>,
         value: &[u8],
     ) -> Result<(), TenantDataAccessErrorReason> {
+        if !self.writable {
+            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
+        }
         if value.len() > MAX_TENANT_VALUE_BYTES {
             return Err(TenantDataAccessErrorReason::ValueTooLong);
         }
@@ -162,13 +218,24 @@ impl<'a> TenantDataTransaction<'a> {
     }
 
     /// Removes one application key.
-    pub fn clear(&self, key: TenantDataKey<'_>) {
+    pub fn clear(&self, key: TenantDataKey<'_>) -> Result<(), TenantDataAccessErrorReason> {
+        if !self.writable {
+            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
+        }
         self.inner.clear(key.as_bytes());
+        Ok(())
     }
 
     /// Removes only the validated application interval.
-    pub fn clear_range(&self, range: &TenantDataRange<'_>) {
+    pub fn clear_range(
+        &self,
+        range: &TenantDataRange<'_>,
+    ) -> Result<(), TenantDataAccessErrorReason> {
+        if !self.writable {
+            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
+        }
         self.inner.clear_range(range.begin(), range.end());
+        Ok(())
     }
 
     /// Applies an atomic mutation to an application key.
@@ -178,11 +245,35 @@ impl<'a> TenantDataTransaction<'a> {
         parameter: &[u8],
         mutation: MutationType,
     ) -> Result<(), TenantDataAccessErrorReason> {
+        if !self.writable {
+            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
+        }
         validate_atomic_mutation(mutation)?;
         if parameter.len() > MAX_TENANT_VALUE_BYTES {
             return Err(TenantDataAccessErrorReason::ValueTooLong);
         }
         self.inner.atomic_op(key.as_bytes(), parameter, mutation);
+        Ok(())
+    }
+
+    /// Writes a tuple-layer versionstamped key whose stable prefix is tenant data.
+    ///
+    /// The incomplete versionstamp must lie after the first six key bytes so
+    /// commit-time substitution cannot move a key into kit metadata or system space.
+    pub fn set_versionstamped_key(
+        &self,
+        key_template: &[u8],
+        value: &[u8],
+    ) -> Result<(), TenantDataAccessErrorReason> {
+        if !self.writable {
+            return Err(TenantDataAccessErrorReason::ReadOnlyMutation);
+        }
+        validate_versionstamped_key_template(key_template)?;
+        if value.len() > MAX_TENANT_VALUE_BYTES {
+            return Err(TenantDataAccessErrorReason::ValueTooLong);
+        }
+        self.inner
+            .atomic_op(key_template, value, MutationType::SetVersionstampedKey);
         Ok(())
     }
 
@@ -193,11 +284,59 @@ impl<'a> TenantDataTransaction<'a> {
         limit: TenantDataRangeLimit,
         snapshot: bool,
     ) -> foundationdb::FdbResult<FdbValues> {
+        self.get_range_with_target_bytes(range, limit, MAX_RANGE_TARGET_BYTES, snapshot)
+            .await
+    }
+
+    /// Reads a bounded page with an application-selected response byte target.
+    pub async fn get_range_with_target(
+        &self,
+        range: &TenantDataRange<'_>,
+        limit: TenantDataRangeLimit,
+        target_bytes: TenantDataRangeTargetBytes,
+        snapshot: bool,
+    ) -> foundationdb::FdbResult<FdbValues> {
+        self.get_range_with_target_bytes(range, limit, target_bytes.0.get(), snapshot)
+            .await
+    }
+
+    async fn get_range_with_target_bytes(
+        &self,
+        range: &TenantDataRange<'_>,
+        limit: TenantDataRangeLimit,
+        target_bytes: usize,
+        snapshot: bool,
+    ) -> foundationdb::FdbResult<FdbValues> {
         let mut options = RangeOption::from((range.begin(), range.end()));
         options.limit = Some(limit.get());
-        options.target_bytes = MAX_RANGE_TARGET_BYTES;
+        options.target_bytes = target_bytes;
         self.inner.get_range(&options, 1, snapshot).await
     }
+}
+
+fn validate_versionstamped_key_template(
+    key_template: &[u8],
+) -> Result<(), TenantDataAccessErrorReason> {
+    let key_bytes = key_template
+        .len()
+        .checked_sub(VERSIONSTAMP_OFFSET_BYTES)
+        .ok_or(TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+    TenantDataKey::new(&key_template[..key_bytes])?;
+    let offset_bytes: [u8; VERSIONSTAMP_OFFSET_BYTES] = key_template[key_bytes..]
+        .try_into()
+        .map_err(|_| TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+    let offset = usize::try_from(u32::from_le_bytes(offset_bytes))
+        .map_err(|_| TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+    let end = offset
+        .checked_add(VERSIONSTAMP_BYTES)
+        .ok_or(TenantDataAccessErrorReason::InvalidVersionstampedKey)?;
+    if offset < MIN_STABLE_KEY_PREFIX_BYTES
+        || end > key_bytes
+        || key_template[offset..end].iter().any(|byte| *byte != 0xff)
+    {
+        return Err(TenantDataAccessErrorReason::InvalidVersionstampedKey);
+    }
+    Ok(())
 }
 
 fn validate_atomic_mutation(mutation: MutationType) -> Result<(), TenantDataAccessErrorReason> {

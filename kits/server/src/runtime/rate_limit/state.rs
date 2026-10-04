@@ -1,22 +1,30 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Bounded source buckets with indexed oldest-admission eviction.
+//! Bounded source buckets with indexed least-recent-activity eviction.
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
-use super::{RATE_LIMIT_BUCKET_IDLE_TTL_SECS, SourceRateBucket};
+use super::{
+    HttpRateLimitTierPolicy, RATE_LIMIT_BUCKET_IDLE_TTL_SECS, SourceRateBucket, refill_bucket,
+};
 use crate::http::HttpRateLimitTierName;
 
 type TierBuckets = HashMap<u64, SourceRateBucket>;
 type GlobalAgeKey = (Instant, HttpRateLimitTierName, u64);
+// Bound work under source churn while allowing a refilled bucket behind a
+// recently active debtor to make room for a new client.
+const MAX_EVICTION_CANDIDATES: usize = 32;
 
 #[derive(Debug, Default)]
 pub(super) struct RateLimitBucketState {
     pub(super) by_tier: HashMap<HttpRateLimitTierName, TierBuckets>,
     tier_age: HashMap<HttpRateLimitTierName, BTreeSet<(Instant, u64)>>,
     global_age: BTreeSet<GlobalAgeKey>,
+    // At most one shared bucket per configured tier serves newcomers when
+    // every retained source still has rate-limit debt.
+    pub(super) overflow: HashMap<HttpRateLimitTierName, SourceRateBucket>,
 }
 
 impl RateLimitBucketState {
@@ -48,7 +56,7 @@ impl RateLimitBucketState {
         source: u64,
         bucket: SourceRateBucket,
     ) {
-        let admitted_at = bucket.last_admitted_at;
+        let active_at = bucket.last_activity_at;
         self.by_tier
             .entry(tier.clone())
             .or_default()
@@ -56,11 +64,11 @@ impl RateLimitBucketState {
         self.tier_age
             .entry(tier.clone())
             .or_default()
-            .insert((admitted_at, source));
-        self.global_age.insert((admitted_at, tier, source));
+            .insert((active_at, source));
+        self.global_age.insert((active_at, tier, source));
     }
 
-    pub(super) fn record_admission(
+    pub(super) fn record_activity(
         &mut self,
         tier: &HttpRateLimitTierName,
         source: u64,
@@ -69,8 +77,8 @@ impl RateLimitBucketState {
         let Some(bucket) = self.bucket_mut(tier, source) else {
             return;
         };
-        let previous = bucket.last_admitted_at;
-        bucket.last_admitted_at = now;
+        let previous = bucket.last_activity_at;
+        bucket.last_activity_at = now;
         if let Some(age) = self.tier_age.get_mut(tier) {
             age.remove(&(previous, source));
             age.insert((now, source));
@@ -79,39 +87,82 @@ impl RateLimitBucketState {
         self.global_age.insert((now, tier.clone(), source));
     }
 
-    pub(super) fn evict_tier(&mut self, tier: &HttpRateLimitTierName) -> bool {
-        let oldest = self
-            .tier_age
-            .get(tier)
-            .and_then(|age| age.first().map(|(_, source)| *source));
-        oldest.is_some_and(|source| self.remove(tier, source))
+    pub(super) fn evict_refilled_tier_bucket(
+        &mut self,
+        tier: &HttpRateLimitTierName,
+        policy: HttpRateLimitTierPolicy,
+        now: Instant,
+    ) -> bool {
+        let candidate = self.tier_age.get(tier).and_then(|age| {
+            age.iter()
+                .take(MAX_EVICTION_CANDIDATES)
+                .find(|(_, source)| {
+                    self.by_tier
+                        .get(tier)
+                        .and_then(|entries| entries.get(source))
+                        .is_some_and(|bucket| bucket_has_refilled(bucket, policy, now))
+                })
+                .map(|(_, source)| *source)
+        });
+        candidate.is_some_and(|source| self.remove(tier, source))
     }
 
-    pub(super) fn evict_global(&mut self, preferred_tier: &HttpRateLimitTierName) -> bool {
-        let oldest = self
+    pub(super) fn evict_refilled_global_bucket(
+        &mut self,
+        policies: &[(HttpRateLimitTierName, HttpRateLimitTierPolicy)],
+        now: Instant,
+    ) -> bool {
+        let candidate = self
             .global_age
             .iter()
-            .find(|(_, tier, _)| self.tier_len(tier) > 1)
+            .take(MAX_EVICTION_CANDIDATES)
+            .find(|(_, tier, source)| {
+                self.tier_len(tier) > 1
+                    && policies
+                        .iter()
+                        .find_map(|(name, policy)| (name == tier).then_some(*policy))
+                        .is_some_and(|policy| {
+                            self.by_tier
+                                .get(tier)
+                                .and_then(|entries| entries.get(source))
+                                .is_some_and(|bucket| bucket_has_refilled(bucket, policy, now))
+                        })
+            })
             .map(|(_, tier, source)| (tier.clone(), *source));
-        if let Some((tier, source)) = oldest {
-            return self.remove(&tier, source);
-        }
-        // Reserve one source per tier when possible; rotate the preferred
-        // tier's sole source instead of evicting another tier entirely.
-        self.evict_tier(preferred_tier)
+        candidate.is_some_and(|(tier, source)| self.remove(&tier, source))
     }
 
-    pub(super) fn prune_stale(&mut self, now: Instant) {
+    pub(super) fn overflow_bucket(
+        &mut self,
+        tier: &HttpRateLimitTierName,
+        now: Instant,
+    ) -> &mut SourceRateBucket {
+        self.overflow
+            .entry(tier.clone())
+            // One initial token keeps a newly arrived client serviceable when
+            // the table first fills, without minting a burst per identity.
+            .or_insert_with(|| SourceRateBucket::fresh(now, 1))
+    }
+
+    pub(super) fn prune_stale(
+        &mut self,
+        policies: &[(HttpRateLimitTierName, HttpRateLimitTierPolicy)],
+        now: Instant,
+    ) {
         let stale: Vec<_> = self
             .by_tier
             .iter()
             .flat_map(|(tier, entries)| {
+                let policy = policies
+                    .iter()
+                    .find_map(|(name, policy)| (name == tier).then_some(*policy));
                 entries
                     .iter()
-                    .filter(|(_, bucket)| {
+                    .filter(move |(_, bucket)| {
                         now.saturating_duration_since(bucket.last_activity_at)
                             .as_secs()
                             >= RATE_LIMIT_BUCKET_IDLE_TTL_SECS
+                            && policy.is_some_and(|policy| bucket_has_refilled(bucket, policy, now))
                     })
                     .map(|(source, _)| (tier.clone(), *source))
             })
@@ -119,6 +170,17 @@ impl RateLimitBucketState {
         for (tier, source) in stale {
             self.remove(&tier, source);
         }
+        self.overflow.retain(|tier, bucket| {
+            let stale = now
+                .saturating_duration_since(bucket.last_activity_at)
+                .as_secs()
+                >= RATE_LIMIT_BUCKET_IDLE_TTL_SECS;
+            let refilled = policies
+                .iter()
+                .find_map(|(name, policy)| (name == tier).then_some(*policy))
+                .is_some_and(|policy| bucket_has_refilled(bucket, policy, now));
+            !stale || !refilled
+        });
     }
 
     fn remove(&mut self, tier: &HttpRateLimitTierName, source: u64) -> bool {
@@ -129,9 +191,9 @@ impl RateLimitBucketState {
             return false;
         };
         self.global_age
-            .remove(&(bucket.last_admitted_at, tier.clone(), source));
+            .remove(&(bucket.last_activity_at, tier.clone(), source));
         if let Some(age) = self.tier_age.get_mut(tier) {
-            age.remove(&(bucket.last_admitted_at, source));
+            age.remove(&(bucket.last_activity_at, source));
         }
         if entries.is_empty() {
             self.by_tier.remove(tier);
@@ -139,6 +201,16 @@ impl RateLimitBucketState {
         }
         true
     }
+}
+
+fn bucket_has_refilled(
+    bucket: &SourceRateBucket,
+    policy: HttpRateLimitTierPolicy,
+    now: Instant,
+) -> bool {
+    let mut current = *bucket;
+    refill_bucket(&mut current, policy, now);
+    current.tokens == policy.burst_tokens()
 }
 
 #[cfg(test)]

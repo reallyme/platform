@@ -6,6 +6,7 @@
 //! Invocations:
 //! - `ensure <tenant-name>`
 //! - `repair <tenant-name>`
+//! - `recover-delete <tenant-name>`
 //! - `delete <tenant-name>`
 //! - `exists <tenant-name>`
 
@@ -18,7 +19,7 @@ use reallyme_foundationdb_kit::FoundationDbTenantName;
 use reallyme_foundationdb_kit::{FdbConfig, FdbContext, fdb::tenant::admin};
 use thiserror::Error;
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists> <tenant>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|recover-delete|delete|exists> <tenant>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 enum AdminToolError {
@@ -34,6 +35,8 @@ enum AdminToolError {
     EnsureFailed,
     #[error("tenant metadata repair operation failed")]
     RepairFailed,
+    #[error("tenant interrupted-delete recovery operation failed")]
+    RecoverDeleteFailed,
     #[error("tenant delete operation failed")]
     DeleteFailed,
     #[error("tenant exists operation failed")]
@@ -64,6 +67,9 @@ async fn run() -> Result<(), AdminToolError> {
         "repair" => admin::repair_tenant_metadata(&context, tenant)
             .await
             .map_err(|_| AdminToolError::RepairFailed),
+        "recover-delete" => admin::recover_interrupted_delete(&context, tenant)
+            .await
+            .map_err(|_| AdminToolError::RecoverDeleteFailed),
         "delete" => admin::delete_tenant(&context, tenant)
             .await
             .map_err(|_| AdminToolError::DeleteFailed),

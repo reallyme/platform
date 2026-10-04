@@ -38,14 +38,7 @@ async fn ambiguous_paths_cannot_bypass_private_visibility_rules() {
     )
     .layer(Router::new().fallback(get(|| async { StatusCode::OK })));
 
-    for path in [
-        "/files/%70rivate/key.pem",
-        "/files/private%2Fkey.pem",
-        "/files//private/key.pem",
-        "/files/./private/key.pem",
-        "/files/public/../private/key.pem",
-        "/%61dmin/users",
-    ] {
+    for path in ["/files/%70rivate/key.pem", "/%61dmin/users"] {
         let response = service
             .ready()
             .await
@@ -59,5 +52,57 @@ async fn ambiguous_paths_cannot_bypass_private_visibility_rules() {
             .await
             .expect("infallible visibility service");
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "path: {path}");
+    }
+
+    for path in [
+        "/files/private%2Fkey.pem",
+        "/files//private/key.pem",
+        "/files/./private/key.pem",
+        "/files/public/../private/key.pem",
+        "/files/%2e%2e/private/key.pem",
+        "/files/%25%32%46private/key.pem",
+    ] {
+        let response = service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("valid URI fixture"),
+            )
+            .await
+            .expect("infallible visibility service");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "path: {path}");
+    }
+}
+
+#[tokio::test]
+async fn benign_escapes_are_allowed_without_visibility_rules() {
+    let policy = HttpRouteVisibilityPolicy::allow_all();
+    let mut service = route_visibility_layer(
+        HttpListenerName::new("public").expect("valid listener"),
+        HttpListenerVisibility::Public,
+        None,
+        Arc::new(Vec::new()),
+        &policy,
+    )
+    .layer(Router::new().fallback(get(|| async { StatusCode::OK })));
+
+    for path in ["/users/alice%40example", "/hello%20world", "/caf%C3%A9"] {
+        let response = service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("valid URI fixture"),
+            )
+            .await
+            .expect("infallible visibility service");
+        assert_eq!(response.status(), StatusCode::OK, "path: {path}");
     }
 }

@@ -219,18 +219,16 @@ fn http_client_builder() -> Result<reqwest::ClientBuilder, S3StorageError> {
     // A signature authorizes one endpoint and method. Redirects can replay an
     // upload body elsewhere, and automatic decompression changes stored bytes.
     let mut roots = rustls::RootCertStore::empty();
-    let (accepted, _) =
-        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    if accepted == 0 {
-        return Err(S3StorageError::new(S3StorageErrorReason::ClientUnavailable));
-    }
-    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|_| S3StorageError::new(S3StorageErrorReason::ClientUnavailable))?
     .with_root_certificates(roots)
     .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Client::builder()
         .tls_backend_preconfigured(tls)
         // Signed requests must reach the configured endpoint directly.

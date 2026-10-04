@@ -29,6 +29,8 @@ mod security;
 #[cfg(any(feature = "http", feature = "tonic-grpc"))]
 mod servers;
 mod timing;
+#[cfg(feature = "http")]
+mod transport_timeouts;
 
 pub use body::{BodyLimitConfig, RequestBodyLimitBytes};
 pub use concurrency::{
@@ -81,6 +83,10 @@ pub use servers::{GrpcServerConfig, GrpcServerConfigSummary};
 #[cfg(feature = "http")]
 pub use servers::{HttpServerConfig, HttpServerConfigSummary};
 pub use timing::{MINIMUM_METRICS_IDLE_TIMEOUT, MetricsIdleTimeout, RequestTimeout, TimeoutConfig};
+#[cfg(feature = "http")]
+pub use transport_timeouts::{
+    HttpTransportTimeoutError, HttpTransportTimeoutErrorReason, HttpTransportTimeouts,
+};
 
 #[cfg(test)]
 mod tests;

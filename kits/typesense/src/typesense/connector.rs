@@ -107,16 +107,15 @@ impl TypesenseConnector {
 
 pub(crate) fn tls_config() -> Result<rustls::ClientConfig, ConnectorBuildError> {
     let mut roots = rustls::RootCertStore::empty();
-    let (accepted, _) =
-        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    if accepted == 0 {
-        return Err(ConnectorBuildError::Invalid {
-            reason: ConnectorBuildErrorReason::HttpClientBuildFailed,
-        });
-    }
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
     rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
-        .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
+        .map(|builder| {
+            let mut tls = builder.with_root_certificates(roots).with_no_client_auth();
+            tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            tls
+        })
         .map_err(|_| ConnectorBuildError::Invalid {
             reason: ConnectorBuildErrorReason::HttpClientBuildFailed,
         })

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "platform-tls-provider-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+reallyme-nats-kit.workspace = true
+reallyme-typesense-kit.workspace = true
+# Deliberately compile both providers: production clients must select ring
+# explicitly rather than rely on rustls' ambiguous process default.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "ring", "std"] }
+secrecy.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+
+[lints]
+workspace = true

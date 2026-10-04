@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::http::{HeaderMap, HeaderValue, Uri, header};
 
 use super::websocket_same_origin;
 
@@ -9,13 +9,21 @@ use super::websocket_same_origin;
 fn websocket_origin_check_rejects_cross_site_and_malformed_origins() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("api.example.com"));
-    assert!(websocket_same_origin(&headers, None));
+    assert!(websocket_same_origin(
+        &headers,
+        &Uri::from_static("/ws"),
+        None
+    ));
 
     headers.insert(
         header::ORIGIN,
         HeaderValue::from_static("http://api.example.com"),
     );
-    assert!(websocket_same_origin(&headers, None));
+    assert!(websocket_same_origin(
+        &headers,
+        &Uri::from_static("/ws"),
+        None
+    ));
 
     for origin in [
         "https://api.example.com",
@@ -28,6 +36,23 @@ fn websocket_origin_check_rejects_cross_site_and_malformed_origins() {
             header::ORIGIN,
             HeaderValue::from_str(origin).expect("test origin header"),
         );
-        assert!(!websocket_same_origin(&headers, None), "{origin}");
+        assert!(
+            !websocket_same_origin(&headers, &Uri::from_static("/ws"), None),
+            "{origin}"
+        );
     }
+}
+
+#[test]
+fn websocket_origin_uses_http2_authority_and_scheme_without_host() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://api.example.com"),
+    );
+    let uri = Uri::from_static("https://api.example.com/ws");
+    assert!(websocket_same_origin(&headers, &uri, None));
+
+    headers.insert(header::HOST, HeaderValue::from_static("other.example.com"));
+    assert!(!websocket_same_origin(&headers, &uri, None));
 }

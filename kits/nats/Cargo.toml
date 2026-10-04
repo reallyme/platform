@@ -28,6 +28,7 @@ secrecy.workspace = true
 reallyme-crypto.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
+webpki-roots.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -37,6 +38,4 @@ url.workspace = true
 workspace = true
 
 [dev-dependencies]
-# Exercise NATS TLS construction in the unified reqwest/rustls feature graph.
-reallyme-typesense-kit.workspace = true
 metrics-util.workspace = true

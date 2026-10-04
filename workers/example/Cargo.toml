@@ -16,8 +16,8 @@ crate-type = ["cdylib", "rlib"]
 buffa.workspace = true
 futures-util.workspace = true
 reallyme-app-kit.workspace = true
-example-app = { workspace = true, default-features = false, features = ["connect"] }
-reallyme-example-contract = { workspace = true, features = ["generated"] }
+example-app = { workspace = true, default-features = false, features = ["contract"] }
+reallyme-example-contract = { workspace = true, features = ["proto"] }
 serde.workspace = true
 subtle.workspace = true
 thiserror.workspace = true

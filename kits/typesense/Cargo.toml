@@ -17,6 +17,7 @@ include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENS
 [dependencies]
 rustls.workspace = true
 rustls-native-certs.workspace = true
+webpki-roots.workspace = true
 bytes.workspace = true
 metrics.workspace = true
 reqwest.workspace = true

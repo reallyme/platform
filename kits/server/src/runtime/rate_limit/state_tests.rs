@@ -14,11 +14,11 @@ pub(in crate::runtime::rate_limit) fn indexes_are_consistent(state: &RateLimitBu
             entries.iter().all(|(source, bucket)| {
                 state
                     .global_age
-                    .contains(&(bucket.last_admitted_at, tier.clone(), *source))
+                    .contains(&(bucket.last_activity_at, tier.clone(), *source))
                     && state
                         .tier_age
                         .get(tier)
-                        .is_some_and(|age| age.contains(&(bucket.last_admitted_at, *source)))
+                        .is_some_and(|age| age.contains(&(bucket.last_activity_at, *source)))
             })
         })
 }

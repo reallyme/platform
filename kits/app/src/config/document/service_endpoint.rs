@@ -4,11 +4,14 @@
 use serde::{Deserialize, Serialize};
 
 use super::error::{AppConfigDocumentError, AppConfigDocumentErrorReason};
-use super::url::validate_secure_url;
+use super::url::{validate_private_endpoint_url, validate_secure_url};
 
+mod locator;
 mod validation;
 
-use validation::validate_identifier;
+pub use locator::{
+    AppServiceEndpointScheme, AppServiceLocator, AppServiceLocatorProvider, TailscaleServiceLocator,
+};
 
 const MAX_ENDPOINTS: usize = 16;
 const MAX_LOCATOR_TAGS: usize = 16;
@@ -63,6 +66,23 @@ impl AppServiceEndpointSource {
     pub fn from_document(
         document: AppServiceEndpointSourceDocument,
     ) -> Result<Self, AppConfigDocumentError> {
+        Self::from_document_with_policy(document, false)
+    }
+
+    /// Validates endpoints for a caller that has already established private transport.
+    ///
+    /// This is separate from the default constructor so public fallback paths
+    /// cannot silently accept plaintext endpoints.
+    pub fn from_private_transport_document(
+        document: AppServiceEndpointSourceDocument,
+    ) -> Result<Self, AppConfigDocumentError> {
+        Self::from_document_with_policy(document, true)
+    }
+
+    fn from_document_with_policy(
+        document: AppServiceEndpointSourceDocument,
+        private_transport: bool,
+    ) -> Result<Self, AppConfigDocumentError> {
         let endpoint_selection = document
             .endpoint_selection
             .as_deref()
@@ -80,14 +100,16 @@ impl AppServiceEndpointSource {
 
         let static_endpoints = if let Some(base_url) = document.base_url {
             Some(AppServiceStaticEndpoints::new(vec![
-                AppServiceEndpointUrl::new(base_url)?,
+                AppServiceEndpointUrl::for_transport(base_url, private_transport)?,
             ])?)
         } else if has_endpoints {
             Some(AppServiceStaticEndpoints::new(
                 document
                     .endpoints
                     .into_iter()
-                    .map(AppServiceEndpointUrl::new)
+                    .map(|endpoint| {
+                        AppServiceEndpointUrl::for_transport(endpoint, private_transport)
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             )?)
         } else {
@@ -293,6 +315,22 @@ impl AppServiceEndpointUrl {
         validate_secure_url(&value.into()).map(Self)
     }
 
+    /// Constructs an endpoint URL after the caller has verified private transport.
+    pub fn new_private_transport(value: impl Into<String>) -> Result<Self, AppConfigDocumentError> {
+        validate_private_endpoint_url(&value.into()).map(Self)
+    }
+
+    fn for_transport(
+        value: impl Into<String>,
+        private_transport: bool,
+    ) -> Result<Self, AppConfigDocumentError> {
+        if private_transport {
+            Self::new_private_transport(value)
+        } else {
+            Self::new(value)
+        }
+    }
+
     /// Returns the endpoint URL.
     pub fn as_str(&self) -> &str {
         self.0.as_str()
@@ -338,144 +376,6 @@ impl AppServiceEndpointSelection {
             Self::NearestNode => "nearest_node",
             Self::RoundRobin => "round_robin",
             Self::Failover => "failover",
-        }
-    }
-}
-
-/// Validated service locator.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AppServiceLocator {
-    /// Tailscale service locator.
-    Tailscale(TailscaleServiceLocator),
-}
-
-impl AppServiceLocator {
-    /// Builds a validated service locator from a raw config document.
-    pub fn from_document(
-        document: AppServiceLocatorDocument,
-    ) -> Result<Self, AppConfigDocumentError> {
-        match document.mode.as_str() {
-            "tailscale" | "tailscale_service" => Ok(Self::Tailscale(
-                TailscaleServiceLocator::from_document(document)?,
-            )),
-            _ => Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidLocatorMode,
-            )),
-        }
-    }
-
-    /// Returns the locator provider token.
-    pub const fn provider(&self) -> AppServiceLocatorProvider {
-        match self {
-            Self::Tailscale(_) => AppServiceLocatorProvider::Tailscale,
-        }
-    }
-
-    /// Returns Tailscale locator metadata when applicable.
-    pub const fn tailscale(&self) -> Option<&TailscaleServiceLocator> {
-        match self {
-            Self::Tailscale(locator) => Some(locator),
-        }
-    }
-}
-
-/// Supported service-locator providers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppServiceLocatorProvider {
-    /// Tailscale Services MagicDNS.
-    Tailscale,
-}
-
-impl AppServiceLocatorProvider {
-    /// Returns the stable provider token.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Tailscale => "tailscale_service",
-        }
-    }
-}
-
-/// Tailscale Service locator selector.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TailscaleServiceLocator {
-    service: String,
-    tags: Vec<String>,
-    port: Option<u16>,
-    scheme: Option<AppServiceEndpointScheme>,
-}
-
-impl TailscaleServiceLocator {
-    fn from_document(document: AppServiceLocatorDocument) -> Result<Self, AppConfigDocumentError> {
-        validate_identifier(document.service.as_str())?;
-        if document.tags.len() > MAX_LOCATOR_TAGS {
-            return Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidLocatorTag,
-            ));
-        }
-        for tag in &document.tags {
-            validate_identifier(tag.as_str())?;
-        }
-        let scheme = document
-            .scheme
-            .as_deref()
-            .map(AppServiceEndpointScheme::parse)
-            .transpose()?;
-        if document.port == Some(0) {
-            return Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidServiceEndpointSource,
-            ));
-        }
-
-        Ok(Self {
-            service: document.service,
-            tags: document.tags,
-            port: document.port,
-            scheme,
-        })
-    }
-
-    /// Returns the Tailscale Service token.
-    pub fn service(&self) -> &str {
-        self.service.as_str()
-    }
-
-    /// Returns configured Tailscale Service metadata tags.
-    pub fn tags(&self) -> &[String] {
-        self.tags.as_slice()
-    }
-
-    /// Returns the configured endpoint port, if present.
-    pub const fn port(&self) -> Option<u16> {
-        self.port
-    }
-
-    /// Returns the configured endpoint scheme, if present.
-    pub const fn scheme(&self) -> Option<AppServiceEndpointScheme> {
-        self.scheme
-    }
-}
-
-/// Supported URL schemes for Tailscale Service endpoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppServiceEndpointScheme {
-    /// HTTPS over the tailnet.
-    Https,
-}
-
-impl AppServiceEndpointScheme {
-    fn parse(value: &str) -> Result<Self, AppConfigDocumentError> {
-        match value {
-            "https" => Ok(Self::Https),
-            _ => Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidServiceEndpointSource,
-            )),
-        }
-    }
-
-    /// Returns the URL scheme token.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Https => "https",
         }
     }
 }

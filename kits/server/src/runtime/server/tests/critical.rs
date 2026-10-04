@@ -5,16 +5,19 @@ use std::future::{self, Future};
 use std::time::Duration;
 
 use axum::Router;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::time;
 
 use super::fixtures::{
-    critical_task_regression_action, observability_config, spawn_critical_task_regression_worker,
+    assert_one_subprocess_test_passed, critical_task_regression_action,
+    http_server_config_for_port, observability_config, spawn_critical_task_regression_worker,
 };
 use crate::health::{Readiness, ReadinessState};
 use crate::runtime::{
-    AppName, CriticalTaskReadinessTimeout, CriticalTaskReadinessTimeoutErrorReason, RuntimeApp,
-    RuntimeBackgroundTask, RuntimeCleanupHook, RuntimeCriticalTask, ServerRuntime,
+    AppName, CriticalTaskReadinessTimeout, CriticalTaskReadinessTimeoutErrorReason, HttpServerSpec,
+    RuntimeApp, RuntimeBackgroundTask, RuntimeCleanupHook, RuntimeCriticalTask, ServerRuntime,
     ServerRuntimeBuilder, ServerRuntimeError, ServerRuntimePhase, ServerRuntimePhaseReporter,
 };
 use crate::shutdown::{ShutdownError, ShutdownReason};
@@ -104,6 +107,7 @@ fn assert_regression_worker_succeeds(action: &'static str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_one_subprocess_test_passed(&output);
 }
 
 fn runtime_builder(
@@ -148,6 +152,10 @@ fn map_ready_error(
 }
 
 async fn readiness_barrier_worker() {
+    let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("fixture port reservation binds");
+    let address = reservation.local_addr().expect("fixture port is assigned");
+    drop(reservation);
     let readiness = Readiness::new();
     let mut readiness_watch = readiness.watch();
     let (phase_reporter, phase_watch) = ServerRuntimePhaseReporter::new();
@@ -159,8 +167,14 @@ async fn readiness_barrier_worker() {
         readiness.clone(),
         phase_reporter,
     )
-    .critical_task(critical_task(
-        "state-reconciler",
+    .http_server(HttpServerSpec::new(
+        http_server_config_for_port(address.port()),
+        Router::new(),
+    ))
+    .critical_task(RuntimeCriticalTask::new(
+        TaskName::new("state-reconciler").expect("valid fixture task name"),
+        CriticalTaskReadinessTimeout::new(Duration::from_secs(2))
+            .expect("valid fixture readiness timeout"),
         move |mut shutdown, ready| async move {
             release_receiver
                 .await
@@ -188,6 +202,27 @@ async fn readiness_barrier_worker() {
             .is_err(),
         "global readiness must remain blocked"
     );
+    let mut connection = time::timeout(Duration::from_secs(1), async {
+        loop {
+            match TcpStream::connect(address).await {
+                Ok(connection) => break connection,
+                Err(_) => time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .expect("liveness listener should start during app readiness wait");
+    connection
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("liveness request writes");
+    let mut response = [0_u8; 512];
+    let received = time::timeout(Duration::from_secs(1), connection.read(&mut response))
+        .await
+        .expect("liveness response arrives during startup")
+        .expect("liveness response reads");
+    assert!(response[..received].starts_with(b"HTTP/1.1 200"));
+    assert!(!readiness.is_ready());
     release_sender
         .send(())
         .expect("critical task should await release");

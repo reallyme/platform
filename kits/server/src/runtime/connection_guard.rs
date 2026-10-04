@@ -27,9 +27,10 @@ use crate::config::{ConnectionLimitConfig, TrustedProxyHeaders};
 
 const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
-const OVER_CAP_BACKOFF: Duration = Duration::from_millis(1);
 #[cfg(feature = "tonic-grpc")]
-const GRPC_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// This is a fallback after tonic's 60-second age GOAWAY. Active streams retain
+// their separate grace and do not become idle merely because GOAWAY was sent.
+const GRPC_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The protocol parser's request dispatch is the only reliable indication
 /// that an HTTP/1 head or HTTP/2 HEADERS frame was completed.
@@ -157,7 +158,6 @@ impl Listener for BoundedTcpListener {
                         Ok(permit) => permit,
                         Err(_) => {
                             drop(stream);
-                            sleep(OVER_CAP_BACKOFF).await;
                             continue;
                         }
                     };
@@ -190,7 +190,7 @@ impl Listener for BoundedTcpListener {
                     }
                     // One peer cannot occupy the whole listener. Closing an
                     // over-cap socket also releases its global permit.
-                    sleep(OVER_CAP_BACKOFF).await;
+                    drop(stream);
                 }
                 Err(_) => sleep(ACCEPT_ERROR_BACKOFF).await,
             }

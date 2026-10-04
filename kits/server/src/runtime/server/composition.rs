@@ -37,6 +37,9 @@ use super::super::readiness_drain::ReadinessDrainDelay;
 use super::super::startup_check::RuntimeStartupCheck;
 use super::ServerRuntime;
 
+#[path = "composition/builder_entry.rs"]
+mod builder_entry;
+
 /// Builder for [`ServerRuntime`].
 #[derive(Default)]
 pub struct ServerRuntimeBuilder {

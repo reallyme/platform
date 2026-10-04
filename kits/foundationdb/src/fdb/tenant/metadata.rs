@@ -241,6 +241,52 @@ pub(super) async fn repair_empty_tenant_metadata(
         })
 }
 
+/// Explicitly recovers a tenant whose two metadata keys were both lost during
+/// an interrupted admin deletion. Application data may still be present.
+#[cfg(feature = "tenant-admin")]
+pub(super) async fn repair_absent_tenant_metadata(
+    tenant_handle: &TenantHandle,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<()> {
+    let keys = TenantMetadataKeys::current()?;
+    let (schema_version, created_at) = tenant_metadata_now(tenant)?;
+    let transaction = tenant_handle
+        .inner()
+        .create_trx()
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })?;
+    let schema = transaction
+        .get(&keys.schema_version_key, false)
+        .await
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })?;
+    let created = transaction
+        .get(&keys.created_at_key, false)
+        .await
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })?;
+    if schema.is_some() || created.is_some() {
+        return Err(FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        });
+    }
+    transaction.set(
+        &keys.schema_version_key,
+        schema_version.to_le_bytes().as_ref(),
+    );
+    transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref());
+    transaction
+        .commit()
+        .await
+        .map(|_| ())
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })
+}
+
 #[cfg(test)]
 #[path = "metadata_tests.rs"]
 mod tests;

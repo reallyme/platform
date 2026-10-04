@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use axum::http::{HeaderValue, Method, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use reallyme_app_kit::AppCorsConfig;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -74,6 +74,8 @@ fn base_cors_layer() -> CorsLayer {
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
+            HeaderName::from_static("connect-timeout-ms"),
+            HeaderName::from_static("connect-protocol-version"),
             X_REQUEST_ID,
             X_TRACE_ID,
         ])

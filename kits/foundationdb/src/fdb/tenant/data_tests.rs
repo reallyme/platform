@@ -3,7 +3,8 @@
 
 use super::{
     MAX_TENANT_KEY_BYTES, TenantDataAccessErrorReason, TenantDataKey, TenantDataRange,
-    TenantDataRangeLimit, validate_atomic_mutation,
+    TenantDataRangeLimit, TenantDataRangeTargetBytes, TenantTransactionSizeLimit,
+    validate_atomic_mutation, validate_versionstamped_key_template,
 };
 use foundationdb::options::MutationType;
 
@@ -86,6 +87,28 @@ fn application_range_results_are_bounded() {
 }
 
 #[test]
+fn transaction_and_range_byte_limits_reject_invalid_values() {
+    assert!(matches!(
+        TenantTransactionSizeLimit::new(0),
+        Err(TenantDataAccessErrorReason::InvalidTransactionSizeLimit)
+    ));
+    assert!(matches!(
+        TenantTransactionSizeLimit::new(10_000_001),
+        Err(TenantDataAccessErrorReason::InvalidTransactionSizeLimit)
+    ));
+    assert!(TenantTransactionSizeLimit::new(900_000).is_ok());
+    assert!(matches!(
+        TenantDataRangeTargetBytes::new(0),
+        Err(TenantDataAccessErrorReason::InvalidRangeTargetBytes)
+    ));
+    assert!(matches!(
+        TenantDataRangeTargetBytes::new(1_000_001),
+        Err(TenantDataAccessErrorReason::InvalidRangeTargetBytes)
+    ));
+    assert!(TenantDataRangeTargetBytes::new(800_000).is_ok());
+}
+
+#[test]
 fn atomic_mutations_cannot_change_validated_keys() {
     assert!(matches!(
         validate_atomic_mutation(MutationType::SetVersionstampedKey),
@@ -109,4 +132,38 @@ fn atomic_mutations_cannot_change_validated_keys() {
     ] {
         assert!(validate_atomic_mutation(value_mutation).is_ok());
     }
+}
+
+#[test]
+fn versionstamped_keys_keep_a_stable_application_prefix() {
+    let mut valid = b"app/delivery/".to_vec();
+    valid.extend_from_slice(&[0xff; 10]);
+    valid.extend_from_slice(&7_u16.to_be_bytes());
+    valid.extend_from_slice(&13_u32.to_le_bytes());
+    assert!(validate_versionstamped_key_template(&valid).is_ok());
+
+    let mut prefix_mutation = valid.clone();
+    let prefix_offset = 1_u32.to_le_bytes();
+    let offset_start = prefix_mutation.len() - prefix_offset.len();
+    prefix_mutation[offset_start..].copy_from_slice(&prefix_offset);
+    assert!(matches!(
+        validate_versionstamped_key_template(&prefix_mutation),
+        Err(TenantDataAccessErrorReason::InvalidVersionstampedKey)
+    ));
+
+    let mut missing_placeholder = valid.clone();
+    missing_placeholder[13] = 0;
+    assert!(matches!(
+        validate_versionstamped_key_template(&missing_placeholder),
+        Err(TenantDataAccessErrorReason::InvalidVersionstampedKey)
+    ));
+
+    let mut reserved = b"__meta/delivery/".to_vec();
+    reserved.extend_from_slice(&[0xff; 10]);
+    reserved.extend_from_slice(&7_u16.to_be_bytes());
+    reserved.extend_from_slice(&16_u32.to_le_bytes());
+    assert!(matches!(
+        validate_versionstamped_key_template(&reserved),
+        Err(TenantDataAccessErrorReason::ReservedKey)
+    ));
 }

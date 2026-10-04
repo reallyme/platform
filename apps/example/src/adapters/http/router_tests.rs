@@ -208,7 +208,7 @@ async fn example_http_connect_route_rejects_grpc_and_invalid_timeout_headers() {
         .await;
     grpc.assert_status(StatusCode::UNSUPPORTED_MEDIA_TYPE);
 
-    for timeout in ["abc", "+1000", "18446744073709551616"] {
+    for timeout in ["abc", "+1000", "18446744073709551616", "12345678901"] {
         let response = server
             .post(EXAMPLE_HELLO_CONNECT_RPC_PATH)
             .bytes(payload.clone())

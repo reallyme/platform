@@ -12,10 +12,13 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::time::{Sleep, sleep};
 
+use super::activity::ConnectionActivity;
+
 pub(super) struct WriteProgressIo<T> {
     inner: T,
     stall_timeout: Duration,
     pending_deadline: Option<(PendingOperation, Pin<Box<Sleep>>)>,
+    activity: Option<ConnectionActivity>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,7 +34,13 @@ impl<T> WriteProgressIo<T> {
             inner,
             stall_timeout,
             pending_deadline: None,
+            activity: None,
         }
+    }
+
+    pub(super) fn with_activity(mut self, activity: ConnectionActivity) -> Self {
+        self.activity = Some(activity);
+        self
     }
 
     fn timed_out(&mut self, cx: &mut Context<'_>) -> bool {
@@ -72,7 +81,16 @@ impl<T: AsyncRead + Unpin> AsyncRead for WriteProgressIo<T> {
         cx: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_read(cx, buffer)
+        let this = self.get_mut();
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buffer);
+        if let Poll::Ready(Ok(())) = &result
+            && let Some(activity) = &this.activity
+            && let Some(read) = buffer.filled().len().checked_sub(before)
+        {
+            activity.record_read_progress(read);
+        }
+        result
     }
 }
 
@@ -90,6 +108,11 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for WriteProgressIo<T> {
             Poll::Pending => this.on_pending(cx, PendingOperation::Write),
             Poll::Ready(Ok(written)) if written > 0 || buffer.is_empty() => {
                 this.pending_deadline = None;
+                if written > 0
+                    && let Some(activity) = &this.activity
+                {
+                    activity.record_write_progress(written);
+                }
                 Poll::Ready(Ok(written))
             }
             Poll::Ready(Ok(_)) => Poll::Ready(Err(io::ErrorKind::WriteZero.into())),
@@ -144,6 +167,11 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for WriteProgressIo<T> {
             Poll::Pending => this.on_pending(cx, PendingOperation::Write),
             Poll::Ready(Ok(written)) if written > 0 || buffers.iter().all(|buf| buf.is_empty()) => {
                 this.pending_deadline = None;
+                if written > 0
+                    && let Some(activity) = &this.activity
+                {
+                    activity.record_write_progress(written);
+                }
                 Poll::Ready(Ok(written))
             }
             Poll::Ready(Ok(_)) => Poll::Ready(Err(io::ErrorKind::WriteZero.into())),

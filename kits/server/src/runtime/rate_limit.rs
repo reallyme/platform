@@ -20,7 +20,10 @@ use crate::task::{ShutdownToken, TaskExecutionError};
 mod state;
 use state::RateLimitBucketState;
 
-/// Maximum number of live rate-limit buckets per registry.
+/// Maximum number of retained per-source buckets per registry.
+///
+/// A full tier may also hold one shared newcomer bucket, bounded by the
+/// number of configured tiers rather than by caller-controlled identities.
 pub const RATE_LIMIT_MAX_LIVE_BUCKETS: usize = 25_000;
 
 /// Idle bucket pruning window for the periodic sweep.
@@ -49,7 +52,6 @@ struct SourceRateBucket {
     fractional_tokens: u32,
     last_refill_at: Instant,
     last_activity_at: Instant,
-    last_admitted_at: Instant,
 }
 
 impl SourceRateBucket {
@@ -59,7 +61,6 @@ impl SourceRateBucket {
             fractional_tokens: 0,
             last_refill_at: now,
             last_activity_at: now,
-            last_admitted_at: now,
         }
     }
 }
@@ -138,6 +139,9 @@ impl RateLimitRegistry {
             // A stale or misspelled tier must never turn a configured guard off.
             return RateLimitDecision::SourceLimitReached;
         };
+        if self.max_live_buckets == 0 {
+            return RateLimitDecision::RegistryFull;
+        }
 
         let source_bucket = match policy.scope() {
             HttpRateLimitScope::PerSource => {
@@ -149,24 +153,31 @@ impl RateLimitRegistry {
         let now = Instant::now();
         let mut buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
 
-        let mut evicted = false;
+        let mut use_overflow = false;
         if !buckets.contains(tier, source_bucket) {
-            if buckets.tier_len(tier) >= policy.max_distinct_sources() {
-                // Indexed oldest-admission eviction keeps new source work
-                // bounded even under large rotating IPv6 address ranges.
-                evicted = buckets.evict_tier(tier);
+            let tier_full = buckets.tier_len(tier) >= policy.max_distinct_sources();
+            let registry_full = buckets.len() >= self.max_live_buckets;
+            if tier_full || registry_full {
+                let evicted = if tier_full {
+                    buckets.evict_refilled_tier_bucket(tier, policy, now)
+                } else {
+                    buckets.evict_refilled_global_bucket(self.tier_policies.as_slice(), now)
+                };
+                // New sources share one bounded bucket while retained sources
+                // still owe rate-limit debt. Churn cannot mint free tokens.
+                use_overflow = !evicted;
             }
-            if buckets.len() >= self.max_live_buckets {
-                if !buckets.evict_global(tier) {
-                    return RateLimitDecision::RegistryFull;
-                }
-                evicted = true;
+            if !use_overflow {
+                buckets.insert(
+                    tier.clone(),
+                    source_bucket,
+                    SourceRateBucket::fresh(now, policy.burst_tokens()),
+                );
             }
-            buckets.insert(
-                tier.clone(),
-                source_bucket,
-                SourceRateBucket::fresh(now, if evicted { 1 } else { policy.burst_tokens() }),
-            );
+        }
+
+        if use_overflow {
+            return consume_overflow_bucket(buckets.overflow_bucket(tier, now), policy, now);
         }
 
         let Some(bucket) = buckets.bucket_mut(tier, source_bucket) else {
@@ -176,27 +187,40 @@ impl RateLimitRegistry {
         refill_bucket(bucket, policy, now);
 
         if bucket.tokens == 0 {
-            bucket.last_activity_at = now;
+            buckets.record_activity(tier, source_bucket, now);
             return RateLimitDecision::SourceLimitReached;
         }
 
         bucket.tokens = bucket.tokens.saturating_sub(1);
-        bucket.last_activity_at = now;
-        buckets.record_admission(tier, source_bucket, now);
+        buckets.record_activity(tier, source_bucket, now);
         RateLimitDecision::Allowed
     }
 
     /// Removes stale buckets from all tiers.
     pub fn prune_stale_buckets(&self) {
         let mut buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
-        buckets.prune_stale(Instant::now());
+        buckets.prune_stale(self.tier_policies.as_slice(), Instant::now());
     }
 
     /// Returns the live bucket count across all tiers.
     pub fn live_bucket_count(&self) -> usize {
         let buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
-        buckets.len()
+        buckets.len().saturating_add(buckets.overflow.len())
     }
+}
+
+fn consume_overflow_bucket(
+    bucket: &mut SourceRateBucket,
+    policy: HttpRateLimitTierPolicy,
+    now: Instant,
+) -> RateLimitDecision {
+    refill_bucket(bucket, policy, now);
+    bucket.last_activity_at = now;
+    if bucket.tokens == 0 {
+        return RateLimitDecision::SourceLimitReached;
+    }
+    bucket.tokens = bucket.tokens.saturating_sub(1);
+    RateLimitDecision::Allowed
 }
 
 fn refill_bucket(bucket: &mut SourceRateBucket, policy: HttpRateLimitTierPolicy, now: Instant) {

@@ -230,10 +230,10 @@ fn preserve_safe_protocol_headers(source: &Response, target: &mut Response) {
     if let Some(allow) = source.headers().get(header::ALLOW).cloned() {
         target.headers_mut().insert(header::ALLOW, allow);
     }
-    if let Some(challenge) = source.headers().get(header::WWW_AUTHENTICATE).cloned() {
+    for challenge in source.headers().get_all(header::WWW_AUTHENTICATE).iter() {
         target
             .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, challenge);
+            .append(header::WWW_AUTHENTICATE, challenge.clone());
     }
     if let Some(retry_after) = source.headers().get(header::RETRY_AFTER).cloned() {
         target

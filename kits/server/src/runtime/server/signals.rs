@@ -11,7 +11,14 @@ use crate::task::{BackgroundTaskSet, TaskExecutionError, TaskExecutionErrorKind}
 
 use super::{ServerRuntime, ServerRuntimeError};
 
-pub(super) async fn run_with_os_signals(runtime: ServerRuntime) -> Result<(), ServerRuntimeError> {
+impl ServerRuntime {
+    /// Runs the server process until an operating-system shutdown signal is received.
+    pub async fn run(self) -> Result<(), ServerRuntimeError> {
+        run_with_os_signals(self).await
+    }
+}
+
+async fn run_with_os_signals(runtime: ServerRuntime) -> Result<(), ServerRuntimeError> {
     let mut signals = install_shutdown_signal_listener()
         .map_err(|source| ServerRuntimeError::Shutdown { source })?;
     let (sender, mut receiver) = mpsc::channel(1);

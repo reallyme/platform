@@ -11,6 +11,7 @@ use tonic::transport::Server;
 use tonic_health::pb::health_server::HealthServer;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
+use tower::load_shed::LoadShedLayer;
 
 use super::connection_guard::{BoundedTcpListener, ForceCloseConnections};
 use super::grpc_idle::GrpcActivityLayer;
@@ -29,8 +30,12 @@ const DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 const DEFAULT_GRPC_MAX_CONCURRENT_STREAMS: u32 = 128;
 const GRPC_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
-const GRPC_CONNECTION_MAX_AGE: Duration = Duration::from_secs(600);
-const GRPC_CONNECTION_MAX_AGE_GRACE: Duration = Duration::from_secs(30);
+// Tonic emits GOAWAY at max age. It has no idle GOAWAY hook, so retire
+// connections gracefully before the IO fallback can close an idle socket.
+// Keep a long grace for active streams after GOAWAY; the short age must not
+// turn a healthy server stream into an early transport failure.
+const GRPC_CONNECTION_MAX_AGE: Duration = Duration::from_secs(60);
+const GRPC_CONNECTION_MAX_AGE_GRACE: Duration = Duration::from_secs(600);
 
 struct CloseConnectionsOnDrop(Arc<ForceCloseConnections>);
 
@@ -272,9 +277,14 @@ pub(crate) async fn serve_health_grpc(
         .layer(
             ServiceBuilder::new()
                 .layer(GrpcActivityLayer)
-                .layer(grpc_policy_layer(grpc_policy)),
+                .layer(grpc_policy_layer(grpc_policy))
+                // Load shedding keeps policy dispatch ready even when the
+                // concurrency limit is full, so callers receive a gRPC
+                // resource-exhausted response instead of timing out at the
+                // connection's first-request guard.
+                .layer(LoadShedLayer::new())
+                .layer(ConcurrencyLimitLayer::new(concurrency_limit.as_usize())),
         )
-        .layer(ConcurrencyLimitLayer::new(concurrency_limit.as_usize()))
         .add_routes(routes)
         .serve_with_incoming_shutdown(incoming, async move {
             let _reason = shutdown_for_server.cancelled().await;

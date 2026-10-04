@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{MAX_APP_JSONC_BYTES, parse_jsonc_config, strip_jsonc_comments};
+
+#[test]
+fn cr_only_line_endings_preserve_following_object_keys() {
+    let document = "{\r\"first\": 1, // comment\r\"second\": 2\r}";
+    let parsed = parse_jsonc_config::<serde_json::Value>(document).expect("valid JSONC");
+    assert_eq!(parsed["first"], 1);
+    assert_eq!(parsed["second"], 2);
+}
 #[test]
 fn block_comments_do_not_join_json_tokens() {
     for text in ["1/*comment*/2", "tr/*comment*/ue", "-/*comment*/1"] {
