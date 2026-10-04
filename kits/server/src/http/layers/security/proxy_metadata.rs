@@ -9,7 +9,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use tracing::debug;
 
-use crate::config::{HostAuthority, NetworkPort};
+use crate::config::{HostAuthority, NetworkPort, TrustedProxyHeaderFamily, TrustedProxyHeaders};
 
 use super::{
     FORWARDED_HEADER, ForwardedClientIp, ForwardedHost, ForwardedMetadataDebugReason,
@@ -25,6 +25,34 @@ pub(super) fn strip_untrusted_proxy_headers(request: &mut Request<Body>) {
     headers.remove(X_FORWARDED_PORT_HEADER);
     headers.remove(X_FORWARDED_PROTO_HEADER);
     headers.remove(X_REAL_IP_HEADER);
+}
+
+pub(super) fn strip_unselected_proxy_headers(
+    request: &mut Request<Body>,
+    family: TrustedProxyHeaderFamily,
+) {
+    let headers = request.headers_mut();
+    match family {
+        TrustedProxyHeaderFamily::Forwarded => {
+            headers.remove(X_FORWARDED_FOR_HEADER);
+            headers.remove(X_FORWARDED_HOST_HEADER);
+            headers.remove(X_FORWARDED_PORT_HEADER);
+            headers.remove(X_FORWARDED_PROTO_HEADER);
+            headers.remove(X_REAL_IP_HEADER);
+        }
+        TrustedProxyHeaderFamily::XForwarded => {
+            headers.remove(FORWARDED_HEADER);
+            headers.remove(X_REAL_IP_HEADER);
+        }
+    }
+}
+
+pub(super) fn has_mixed_proxy_header_families(headers: &HeaderMap) -> bool {
+    headers.contains_key(FORWARDED_HEADER)
+        && (headers.contains_key(X_FORWARDED_FOR_HEADER)
+            || headers.contains_key(X_FORWARDED_HOST_HEADER)
+            || headers.contains_key(X_FORWARDED_PORT_HEADER)
+            || headers.contains_key(X_FORWARDED_PROTO_HEADER))
 }
 
 pub(super) fn request_contains_proxy_headers(request: &Request<Body>) -> bool {
@@ -87,7 +115,9 @@ pub(super) fn normalized_external_proto(
         }
     }
 
-    Ok(request.uri().scheme_str().and_then(ForwardedProto::parse))
+    // Absolute-form request targets are controlled by the caller and cannot
+    // attest to transport TLS. A direct request has no proxy scheme proof.
+    Ok(None)
 }
 
 impl ForwardedProto {
@@ -133,7 +163,10 @@ fn forwarded_host_from_x_forwarded_headers(
     headers: &HeaderMap,
 ) -> Result<Option<ForwardedHost>, ProxyMetadataError> {
     if let Some(value) = headers.get(X_FORWARDED_HOST_HEADER) {
-        let authority = first_comma_separated_token(value)
+        if headers.get_all(X_FORWARDED_HOST_HEADER).iter().count() != 1 {
+            return Err(ProxyMetadataError::InvalidForwardedHost);
+        }
+        let authority = last_comma_separated_token(value)
             .ok_or(ProxyMetadataError::InvalidForwardedHost)
             .and_then(|host| forwarded_host_authority_from_x_forwarded_headers(headers, host))?;
         return Ok(Some(ForwardedHost::new(authority)));
@@ -217,7 +250,10 @@ fn forwarded_proto_from_x_forwarded_headers(
     headers: &HeaderMap,
 ) -> Result<Option<ForwardedProto>, ProxyMetadataError> {
     if let Some(value) = headers.get(X_FORWARDED_PROTO_HEADER) {
-        let proto = first_comma_separated_token(value)
+        if headers.get_all(X_FORWARDED_PROTO_HEADER).iter().count() != 1 {
+            return Err(ProxyMetadataError::InvalidForwardedProto);
+        }
+        let proto = last_comma_separated_token(value)
             .ok_or(ProxyMetadataError::InvalidForwardedProto)
             .and_then(parse_forwarded_proto_token)?;
         return Ok(Some(proto));
@@ -275,8 +311,11 @@ fn forwarded_port_from_headers(
     let Some(value) = headers.get(X_FORWARDED_PORT_HEADER) else {
         return Ok(None);
     };
+    if headers.get_all(X_FORWARDED_PORT_HEADER).iter().count() != 1 {
+        return Err(ProxyMetadataError::InvalidForwardedHost);
+    }
     let token =
-        first_comma_separated_token(value).ok_or(ProxyMetadataError::InvalidForwardedHost)?;
+        last_comma_separated_token(value).ok_or(ProxyMetadataError::InvalidForwardedHost)?;
     let port = token
         .parse::<u16>()
         .map_err(|_| ProxyMetadataError::InvalidForwardedHost)?;
@@ -286,17 +325,59 @@ fn forwarded_port_from_headers(
         .map_err(|_| ProxyMetadataError::InvalidForwardedHost)
 }
 
-pub(super) fn forwarded_client_ip_from_headers(headers: &HeaderMap) -> Option<ForwardedClientIp> {
-    headers
-        .get(FORWARDED_HEADER)
-        .and_then(forwarded_header_for_ip)
-        .or_else(|| {
-            headers
-                .get(X_FORWARDED_FOR_HEADER)
-                .and_then(first_forwarded_for_ip)
-        })
-        .or_else(|| headers.get(X_REAL_IP_HEADER).and_then(header_value_ip))
-        .map(ForwardedClientIp)
+pub(super) fn forwarded_client_ip_from_headers(
+    headers: &HeaderMap,
+    trusted_proxies: &TrustedProxyHeaders,
+) -> Option<ForwardedClientIp> {
+    let address = if headers.contains_key(FORWARDED_HEADER) {
+        client_ip_from_header_chain(
+            headers,
+            FORWARDED_HEADER,
+            trusted_proxies,
+            parse_forwarded_for_ip,
+        )
+    } else {
+        client_ip_from_x_forwarded_for(headers, trusted_proxies)
+    };
+    address.map(ForwardedClientIp)
+}
+
+pub(crate) fn client_ip_from_x_forwarded_for(
+    headers: &HeaderMap,
+    trusted_proxies: &TrustedProxyHeaders,
+) -> Option<IpAddr> {
+    client_ip_from_header_chain(
+        headers,
+        X_FORWARDED_FOR_HEADER,
+        trusted_proxies,
+        parse_ip_token,
+    )
+}
+
+fn client_ip_from_header_chain(
+    headers: &HeaderMap,
+    header_name: axum::http::HeaderName,
+    trusted_proxies: &TrustedProxyHeaders,
+    parse: fn(&str) -> Option<IpAddr>,
+) -> Option<IpAddr> {
+    let mut values = headers.get_all(header_name).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+
+    let mut selected = None;
+    for (index, token) in value.to_str().ok()?.split(',').rev().enumerate() {
+        if index >= 32 {
+            return None;
+        }
+        let address = parse(token.trim())?;
+        selected = Some(address);
+        if !trusted_proxies.trusts_peer(Some(address)) {
+            break;
+        }
+    }
+    selected
 }
 
 pub(super) fn direct_request_without_https_proof_allowed(
@@ -330,40 +411,43 @@ fn debug_forwarded_metadata_reason(
     );
 }
 
-fn first_comma_separated_token(value: &HeaderValue) -> Option<&str> {
+fn last_comma_separated_token(value: &HeaderValue) -> Option<&str> {
     let value = value.to_str().ok()?;
-    let first = value.split(',').next()?.trim();
-    if first.is_empty() {
+    let last = value.split(',').next_back()?.trim();
+    if last.is_empty() {
         return None;
     }
 
-    Some(first)
+    Some(last)
 }
 
-fn first_forwarded_for_ip(value: &HeaderValue) -> Option<IpAddr> {
-    let first = first_comma_separated_token(value)?;
-
-    first.parse::<IpAddr>().ok()
+fn parse_ip_token(value: &str) -> Option<IpAddr> {
+    value.parse::<IpAddr>().ok()
 }
 
-fn header_value_ip(value: &HeaderValue) -> Option<IpAddr> {
-    value.to_str().ok()?.trim().parse::<IpAddr>().ok()
-}
-
-fn forwarded_header_for_ip(value: &HeaderValue) -> Option<IpAddr> {
-    let first_for = forwarded_header_parameter(value, "for")?;
-    let normalized = first_for
-        .trim_matches('"')
-        .trim_start_matches('[')
-        .trim_end_matches(']');
-
-    normalized.parse::<IpAddr>().ok()
+fn parse_forwarded_for_ip(value: &str) -> Option<IpAddr> {
+    let parameter = value.split(';').find_map(|segment| {
+        let (key, token) = segment.trim().split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("for")
+            .then_some(token.trim())
+    })?;
+    let parameter = parameter.trim_matches('"');
+    if let Some(bracketed) = parameter.strip_prefix('[') {
+        let (address, suffix) = bracketed.split_once(']')?;
+        if !suffix.is_empty() && !suffix.starts_with(':') {
+            return None;
+        }
+        address.parse::<IpAddr>().ok()
+    } else {
+        parameter.parse::<IpAddr>().ok()
+    }
 }
 
 fn forwarded_header_parameter<'a>(value: &'a HeaderValue, key: &str) -> Option<&'a str> {
     let value = value.to_str().ok()?;
-    let first_forwarded = value.split(',').next()?.trim();
-    first_forwarded.split(';').find_map(|segment| {
+    let nearest_forwarded = value.split(',').next_back()?.trim();
+    nearest_forwarded.split(';').find_map(|segment| {
         let (segment_key, segment_value) = segment.trim().split_once('=')?;
         if !segment_key.trim().eq_ignore_ascii_case(key) {
             return None;

@@ -41,8 +41,11 @@ mod error;
 mod ids;
 mod internal;
 mod layers;
+#[cfg(feature = "tonic-grpc")]
+pub(crate) use layers::client_ip_from_x_forwarded_for;
 mod response;
 mod routes;
+pub(crate) use routes::apply_standard_router_layers_after_cors;
 mod settings;
 #[cfg(feature = "testing")]
 mod testing;
@@ -54,10 +57,10 @@ pub use crate::config::ExactCorsOrigins;
 pub use crate::config::{
     HostAuthority, HostAuthorityPolicy, HttpHeaderBytesLimit, HttpHeaderCountLimit,
     HttpHeaderLimitConfig, HttpSecurityConfig, OperationalRouteAccess, SecurityHeadersConfig,
-    TrustedProxyHeaders, TrustedProxyRange,
+    TrustedProxyHeaderFamily, TrustedProxyHeaders, TrustedProxyRange,
 };
 pub use crate::transport::{RequestId, TraceId};
-pub use cors::{app_cors_layer, cors_layer};
+pub use cors::{PreflightCorsLayer, app_cors_layer, cors_layer};
 pub use error::{ErrorCode, PublicHttpError, ToHttpErrorResponse};
 pub use ids::{
     IdentifierHeaderError, X_REQUEST_ID, X_TRACE_ID, request_id_from_extensions,
@@ -68,12 +71,12 @@ pub use internal::{
     X_INTERNAL_CALLER, X_SERVICE_TOKEN, attach_internal_request_headers,
     internal_call_correlation_ids_from_extensions,
 };
+pub(crate) use layers::route_visibility_layer_with_rate_limit_registry;
 pub use layers::{
     ExternalRequestOrigin, ForwardedClientIp, ForwardedHost, ForwardedProto, body_limit_layer,
     concurrency_limit_layer, default_body_limit, listener_identity_layer,
-    normalize_http_error_responses_layer, request_id_layer, route_visibility_layer,
-    route_visibility_layer_with_rate_limit_registry, security_layer, timeout_layer, trace_id_layer,
-    trace_layer,
+    normalize_http_error_responses_layer, request_id_layer, route_visibility_layer, security_layer,
+    timeout_layer, trace_id_layer, trace_layer,
 };
 pub use response::{JsonErrorBody, JsonErrorEnvelope, JsonErrorResponse};
 pub use routes::{
@@ -116,6 +119,6 @@ pub use websocket::{
     WebSocketValidationErrorReason, configure_websocket_upgrade, describe_websocket_metrics,
     gracefully_close_websocket, record_websocket_connection_closed,
     record_websocket_connection_error, record_websocket_connection_opened,
-    record_websocket_connection_timeout, run_websocket_connection, websocket_close_code,
+    record_websocket_connection_timeout, websocket_close_code, websocket_same_origin,
     websocket_upgrade_response,
 };

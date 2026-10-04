@@ -37,7 +37,7 @@ fn metrics_subprocess_worker() {
                 install_prometheus_recorder(&config).expect("prometheus recorder should install");
             let route = RouteTemplate::new("/readyz").expect("valid route template");
             let server_name = ServerName::new("reallyme-api").expect("valid server name");
-            let build_info = BuildInfo::new(server_name.clone());
+            let build_info = BuildInfo::new(server_name.clone(), env!("CARGO_PKG_VERSION"));
 
             record_http_request_outcome(
                 HttpMethodLabel::Get,
@@ -140,6 +140,7 @@ fn metrics_install_and_render_helper_work_in_subprocess() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_one_subprocess_test_passed(&output);
 }
 
 #[test]
@@ -159,5 +160,14 @@ fn duplicate_metrics_install_is_rejected_in_subprocess() {
         "metrics subprocess failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+    assert_one_subprocess_test_passed(&output);
+}
+
+fn assert_one_subprocess_test_passed(output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("running 1 test") && stdout.contains("1 passed;"),
+        "metrics subprocess did not execute exactly one test: {stdout}"
     );
 }

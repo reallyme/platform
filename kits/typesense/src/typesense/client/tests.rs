@@ -14,11 +14,43 @@ use super::{
     CollectionSchemaRequest, LABEL_OPERATION, METRIC_REQUESTS_IN_FLIGHT, RequestKind,
     SearchRequest, TypesenseClient,
 };
+
 use crate::typesense::{
     CollectionField, CollectionName, FieldKind, FilterValue, PageSize, SearchFieldName,
     SearchFields, SearchFilter, SearchQuery, SortField, TypesenseConfig, TypesenseEndpoint,
     TypesenseEndpointSelection, TypesenseError, TypesenseTransportReason,
 };
+
+#[test]
+fn retry_policy_never_replays_mutations_after_ambiguous_response() {
+    for kind in [
+        RequestKind::Collection,
+        RequestKind::CreateCollection,
+        RequestKind::UpdateCollection,
+        RequestKind::DeleteCollection,
+        RequestKind::UpsertAlias,
+        RequestKind::DeleteAlias,
+        RequestKind::UpsertDocument,
+        RequestKind::DeleteDocument,
+    ] {
+        assert!(!kind.is_replay_safe());
+    }
+    for kind in [
+        RequestKind::Health,
+        RequestKind::Search,
+        RequestKind::GetCollection,
+        RequestKind::GetDocument,
+    ] {
+        assert!(kind.is_replay_safe());
+    }
+}
+
+fn test_http_client() -> Client {
+    Client::builder()
+        .tls_backend_preconfigured(crate::typesense::connector::tls_config().expect("test TLS"))
+        .build()
+        .expect("test HTTP client")
+}
 
 fn metric_gauge_value(
     snapshotter: &Snapshotter,
@@ -87,7 +119,7 @@ fn execute_with_retries_clears_in_flight_gauge_on_early_return() -> Result<(), T
     let recorder = metrics_util::debugging::DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     let client = TypesenseClient {
-        http_client: Client::new(),
+        http_client: test_http_client(),
         endpoints: Vec::new(),
         endpoint_selection: TypesenseEndpointSelection::NearestNode,
         endpoint_cursor: AtomicUsize::new(0),
@@ -192,7 +224,7 @@ fn new_client_seeds_retry_entropy_non_zero() -> Result<(), TypesenseError> {
     .map_err(|_| TypesenseError::Transport {
         reason: TypesenseTransportReason::RequestFailed,
     })?;
-    let client = TypesenseClient::new(Client::new(), config);
+    let client = TypesenseClient::new(test_http_client(), config);
 
     assert_ne!(client.retry_entropy.load(Ordering::Relaxed), 0);
     Ok(())
@@ -201,7 +233,7 @@ fn new_client_seeds_retry_entropy_non_zero() -> Result<(), TypesenseError> {
 #[test]
 fn nearest_node_selection_fails_over_across_retry_attempts() {
     let client = TypesenseClient {
-        http_client: Client::new(),
+        http_client: test_http_client(),
         endpoints: Vec::new(),
         endpoint_selection: TypesenseEndpointSelection::NearestNode,
         endpoint_cursor: AtomicUsize::new(0),

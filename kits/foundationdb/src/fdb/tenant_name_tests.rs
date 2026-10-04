@@ -8,11 +8,8 @@ use super::{
 
 #[test]
 fn accepts_stable_operational_name() {
-    let result = FoundationDbTenantName::new("search-crawl-v1");
-    assert!(result.is_ok());
-    let Ok(name) = result else {
-        return;
-    };
+    let name =
+        FoundationDbTenantName::new("search-crawl-v1").expect("valid operational tenant name");
     assert_eq!(name.as_bytes(), b"search-crawl-v1");
     assert_eq!(name.to_string(), "search-crawl-v1");
 }

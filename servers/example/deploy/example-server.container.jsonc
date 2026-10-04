@@ -1,8 +1,9 @@
 {
   // Container ingress reaches the process through the container interface.
   // Publish this port on a host address deliberately, as shown in README.md.
-  "application_profile": "local",
+  "application_profile": "prod",
   "bind_address": "0.0.0.0:8080",
+  "allowed_hosts": ["example.reallyme.net"],
   "request_timeout_seconds": 30,
   "request_body_limit_bytes": 1048576,
   "metrics_idle_timeout_seconds": 30,

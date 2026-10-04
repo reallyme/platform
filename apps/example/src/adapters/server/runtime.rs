@@ -9,12 +9,13 @@ use reallyme_server_kit::runtime::{
     RuntimeApp, RuntimeAppAdapterError, RuntimeBackgroundTask, RuntimeCleanupHook,
     RuntimeStartupCheck,
 };
+#[cfg(feature = "websocket")]
+use reallyme_server_kit::startup::TaskName;
+#[cfg(feature = "websocket")]
+use reallyme_server_kit::task::ShutdownController;
 use reallyme_server_kit::task::{ShutdownToken, TaskExecutionError};
 
-#[cfg(not(feature = "websocket"))]
 use crate::adapters::http::router::router;
-#[cfg(feature = "websocket")]
-use crate::adapters::http::router::router_with_websocket_shutdown;
 use crate::app::{
     EXAMPLE_BACKGROUND_TASK_NAME, EXAMPLE_CLEANUP_HOOK_NAME, EXAMPLE_STARTUP_CHECK_NAME,
     ExampleAppConfigDocument, context_from_config_document, example_app_metadata,
@@ -43,8 +44,12 @@ pub fn runtime_app_from_config_document(
         AppCleanupHookDescriptor::new(AppLifecycleName::new(EXAMPLE_CLEANUP_HOOK_NAME)?);
 
     #[cfg(feature = "websocket")]
-    let (router, websocket_state) =
-        router_with_websocket_shutdown(context_from_config_document(document, ports));
+    let websocket_shutdown = std::sync::Arc::new(ShutdownController::new());
+    #[cfg(feature = "websocket")]
+    let router = router(
+        context_from_config_document(document, ports),
+        websocket_shutdown.token(),
+    );
     #[cfg(not(feature = "websocket"))]
     let router = router(context_from_config_document(document, ports));
 
@@ -64,9 +69,14 @@ pub fn runtime_app_from_config_document(
         )?);
 
     #[cfg(feature = "websocket")]
-    let app = app.with_websocket_shutdown_consumer(move |shutdown| {
-        websocket_state.attach_process_shutdown_signal(shutdown)
-    });
+    let app = app.with_background_task(RuntimeBackgroundTask::new(
+        TaskName::new("example-websocket-shutdown")?,
+        move |mut process_shutdown| async move {
+            let reason = process_shutdown.cancelled().await;
+            websocket_shutdown.begin_shutdown(reason);
+            Ok(())
+        },
+    ));
 
     Ok(app)
 }

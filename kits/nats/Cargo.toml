@@ -14,6 +14,10 @@ categories = ["asynchronous", "network-programming"]
 publish = ["crates-io"]
 include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
 
+[features]
+default = []
+testing = []
+
 [dependencies]
 metrics.workspace = true
 async-nats = { workspace = true, features = ["jetstream", "nuid", "ring", "nkeys"] }
@@ -22,6 +26,8 @@ bytes.workspace = true
 nkeys.workspace = true
 secrecy.workspace = true
 reallyme-crypto.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -29,3 +35,7 @@ url.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Exercise NATS TLS construction in the unified reqwest/rustls feature graph.
+reallyme-typesense-kit = { path = "../typesense" }

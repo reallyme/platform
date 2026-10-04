@@ -26,5 +26,8 @@ fn client_debug_output_does_not_expose_its_origin() {
 
 #[test]
 fn hardened_client_builder_is_constructible() {
-    hardened_builder().build().expect("hardened client");
+    hardened_builder()
+        .expect("hardened builder")
+        .build()
+        .expect("hardened client");
 }

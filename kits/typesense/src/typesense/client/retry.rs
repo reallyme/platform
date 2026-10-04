@@ -59,8 +59,15 @@ impl TypesenseClient {
                 });
             }
             let start_index = self.start_endpoint_index(self.endpoints.len());
+            // A lost response does not prove a mutation failed. Replaying one
+            // can create a duplicate or turn success into a misleading 404/409.
+            let retry_budget = if request_kind.is_replay_safe() {
+                self.max_retries
+            } else {
+                0
+            };
 
-            for attempt in 0..=self.max_retries {
+            for attempt in 0..=retry_budget {
                 let endpoint_index = self
                     .endpoint_index(start_index, attempt)
                     .wrapping_rem(self.endpoints.len());
@@ -94,7 +101,7 @@ impl TypesenseClient {
                         // A server's minimum wait cannot be shortened to fit our
                         // local budget. Return the upstream error without retrying.
                         if !self.should_retry_status(status)
-                            || attempt == self.max_retries
+                            || attempt == retry_budget
                             || retry_after.is_some_and(|delay| delay > self.retry_max_delay)
                         {
                             histogram!(
@@ -117,7 +124,7 @@ impl TypesenseClient {
                         self.sleep_backoff(attempt, retry_after).await;
                     }
                     Err(_) => {
-                        if attempt == self.max_retries {
+                        if attempt == retry_budget {
                             histogram!(
                                 METRIC_REQUEST_DURATION_SECONDS,
                                 LABEL_OPERATION => operation_label,

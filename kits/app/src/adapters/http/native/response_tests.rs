@@ -6,9 +6,9 @@ use futures_util::stream;
 use http_body::Frame;
 use http_body_util::StreamBody;
 use reqwest::{Body, Response};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
-use super::read_response;
+use super::{append_sensitive_chunk, read_response};
 use crate::{
     BoundedHttpsResponse, CapturedResponseHeader, HttpsDispatchOutcome, HttpsTransportErrorReason,
 };
@@ -21,6 +21,16 @@ fn response(status: u16, headers: &[(&str, &str)], body: Vec<u8>) -> http::Respo
         builder = builder.header(*name, *value);
     }
     builder.body(Body::from(body)).expect("valid test response")
+}
+
+#[test]
+fn sensitive_response_growth_reserves_only_observed_bounded_bytes() {
+    let mut body = Zeroizing::new(Vec::new());
+    append_sensitive_chunk(&mut body, b"ab", 16 * 1024 * 1024).expect("first chunk");
+    assert!(body.capacity() < 16 * 1024 * 1024);
+    append_sensitive_chunk(&mut body, b"cdef", 16 * 1024 * 1024).expect("second chunk");
+    assert_eq!(body.as_slice(), b"abcdef");
+    assert!(append_sensitive_chunk(&mut body, b"ghi", 8).is_err());
 }
 
 #[tokio::test]

@@ -9,6 +9,7 @@
 //! pattern for normal request fan-out.
 
 mod entropy;
+mod request_kind;
 mod retry;
 mod search;
 mod urls;
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use entropy::{advance_retry_entropy, initial_retry_entropy_seed};
+use request_kind::RequestKind;
 
 use crate::typesense::{
     CollectionName, DocumentId, ImportAction, ImportBatch, ImportResult, SearchDocument, SortField,
@@ -107,7 +109,7 @@ impl Clone for TypesenseClient {
 impl TypesenseClient {
     /// Creates a client from a configured HTTP client and endpoint configuration.
     #[must_use]
-    pub fn new(http_client: Client, config: TypesenseConfig) -> Self {
+    pub(crate) fn new(http_client: Client, config: TypesenseConfig) -> Self {
         let request_timeout = config.request_timeout();
         let import_request_timeout = config
             .import_request_timeout()
@@ -222,7 +224,7 @@ impl TypesenseClient {
         let text = std::str::from_utf8(&body).map_err(|_| TypesenseError::Transport {
             reason: TypesenseTransportReason::InvalidResponseBody,
         })?;
-        parse_import_response_jsonl(text)
+        parse_import_response_jsonl(text)?.validate_expected_count(batch.documents().len())
     }
 
     /// Executes a multi-search request.
@@ -242,7 +244,9 @@ impl TypesenseClient {
             )
             .await?;
 
-        decode_json::<MultiSearchResponse>(response).await
+        decode_json::<MultiSearchResponse>(response)
+            .await?
+            .validate(request.searches().len())
     }
 
     /// Creates one collection from a typed schema.
@@ -455,38 +459,3 @@ impl TypesenseClient {
 
 #[cfg(test)]
 mod tests;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RequestKind {
-    Health,
-    Collection,
-    Search,
-    CreateCollection,
-    GetCollection,
-    UpdateCollection,
-    DeleteCollection,
-    UpsertAlias,
-    DeleteAlias,
-    UpsertDocument,
-    GetDocument,
-    DeleteDocument,
-}
-
-impl RequestKind {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Health => "health",
-            Self::Collection => "collection",
-            Self::Search => "search",
-            Self::CreateCollection => "create_collection",
-            Self::GetCollection => "get_collection",
-            Self::UpdateCollection => "update_collection",
-            Self::DeleteCollection => "delete_collection",
-            Self::UpsertAlias => "upsert_alias",
-            Self::DeleteAlias => "delete_alias",
-            Self::UpsertDocument => "upsert_document",
-            Self::GetDocument => "get_document",
-            Self::DeleteDocument => "delete_document",
-        }
-    }
-}

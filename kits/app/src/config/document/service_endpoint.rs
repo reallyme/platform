@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::error::{AppConfigDocumentError, AppConfigDocumentErrorReason};
-use super::url::{UrlPolicy, validate_url};
+use super::url::validate_secure_url;
 
 mod validation;
 
@@ -283,16 +283,14 @@ pub enum AppServiceEndpointResolutionErrorReason {
     InvalidEndpointUrl,
 }
 
-/// Validated HTTP(S) service endpoint.
+/// Validated HTTPS service endpoint, with plaintext allowed only on loopback.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AppServiceEndpointUrl(String);
 
 impl AppServiceEndpointUrl {
     /// Constructs a validated endpoint URL.
     pub fn new(value: impl Into<String>) -> Result<Self, AppConfigDocumentError> {
-        let value = value.into();
-        validate_url(value.as_str(), UrlPolicy::HttpOrHttps)?;
-        Ok(Self(value))
+        validate_secure_url(&value.into()).map(Self)
     }
 
     /// Returns the endpoint URL.
@@ -460,8 +458,6 @@ impl TailscaleServiceLocator {
 /// Supported URL schemes for Tailscale Service endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppServiceEndpointScheme {
-    /// Plain HTTP over the tailnet.
-    Http,
     /// HTTPS over the tailnet.
     Https,
 }
@@ -469,7 +465,6 @@ pub enum AppServiceEndpointScheme {
 impl AppServiceEndpointScheme {
     fn parse(value: &str) -> Result<Self, AppConfigDocumentError> {
         match value {
-            "http" => Ok(Self::Http),
             "https" => Ok(Self::Https),
             _ => Err(AppConfigDocumentError::new(
                 AppConfigDocumentErrorReason::InvalidServiceEndpointSource,
@@ -480,7 +475,6 @@ impl AppServiceEndpointScheme {
     /// Returns the URL scheme token.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Http => "http",
             Self::Https => "https",
         }
     }

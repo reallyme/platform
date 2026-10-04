@@ -106,4 +106,9 @@ fn duplicate_tracing_init_is_rejected_in_subprocess() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("running 1 test") && stdout.contains("1 passed;"),
+        "tracing subprocess did not execute exactly one test: {stdout}"
+    );
 }

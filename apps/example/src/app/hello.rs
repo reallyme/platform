@@ -14,13 +14,14 @@ const HELLO_RESPONSE_BODY: &str = "hello from example-app";
 pub fn hello(
     context: &ExampleAppContext,
     request: HelloRequest,
-    _deadline: Option<std::time::Duration>,
+    deadline: Option<std::time::Duration>,
 ) -> Result<HelloResponse, ExampleAppError> {
-    // Deadline is currently only represented in the function signature so
-    // call sites can pass caller intent through consistently. Real work should
-    // enforce it with a timeout around the service call path.
     // This use-case currently has no request fields with behavioral impact.
     let _ = request;
+
+    if deadline.is_some_and(|remaining| remaining.is_zero()) {
+        return Err(ExampleAppError::DeadlineExceeded);
+    }
 
     if !context.core().state().config().hello_enabled() {
         return Err(ExampleAppError::HelloDisabled);

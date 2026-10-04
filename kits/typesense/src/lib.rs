@@ -21,8 +21,8 @@ pub mod typesense;
 
 pub use typesense::{
     CollectionField, CollectionName, CollectionSchema, ConnectorBuildError,
-    ConnectorBuildErrorReason, DocumentId, FieldKind, FilterValue, ImportAction, ImportBatch,
-    ImportFailureReason, ImportLine, ImportResult, MultiSearchHit, MultiSearchRequest,
+    ConnectorBuildErrorReason, DocumentId, FieldKind, FilterValue, FiniteFilterFloat, ImportAction,
+    ImportBatch, ImportFailureReason, ImportLine, ImportResult, MultiSearchHit, MultiSearchRequest,
     MultiSearchRequestItem, MultiSearchResponse, MultiSearchResult, PageNumber, PageSize,
     SearchDocument, SearchFieldName, SearchFields, SearchFilter, SearchQuery, SearchRequest,
     SearchResultHit, SearchResults, SortBy, SortDirection, SortField, SortOrder, TextFilterValue,

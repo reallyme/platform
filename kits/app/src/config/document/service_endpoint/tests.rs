@@ -10,7 +10,7 @@ use crate::config::document::AppConfigDocumentErrorReason;
 #[test]
 fn singleton_base_url_source_normalizes_to_static_endpoint() {
     let source = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
-        base_url: Some("http://typesense-1:8108".to_owned()),
+        base_url: Some("https://typesense-1:8108".to_owned()),
         endpoints: Vec::new(),
         endpoint_selection: None,
         locator: None,
@@ -21,7 +21,7 @@ fn singleton_base_url_source_normalizes_to_static_endpoint() {
         source
             .primary_static_endpoint()
             .map(|endpoint| endpoint.as_str()),
-        Some("http://typesense-1:8108")
+        Some("https://typesense-1:8108")
     );
     assert_eq!(
         source.endpoint_selection(),
@@ -30,12 +30,25 @@ fn singleton_base_url_source_normalizes_to_static_endpoint() {
 }
 
 #[test]
+fn service_endpoint_rejects_remote_plaintext_and_normalizes_equivalent_urls() {
+    let remote = super::AppServiceEndpointUrl::new("http://192.0.2.7:8108");
+    assert_eq!(
+        remote.map_err(|error| error.reason()),
+        Err(AppConfigDocumentErrorReason::InsecureNonLocalHttpOrigin)
+    );
+
+    let canonical = super::AppServiceEndpointUrl::new("https://SEARCH.example:443/")
+        .expect("canonicalizable HTTPS endpoint should validate");
+    assert_eq!(canonical.as_str(), "https://search.example");
+}
+
+#[test]
 fn static_endpoint_list_preserves_selection_policy() {
     let source = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
         base_url: None,
         endpoints: vec![
-            "http://typesense-1:8108".to_owned(),
-            "http://typesense-2:8108".to_owned(),
+            "https://typesense-1:8108".to_owned(),
+            "https://typesense-2:8108".to_owned(),
         ],
         endpoint_selection: Some("round_robin".to_owned()),
         locator: None,
@@ -63,7 +76,7 @@ fn tailscale_locator_source_validates_tags() {
             service: "typesense".to_owned(),
             tags: vec!["prod".to_owned(), "search".to_owned(), "eu".to_owned()],
             port: Some(8108),
-            scheme: Some("http".to_owned()),
+            scheme: Some("https".to_owned()),
         }),
     })
     .expect("tailscale locator source should validate");
@@ -83,7 +96,7 @@ fn tailscale_locator_source_validates_tags() {
 #[test]
 fn endpoint_source_accepts_static_fallback_with_tailscale_locator() {
     let source = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
-        base_url: Some("http://typesense-1:8108".to_owned()),
+        base_url: Some("https://typesense-1:8108".to_owned()),
         endpoints: Vec::new(),
         endpoint_selection: Some("round_robin".to_owned()),
         locator: Some(AppServiceLocatorDocument {
@@ -91,7 +104,7 @@ fn endpoint_source_accepts_static_fallback_with_tailscale_locator() {
             service: "typesense".to_owned(),
             tags: vec!["prod".to_owned(), "search".to_owned()],
             port: Some(8108),
-            scheme: Some("http".to_owned()),
+            scheme: Some("https".to_owned()),
         }),
     })
     .expect("static fallback with tailscale locator should validate");
@@ -100,7 +113,7 @@ fn endpoint_source_accepts_static_fallback_with_tailscale_locator() {
         source
             .primary_static_endpoint()
             .map(super::AppServiceEndpointUrl::as_str),
-        Some("http://typesense-1:8108")
+        Some("https://typesense-1:8108")
     );
     assert_eq!(
         source
@@ -118,15 +131,15 @@ fn endpoint_source_accepts_static_fallback_with_tailscale_locator() {
 #[test]
 fn endpoint_source_rejects_base_url_and_endpoint_list_together() {
     let error = AppServiceEndpointSource::from_document(AppServiceEndpointSourceDocument {
-        base_url: Some("http://typesense-1:8108".to_owned()),
-        endpoints: vec!["http://typesense-2:8108".to_owned()],
+        base_url: Some("https://typesense-1:8108".to_owned()),
+        endpoints: vec!["https://typesense-2:8108".to_owned()],
         endpoint_selection: None,
         locator: Some(AppServiceLocatorDocument {
             mode: "tailscale".to_owned(),
             service: "typesense".to_owned(),
             tags: vec!["prod".to_owned(), "search".to_owned()],
             port: Some(8108),
-            scheme: Some("http".to_owned()),
+            scheme: Some("https".to_owned()),
         }),
     })
     .expect_err("base_url and endpoints should fail closed");
@@ -148,7 +161,7 @@ fn tailscale_service_locator_allows_empty_tags() {
             service: "typesense".to_owned(),
             tags: Vec::new(),
             port: Some(8108),
-            scheme: Some("http".to_owned()),
+            scheme: Some("https".to_owned()),
         }),
     })
     .expect("Tailscale Service MagicDNS locators do not require tag selectors");
@@ -165,7 +178,7 @@ fn tailscale_service_locator_allows_empty_tags() {
 #[test]
 fn located_endpoints_normalize_to_static_source() {
     let located = super::AppServiceLocatedEndpoints::new(vec![
-        super::AppServiceEndpointUrl::new("http://typesense-1:8108")
+        super::AppServiceEndpointUrl::new("https://typesense-1:8108")
             .expect("test endpoint should validate"),
     ])
     .expect("located endpoint set should validate");
@@ -180,7 +193,7 @@ fn located_endpoints_normalize_to_static_source() {
         source
             .primary_static_endpoint()
             .map(super::AppServiceEndpointUrl::as_str),
-        Some("http://typesense-1:8108")
+        Some("https://typesense-1:8108")
     );
     assert_eq!(
         source.endpoint_selection(),

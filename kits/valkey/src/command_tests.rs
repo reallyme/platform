@@ -9,6 +9,6 @@ fn command_and_pipeline_factories_construct_driver_values() {
     command.arg("bounded");
 
     let mut pipeline = valkey_pipeline();
-    pipeline.cmd("PING");
+    pipeline.add_command(valkey_command("PING"));
     pipeline.atomic();
 }

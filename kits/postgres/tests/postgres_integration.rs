@@ -11,18 +11,13 @@ use reallyme_postgres_kit::{
 };
 use secrecy::SecretString;
 
-const INTEGRATION_ENABLED_ENV: &str = "REALLYME_RUN_POSTGRES_INTEGRATION";
 const INTEGRATION_URI_ENV: &str = "REALLYME_POSTGRES_INTEGRATION_URI";
 const INTEGRATION_MIGRATION_LOCK: PostgresMigrationLockId =
     PostgresMigrationLockId::new(0x524D_5047_5445_5354);
 
 #[tokio::test]
+#[ignore = "requires a live PostgreSQL service and REALLYME_POSTGRES_INTEGRATION_URI"]
 async fn live_pool_transactions_and_error_classification() {
-    if std::env::var(INTEGRATION_ENABLED_ENV).as_deref() != Ok("1") {
-        eprintln!("SKIP: set REALLYME_RUN_POSTGRES_INTEGRATION=1 for live PostgreSQL tests");
-        return;
-    }
-
     let connection_uri = std::env::var(INTEGRATION_URI_ENV)
         .expect("live test requires REALLYME_POSTGRES_INTEGRATION_URI");
     let config = PostgresConfig::new(PostgresConfigInput {

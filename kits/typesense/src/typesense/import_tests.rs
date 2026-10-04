@@ -4,6 +4,19 @@
 use serde::Serialize;
 
 use super::{ImportBatch, ImportFailureReason, parse_import_response_jsonl};
+
+#[test]
+fn import_result_requires_one_response_per_submitted_document() {
+    let response = parse_import_response_jsonl("{\"success\":true}\n")
+        .expect("one valid import response line");
+    assert!(response.clone().validate_expected_count(1).is_ok());
+    assert!(matches!(
+        response.validate_expected_count(2),
+        Err(crate::typesense::TypesenseError::Transport {
+            reason: crate::typesense::TypesenseTransportReason::InvalidResponseBody,
+        })
+    ));
+}
 use crate::typesense::{
     DocumentId, SearchDocument, TypesenseError, TypesenseRequestReason, error::TypesenseResult,
 };

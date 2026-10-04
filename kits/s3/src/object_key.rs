@@ -12,23 +12,24 @@ pub struct S3ObjectKey(String);
 impl S3ObjectKey {
     /// Constructs a validated object key from caller-controlled input.
     pub fn new(value: String) -> Result<Self, S3StorageError> {
-        let trimmed = value.trim().trim_matches('/').to_owned();
-        if trimmed.is_empty() || trimmed.len() > MAX_OBJECT_KEY_BYTES {
+        // Silently trimming keys can redirect a signed request to a different
+        // object. Preserve exactly the caller's canonical spelling.
+        if value.is_empty() || value.len() > MAX_OBJECT_KEY_BYTES {
             return Err(S3StorageError::new(S3StorageErrorReason::InvalidObjectKey));
         }
-        if !trimmed
+        if !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.'))
         {
             return Err(S3StorageError::new(S3StorageErrorReason::InvalidObjectKey));
         }
-        if trimmed
+        if value
             .split('/')
             .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
         {
             return Err(S3StorageError::new(S3StorageErrorReason::InvalidObjectKey));
         }
-        Ok(Self(trimmed))
+        Ok(Self(value))
     }
 
     /// Returns the validated object key as a string slice.

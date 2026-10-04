@@ -13,6 +13,18 @@ fn app_base_url_accepts_valid_production_https_origin() {
 }
 
 #[test]
+fn app_base_url_normalizes_equivalent_browser_origins() {
+    for input in [
+        "https://API.REALLYME.NET/",
+        "https://api.reallyme.net:443",
+        "https://api.reallyme.net",
+    ] {
+        let origin = AppBaseUrl::new(input).expect("equivalent origin should validate");
+        assert_eq!(origin.as_str(), "https://api.reallyme.net");
+    }
+}
+
+#[test]
 fn app_base_url_accepts_valid_localhost_http_origin() {
     let value = AppBaseUrl::new("http://localhost:3000").expect("valid local HTTP origin");
 
@@ -26,7 +38,7 @@ fn app_base_url_accepts_loopback_ipv6_literal_forms() {
         .expect("valid expanded loopback ipv6 literal");
 
     assert_eq!(canonical.as_str(), "http://[::1]:3000");
-    assert_eq!(expanded.as_str(), "http://[0:0:0:0:0:0:0:1]:3000");
+    assert_eq!(expanded.as_str(), "http://[::1]:3000");
 }
 
 #[test]
@@ -82,6 +94,22 @@ fn app_base_url_rejects_unsafe_shapes() {
     );
     assert_url_invalid(
         "http://localhost:abc",
+        AppConfigDocumentErrorReason::InvalidUrlPort,
+    );
+    assert_url_invalid(
+        "https://a.example\\.trusted.example",
+        AppConfigDocumentErrorReason::InvalidUrlScheme,
+    );
+    assert_url_invalid(
+        "https://[::1]x",
+        AppConfigDocumentErrorReason::InvalidUrlPort,
+    );
+    assert_url_invalid(
+        "https://api.reallyme.net:+80",
+        AppConfigDocumentErrorReason::InvalidUrlPort,
+    );
+    assert_url_invalid(
+        "https://api.reallyme.net:0",
         AppConfigDocumentErrorReason::InvalidUrlPort,
     );
 }

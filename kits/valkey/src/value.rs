@@ -8,7 +8,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::{ValkeyDataErrorReason, ValkeyDataKind, ValkeyError, ValkeyResult};
 
 const MAX_KEY_BYTES: usize = 512;
-const MAX_VALUE_BYTES: usize = 8 * 1_024 * 1_024;
+pub(crate) const MAX_VALUE_BYTES: usize = 8 * 1_024 * 1_024;
 const MAX_TTL_MILLIS: u64 = 604_800_000;
 
 /// Validated binary key suffix.

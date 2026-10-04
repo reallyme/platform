@@ -52,10 +52,26 @@ impl AppConfigProfile {
 ///
 /// This type must never contain raw config bodies or secret values. It is only
 /// for startup summaries and diagnostics such as `local.jsonc` or `env`.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct AppConfigSource {
     format: AppConfigFormat,
     name: String,
+}
+
+impl<'de> Deserialize<'de> for AppConfigSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SourceFields {
+            format: AppConfigFormat,
+            name: String,
+        }
+
+        let fields = SourceFields::deserialize(deserializer)?;
+        Self::new(fields.format, fields.name).map_err(serde::de::Error::custom)
+    }
 }
 
 impl AppConfigSource {

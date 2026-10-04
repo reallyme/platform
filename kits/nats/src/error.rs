@@ -16,12 +16,14 @@ pub enum JetStreamErrorReason {
     StreamLookupFailed,
     /// Creating or retrieving the configured consumer failed.
     ConsumerInitializationFailed,
+    /// An existing durable consumer has a different delivery policy.
+    ConsumerConfigurationMismatch,
     /// The publish payload exceeded the configured bound.
     PayloadTooLarge,
+    /// A caller-supplied deduplication header value was unsafe.
+    InvalidMessageId,
     /// A required synchronization primitive was poisoned.
     SyncPrimitivePoisoned,
-    /// Sending the publish request failed.
-    PublishFailed,
     /// JetStream did not acknowledge the publish.
     PublishNotAcknowledged,
     /// Pulling messages from JetStream failed.
@@ -48,15 +50,18 @@ pub enum JetStreamError {
     /// Creating or retrieving the configured consumer failed.
     #[error("jetstream consumer initialization failed")]
     ConsumerInitializationFailed,
+    /// An existing durable consumer has a different delivery policy.
+    #[error("jetstream durable consumer configuration differs from the requested policy")]
+    ConsumerConfigurationMismatch,
     /// The publish payload exceeded the configured bound.
     #[error("jetstream publish payload exceeds the configured bound")]
     PayloadTooLarge,
+    /// A caller-supplied deduplication header value was unsafe.
+    #[error("jetstream message id is invalid")]
+    InvalidMessageId,
     /// A required synchronization primitive was poisoned.
     #[error("jetstream mutex or lock is poisoned")]
     SyncPrimitivePoisoned,
-    /// Sending the publish request failed.
-    #[error("jetstream publish failed")]
-    PublishFailed,
     /// JetStream did not acknowledge the publish.
     #[error("jetstream publish was not acknowledged")]
     PublishNotAcknowledged,
@@ -79,9 +84,12 @@ impl JetStreamError {
             Self::ConsumerInitializationFailed => {
                 JetStreamErrorReason::ConsumerInitializationFailed
             }
+            Self::ConsumerConfigurationMismatch => {
+                JetStreamErrorReason::ConsumerConfigurationMismatch
+            }
             Self::PayloadTooLarge => JetStreamErrorReason::PayloadTooLarge,
+            Self::InvalidMessageId => JetStreamErrorReason::InvalidMessageId,
             Self::SyncPrimitivePoisoned => JetStreamErrorReason::SyncPrimitivePoisoned,
-            Self::PublishFailed => JetStreamErrorReason::PublishFailed,
             Self::PublishNotAcknowledged => JetStreamErrorReason::PublishNotAcknowledged,
             Self::PullFailed => JetStreamErrorReason::PullFailed,
             Self::AcknowledgmentFailed => JetStreamErrorReason::AcknowledgmentFailed,

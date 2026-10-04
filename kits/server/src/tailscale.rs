@@ -21,14 +21,14 @@ use crate::observability::record_service_discovery_resolve;
 
 const MAX_DNS_SUFFIX_BYTES: usize = 253;
 const MAX_DNS_LABEL_BYTES: usize = 63;
-const DEFAULT_SCHEME: AppServiceEndpointScheme = AppServiceEndpointScheme::Http;
-const DEFAULT_PORT: u16 = 80;
+const DEFAULT_SCHEME: AppServiceEndpointScheme = AppServiceEndpointScheme::Https;
+const DEFAULT_PORT: u16 = 443;
 
 /// Raw server-owned Tailscale Service resolver configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TailscaleServiceResolverConfigDocument {
-    /// Optional MagicDNS suffix, for example `<tailnet>.ts.net`.
+    /// Required MagicDNS suffix, for example `<tailnet>.ts.net`.
     #[serde(default)]
     pub dns_suffix: Option<String>,
     /// Default endpoint scheme used when a locator omits `scheme`.
@@ -55,13 +55,6 @@ impl TailscaleServiceResolver {
         })
     }
 
-    /// Builds a resolver with local Tailscale resolver defaults.
-    pub fn local() -> Self {
-        Self {
-            config: TailscaleServiceResolverConfig::default(),
-        }
-    }
-
     fn resolve_tailscale_service(
         &self,
         locator: &TailscaleServiceLocator,
@@ -75,35 +68,25 @@ impl TailscaleServiceResolver {
             ));
         }
 
-        let endpoint = build_tailscale_service_url(
-            scheme,
-            locator.service(),
-            self.config.dns_suffix.as_deref(),
-            port,
-        )
-        .map_err(|_| {
-            record_resolve_metric("tailscale_service", "failure");
-            AppServiceEndpointResolutionError::new(
-                AppServiceEndpointResolutionErrorReason::InvalidEndpointUrl,
-            )
-        })
-        .and_then(|endpoint| {
-            AppServiceEndpointUrl::new(endpoint).map_err(|_| {
-                record_resolve_metric("tailscale_service", "failure");
-                AppServiceEndpointResolutionError::new(
-                    AppServiceEndpointResolutionErrorReason::InvalidEndpointUrl,
-                )
-            })
-        })?;
+        let endpoint =
+            build_tailscale_service_url(scheme, locator.service(), &self.config.dns_suffix, port)
+                .map_err(|_| {
+                    record_resolve_metric("tailscale_service", "failure");
+                    AppServiceEndpointResolutionError::new(
+                        AppServiceEndpointResolutionErrorReason::InvalidEndpointUrl,
+                    )
+                })
+                .and_then(|endpoint| {
+                    AppServiceEndpointUrl::new(endpoint).map_err(|_| {
+                        record_resolve_metric("tailscale_service", "failure");
+                        AppServiceEndpointResolutionError::new(
+                            AppServiceEndpointResolutionErrorReason::InvalidEndpointUrl,
+                        )
+                    })
+                })?;
 
         record_resolve_metric("tailscale_service", "success");
         AppServiceLocatedEndpoints::new(vec![endpoint])
-    }
-}
-
-impl Default for TailscaleServiceResolver {
-    fn default() -> Self {
-        Self::local()
     }
 }
 
@@ -120,7 +103,7 @@ impl AppServiceEndpointResolver for TailscaleServiceResolver {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TailscaleServiceResolverConfig {
-    dns_suffix: Option<String>,
+    dns_suffix: String,
     default_scheme: AppServiceEndpointScheme,
     default_port: u16,
 }
@@ -129,7 +112,16 @@ impl TailscaleServiceResolverConfig {
     fn from_document(
         document: TailscaleServiceResolverConfigDocument,
     ) -> Result<Self, TailscaleResolverConfigError> {
-        let dns_suffix = document.dns_suffix.map(validate_dns_suffix).transpose()?;
+        // A bare service label can resolve outside the tailnet through local
+        // search paths. Require the configured MagicDNS suffix explicitly.
+        let dns_suffix = document
+            .dns_suffix
+            .ok_or_else(|| {
+                TailscaleResolverConfigError::new(
+                    TailscaleResolverConfigErrorReason::MissingDnsSuffix,
+                )
+            })
+            .and_then(validate_dns_suffix)?;
         let default_scheme = document
             .default_scheme
             .as_deref()
@@ -151,43 +143,24 @@ impl TailscaleServiceResolverConfig {
     }
 }
 
-impl Default for TailscaleServiceResolverConfig {
-    fn default() -> Self {
-        Self {
-            dns_suffix: None,
-            default_scheme: DEFAULT_SCHEME,
-            default_port: DEFAULT_PORT,
-        }
-    }
-}
-
 fn build_tailscale_service_url(
     scheme: AppServiceEndpointScheme,
     service: &str,
-    dns_suffix: Option<&str>,
+    dns_suffix: &str,
     port: u16,
 ) -> Result<String, TailscaleResolverConfigError> {
     validate_dns_label(service)?;
-    let host = match dns_suffix {
-        Some(suffix) => {
-            validate_dns_suffix(suffix.to_owned())?;
-            let capacity = service
-                .len()
-                .checked_add(1)
-                .and_then(|value| value.checked_add(suffix.len()))
-                .ok_or_else(|| {
-                    TailscaleResolverConfigError::new(
-                        TailscaleResolverConfigErrorReason::InvalidDnsSuffix,
-                    )
-                })?;
-            let mut host = String::with_capacity(capacity);
-            host.push_str(service);
-            host.push('.');
-            host.push_str(suffix);
-            host
-        }
-        None => service.to_owned(),
-    };
+    let capacity = service
+        .len()
+        .checked_add(1)
+        .and_then(|value| value.checked_add(dns_suffix.len()))
+        .ok_or_else(|| {
+            TailscaleResolverConfigError::new(TailscaleResolverConfigErrorReason::InvalidDnsSuffix)
+        })?;
+    let mut host = String::with_capacity(capacity);
+    host.push_str(service);
+    host.push('.');
+    host.push_str(dns_suffix);
 
     let mut endpoint = String::new();
     endpoint.push_str(scheme.as_str());
@@ -200,7 +173,6 @@ fn build_tailscale_service_url(
 
 fn parse_scheme(value: &str) -> Result<AppServiceEndpointScheme, TailscaleResolverConfigError> {
     match value {
-        "http" => Ok(AppServiceEndpointScheme::Http),
         "https" => Ok(AppServiceEndpointScheme::Https),
         _ => Err(TailscaleResolverConfigError::new(
             TailscaleResolverConfigErrorReason::InvalidScheme,
@@ -282,6 +254,8 @@ impl TailscaleResolverConfigError {
 /// Low-cardinality Tailscale resolver configuration failure reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TailscaleResolverConfigErrorReason {
+    /// A suffix is required to keep service names inside the tailnet domain.
+    MissingDnsSuffix,
     /// MagicDNS suffix was malformed.
     InvalidDnsSuffix,
     /// Default or locator scheme was unsupported.

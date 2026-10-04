@@ -3,6 +3,7 @@
 
 //! Hardened client construction and bounded request execution.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -24,7 +25,7 @@ pub struct BoundedHttpsClient {
 impl BoundedHttpsClient {
     /// Builds a client that refuses plaintext HTTP and never follows redirects.
     pub fn new(origin: HttpsOrigin) -> Result<Self, HttpsTransportError> {
-        let client = hardened_builder().build().map_err(|_| {
+        let client = hardened_builder()?.build().map_err(|_| {
             HttpsTransportError::local(HttpsTransportErrorReason::ClientInitializationFailed)
         })?;
         Ok(Self { origin, client })
@@ -89,12 +90,30 @@ fn zeroizing_body(body: &[u8]) -> Result<Body, HttpsTransportError> {
     Ok(Body::from(Bytes::from_owner(owned)))
 }
 
-fn hardened_builder() -> reqwest::ClientBuilder {
+fn hardened_builder() -> Result<reqwest::ClientBuilder, HttpsTransportError> {
     const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
     const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
     const MAXIMUM_IDLE_CONNECTIONS_PER_HOST: usize = 8;
 
-    Client::builder()
+    let mut roots = rustls::RootCertStore::empty();
+    let (accepted, _) =
+        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if accepted == 0 {
+        return Err(HttpsTransportError::local(
+            HttpsTransportErrorReason::ClientInitializationFailed,
+        ));
+    }
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|_| HttpsTransportError::local(HttpsTransportErrorReason::ClientInitializationFailed))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Client::builder()
+        .tls_backend_preconfigured(tls)
+        // Credentials must not transit an ambient proxy chosen by process env.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
         .referer(false)
@@ -104,7 +123,7 @@ fn hardened_builder() -> reqwest::ClientBuilder {
         .no_zstd()
         .connect_timeout(CONNECTION_TIMEOUT)
         .pool_idle_timeout(IDLE_CONNECTION_TIMEOUT)
-        .pool_max_idle_per_host(MAXIMUM_IDLE_CONNECTIONS_PER_HOST)
+        .pool_max_idle_per_host(MAXIMUM_IDLE_CONNECTIONS_PER_HOST))
 }
 
 #[cfg(test)]

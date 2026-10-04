@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use crate::error::WorkerPublicErrorCode;
+use crate::error::{WorkerConnectErrorCode, WorkerPublicErrorCode};
 
 pub(crate) const HEALTH_STATUS_OK: &str = "ok";
 
@@ -24,6 +24,12 @@ pub(crate) struct WorkerErrorBody {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct WorkerConnectErrorBody {
+    pub(crate) code: WorkerConnectErrorCode,
+    pub(crate) message: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkerHealthResponse {
     status: &'static str,
 }
@@ -32,23 +38,6 @@ impl WorkerHealthResponse {
     pub(crate) const fn serving() -> Self {
         Self {
             status: HEALTH_STATUS_OK,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct WorkerVersionResponse {
-    app_name: &'static str,
-    app_version: &'static str,
-    host: &'static str,
-}
-
-impl WorkerVersionResponse {
-    pub(crate) const fn current() -> Self {
-        Self {
-            app_name: "example-app",
-            app_version: env!("CARGO_PKG_VERSION"),
-            host: "cloudflare-workers",
         }
     }
 }

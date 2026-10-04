@@ -72,7 +72,7 @@ pub use security::{
     ExternalOriginPolicyConfig, HostAuthority, HostAuthorityPolicy, HttpHeaderBytesLimit,
     HttpHeaderCountLimit, HttpHeaderLimitConfig, HttpSecurityConfig,
     MAX_HTTP_HEADER_BYTES_LIMIT_VALUE, MAX_HTTP_HEADER_COUNT_LIMIT_VALUE, OperationalRouteAccess,
-    SecurityHeadersConfig, TrustedProxyHeaders, TrustedProxyRange,
+    SecurityHeadersConfig, TrustedProxyHeaderFamily, TrustedProxyHeaders, TrustedProxyRange,
     TrustedProxyRequestMetadataConfig,
 };
 #[cfg(feature = "tonic-grpc")]

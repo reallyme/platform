@@ -9,6 +9,6 @@ mod error;
 mod permission;
 
 pub use authorizer::Authorization;
-pub use decision::{AuthorizationDecision, AuthorizationDenyReason};
+pub use decision::{AuthorizationDecision, AuthorizationDenied, AuthorizationDenyReason};
 pub use error::{AuthzError, AuthzErrorKind, PermissionValidationErrorReason};
 pub use permission::{NamedPermission, Permission, PermissionName};

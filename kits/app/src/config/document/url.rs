@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt;
-use std::net::IpAddr;
+
+use url::{Host, ParseError, Url};
 
 use super::error::{AppConfigDocumentError, AppConfigDocumentErrorReason};
+use super::service_endpoint::AppServiceEndpointUrl;
 
 const MAX_APP_URL_BYTES: usize = 2_048;
 
@@ -15,13 +17,10 @@ pub struct AppBaseUrl(String);
 impl AppBaseUrl {
     /// Constructs a validated app base URL.
     pub fn new(value: impl Into<String>) -> Result<Self, AppConfigDocumentError> {
-        let value = value.into();
-        validate_url(value.as_str(), UrlPolicy::HttpsOrLocalHttp)?;
-
-        Ok(Self(value))
+        validate_secure_url(&value.into()).map(Self)
     }
 
-    /// Returns the URL string.
+    /// Returns the canonical URL string.
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -43,13 +42,16 @@ pub struct AppDownstreamBaseUrl(String);
 impl AppDownstreamBaseUrl {
     /// Constructs a validated downstream base URL.
     pub fn new(value: impl Into<String>) -> Result<Self, AppConfigDocumentError> {
-        let value = value.into();
-        validate_url(value.as_str(), UrlPolicy::HttpsOrLocalHttp)?;
-
-        Ok(Self(value))
+        validate_secure_url(&value.into()).map(Self)
     }
 
-    /// Returns the URL string.
+    pub(super) fn from_endpoint(endpoint: &AppServiceEndpointUrl) -> Self {
+        // Both wrappers enforce the same URL policy. Retain the canonical
+        // endpoint without a second parser that could drift or discard it.
+        Self(endpoint.as_str().to_owned())
+    }
+
+    /// Returns the canonical URL string.
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -64,160 +66,81 @@ impl fmt::Debug for AppDownstreamBaseUrl {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum UrlPolicy {
-    HttpsOrLocalHttp,
-    HttpOrHttps,
-}
-
-pub(super) fn validate_url(value: &str, policy: UrlPolicy) -> Result<(), AppConfigDocumentError> {
+pub(super) fn validate_secure_url(value: &str) -> Result<String, AppConfigDocumentError> {
+    let invalid = AppConfigDocumentError::new;
     if value.is_empty() {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::EmptyUrl,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::EmptyUrl));
     }
-
     if value.len() > MAX_APP_URL_BYTES {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::UrlTooLong,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::UrlTooLong));
     }
-
     if value.chars().any(char::is_whitespace) {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::ContainsWhitespace,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsWhitespace));
     }
-
+    // WHATWG URLs turn backslashes into slashes for special schemes. Reject
+    // the ambiguous spelling before parsing so policy checks see the same
+    // authority as the HTTP client.
+    if value.contains('\\') {
+        return Err(invalid(AppConfigDocumentErrorReason::InvalidUrlScheme));
+    }
     if value.contains('?') {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::ContainsQuery,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsQuery));
     }
-
     if value.contains('#') {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::ContainsFragment,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsFragment));
     }
-
-    let (is_plain_http, without_scheme) = if let Some(rest) = value.strip_prefix("https://") {
-        (false, rest)
-    } else if let Some(rest) = value.strip_prefix("http://") {
-        (true, rest)
-    } else {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::InvalidUrlScheme,
-        ));
-    };
-
-    let (authority, path) = without_scheme
-        .split_once('/')
-        .map_or((without_scheme, ""), |(authority, path)| (authority, path));
-
+    let authority = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .ok_or_else(|| invalid(AppConfigDocumentErrorReason::InvalidUrlScheme))?
+        .split('/')
+        .next()
+        .ok_or_else(|| invalid(AppConfigDocumentErrorReason::MissingUrlHost))?;
     if authority.is_empty() {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::MissingUrlHost,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::MissingUrlHost));
     }
-
     if authority.contains('@') {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::ContainsUserInfo,
-        ));
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsUserInfo));
     }
 
-    if !path.is_empty() {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::ContainsPath,
-        ));
+    let parsed = Url::parse(value).map_err(|error| match error {
+        ParseError::InvalidPort | ParseError::InvalidIpv6Address => {
+            invalid(AppConfigDocumentErrorReason::InvalidUrlPort)
+        }
+        _ => invalid(AppConfigDocumentErrorReason::MissingUrlHost),
+    })?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| invalid(AppConfigDocumentErrorReason::MissingUrlHost))?;
+    if parsed.path() != "/" {
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsPath));
     }
-
-    parse_url_authority_host(authority)?;
-
-    if matches!(policy, UrlPolicy::HttpsOrLocalHttp)
-        && is_plain_http
-        && !is_local_authority(authority)
-    {
-        return Err(AppConfigDocumentError::new(
+    if parsed.query().is_some() {
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsQuery));
+    }
+    if parsed.fragment().is_some() {
+        return Err(invalid(AppConfigDocumentErrorReason::ContainsFragment));
+    }
+    if parsed.port() == Some(0) {
+        return Err(invalid(AppConfigDocumentErrorReason::InvalidUrlPort));
+    }
+    if parsed.scheme() == "http" && !is_loopback_host(host) {
+        return Err(invalid(
             AppConfigDocumentErrorReason::InsecureNonLocalHttpOrigin,
         ));
     }
 
-    Ok(())
+    // Store the parser's canonical origin so equivalent configured endpoints
+    // deduplicate and browser Origin values match exactly.
+    Ok(parsed.origin().ascii_serialization())
 }
 
-fn is_local_authority(authority: &str) -> bool {
-    let Ok(host) = parse_url_authority_host(authority) else {
-        return false;
-    };
-
-    if host == "localhost" {
-        return true;
-    }
-
-    let Ok(host_ip) = host.parse::<IpAddr>() else {
-        return false;
-    };
-
-    host_ip.is_loopback()
-}
-
-fn parse_url_authority_host(authority: &str) -> Result<&str, AppConfigDocumentError> {
-    let (host, port_text) = parse_authority_port(authority)?;
-    if let Some(port_text) = port_text {
-        port_text.parse::<u16>().map_err(|_| {
-            AppConfigDocumentError::new(AppConfigDocumentErrorReason::InvalidUrlPort)
-        })?;
-    }
-
-    if host.is_empty() {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::MissingUrlHost,
-        ));
-    }
-
-    Ok(host)
-}
-
-fn parse_authority_port(authority: &str) -> Result<(&str, Option<&str>), AppConfigDocumentError> {
-    if authority.is_empty() {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::MissingUrlHost,
-        ));
-    }
-
-    if authority.starts_with('[') {
-        let Some((host, suffix)) = authority.split_once(']') else {
-            return Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidUrlPort,
-            ));
-        };
-
-        if host == "[" || suffix.len() > 1 && !suffix.starts_with(':') {
-            return Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidUrlPort,
-            ));
+fn is_loopback_host(host: Host<&str>) -> bool {
+    match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(address) => address.is_loopback(),
+        Host::Ipv6(address) => {
+            address.is_loopback() || address.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
         }
-
-        if suffix == ":" {
-            return Err(AppConfigDocumentError::new(
-                AppConfigDocumentErrorReason::InvalidUrlPort,
-            ));
-        }
-
-        return Ok((host.trim_start_matches('['), suffix.strip_prefix(':')));
     }
-
-    let Some((host, port_text)) = authority.rsplit_once(':') else {
-        return Ok((authority, None));
-    };
-
-    if host.is_empty() || host.contains(':') {
-        return Err(AppConfigDocumentError::new(
-            AppConfigDocumentErrorReason::InvalidUrlPort,
-        ));
-    }
-
-    Ok((host, Some(port_text)))
 }

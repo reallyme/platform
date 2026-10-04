@@ -8,7 +8,7 @@ use super::{
     validate_content_length,
 };
 
-fn config() -> Option<S3StorageConfig> {
+fn config() -> S3StorageConfig {
     S3StorageConfig::new(
         String::from("https://objects.example.com"),
         String::from("eu-central-1"),
@@ -17,14 +17,12 @@ fn config() -> Option<S3StorageConfig> {
         SecretString::new(String::from("secret-key").into_boxed_str()),
         String::from("objects/v1"),
     )
-    .ok()
+    .expect("valid worker client fixture")
 }
 
 #[test]
 fn worker_client_debug_redacts_credentials() {
-    let Some(config) = config() else {
-        return;
-    };
+    let config = config();
     let debug = format!("{:?}", WorkerS3StorageClient::new(config));
     assert!(debug.contains("<redacted>"));
     assert!(!debug.contains("access-key"));

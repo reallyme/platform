@@ -76,10 +76,13 @@ where
         &self.0
     }
 
-    /// Compares a candidate secret to this secret using constant-time equality.
+    /// Compares equal-length secret contents without data-dependent early exit.
     ///
     /// Secret-bearing newtypes in this crate provide this method to prevent
     /// callers from defaulting to byte-by-byte `==` on sensitive material.
+    /// This method exposes whether lengths differ, as `subtle` rejects unequal
+    /// slice lengths before comparing bytes. Callers whose secret length must
+    /// remain hidden need a fixed-length credential representation.
     pub fn constant_time_eq(&self, candidate: &str) -> bool
     where
         T: AsRef<str>,

@@ -38,6 +38,9 @@ impl RequestId {
 
     /// Parses a request identifier from canonical UUID text.
     pub fn parse_str(value: &str) -> Result<Self, IdentifierValueError> {
+        if !is_canonical_uuid(value) {
+            return Err(IdentifierValueError::InvalidUuid);
+        }
         let value = Uuid::parse_str(value).map_err(|_| IdentifierValueError::InvalidUuid)?;
         Ok(Self::from_uuid(value))
     }
@@ -72,9 +75,21 @@ impl TraceId {
 
     /// Parses a trace identifier from canonical UUID text.
     pub fn parse_str(value: &str) -> Result<Self, IdentifierValueError> {
+        if !is_canonical_uuid(value) {
+            return Err(IdentifierValueError::InvalidUuid);
+        }
         let value = Uuid::parse_str(value).map_err(|_| IdentifierValueError::InvalidUuid)?;
         Ok(Self::from_uuid(value))
     }
+}
+
+fn is_canonical_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
+        })
 }
 
 impl fmt::Display for TraceId {

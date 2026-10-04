@@ -18,7 +18,7 @@
 //! use reallyme_server_kit::version::BuildInfo;
 //!
 //! let server_name = ServerName::new("reallyme-api").expect("valid server name");
-//! let build_info = BuildInfo::new(server_name.clone());
+//! let build_info = BuildInfo::new(server_name.clone(), env!("CARGO_PKG_VERSION"));
 //! let observability = ObservabilityConfig::new(
 //!     ServiceEnvironment::Local,
 //!     LogFormat::PlainText,

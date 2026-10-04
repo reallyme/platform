@@ -32,16 +32,12 @@ pub struct BuildInfo {
 }
 
 impl BuildInfo {
-    /// Constructs build metadata for the current crate.
-    pub fn new(server_name: ServerName) -> Self {
-        Self::from_parts(
-            server_name,
-            env!("CARGO_PKG_VERSION"),
-            option_env!("GIT_SHA"),
-            option_env!("BUILD_TIMESTAMP"),
-            option_env!("BUILD_PROFILE"),
-            option_env!("RUSTC_VERSION"),
-        )
+    /// Constructs build metadata from the host crate's semantic version.
+    ///
+    /// The server kit is compiled as a dependency, so reading its own Cargo
+    /// environment here would advertise the kit's version as the service's.
+    pub fn new(server_name: ServerName, service_version: &'static str) -> Self {
+        Self::from_parts(server_name, service_version, None, None, None, None)
     }
 
     /// Constructs build metadata from explicit compile-time-safe inputs.

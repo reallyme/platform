@@ -5,12 +5,33 @@ use crate::config::ServiceEnvironment;
 
 use super::error::GrpcReflectionError;
 
-/// Re-exported tonic reflection builder used to register descriptor sets.
+/// Reflection builder available only after the environment gate succeeds.
 ///
-/// The builder is exposed with a `'static` descriptor lifetime because shared
-/// service descriptors are expected to come from embedded generated
-/// descriptor-set bytes rather than ephemeral request data.
-pub type ReflectionServiceBuilder = tonic_reflection::server::Builder<'static>;
+/// The upstream builder's public `configure` constructor would bypass the
+/// environment gate, so this wrapper exposes only post-validation operations.
+pub struct ReflectionServiceBuilder {
+    inner: tonic_reflection::server::Builder<'static>,
+}
+
+impl ReflectionServiceBuilder {
+    /// Registers an embedded descriptor set.
+    pub fn register_encoded_file_descriptor_set(mut self, descriptor: &'static [u8]) -> Self {
+        self.inner = self.inner.register_encoded_file_descriptor_set(descriptor);
+        self
+    }
+
+    /// Builds the stable v1 reflection service.
+    pub fn build_v1(
+        self,
+    ) -> Result<
+        tonic_reflection::pb::v1::server_reflection_server::ServerReflectionServer<
+            impl tonic_reflection::server::v1::ServerReflection,
+        >,
+        tonic_reflection::server::Error,
+    > {
+        self.inner.build_v1()
+    }
+}
 
 /// gRPC reflection exposure mode.
 ///
@@ -55,7 +76,9 @@ pub fn reflection_builder(
     service_environment: ServiceEnvironment,
 ) -> Result<Option<ReflectionServiceBuilder>, GrpcReflectionError> {
     if mode.enabled_for(service_environment)? {
-        Ok(Some(tonic_reflection::server::Builder::configure()))
+        Ok(Some(ReflectionServiceBuilder {
+            inner: tonic_reflection::server::Builder::configure(),
+        }))
     } else {
         Ok(None)
     }

@@ -20,6 +20,9 @@ autobins = false
 bytes = { workspace = true }
 foundationdb = { workspace = true, features = ["embedded-fdb-include", "fdb-7_3", "tenant-experimental"] }
 metrics = { workspace = true, optional = true }
+reallyme-codec = { workspace = true, optional = true, features = ["base64"] }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
@@ -31,7 +34,7 @@ default = []
 metrics = ["dep:metrics"]
 # Exposes tenant provisioning helpers (create/delete/list). Off by default;
 # enable only in operator/admin tooling.
-tenant-admin = []
+tenant-admin = ["dep:reallyme-codec", "dep:serde", "dep:serde_json"]
 
 [[bin]]
 name = "fdb-tenant-admin"

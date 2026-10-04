@@ -15,9 +15,9 @@ use super::TenantHandle;
 use crate::fdb::error::{
     FdbError, FdbQueryErrorReason, FdbResult, TenantErrorReason, TenantMetadataField,
 };
-use crate::fdb::transaction::idempotent_read_option;
 #[cfg(feature = "tenant-admin")]
-use crate::fdb::transaction::mutation_option;
+use crate::fdb::transaction::WriteTxnPolicy;
+use crate::fdb::transaction::{ReadTxnPolicy, TenantTransactionPolicy};
 use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, codec::KeyEncoder};
 
 const TENANT_METADATA_SCHEMA_KEY_LENGTH: usize = 4;
@@ -86,18 +86,14 @@ pub(super) async fn read_tenant_metadata(
             Arc::new(keys),
             |trx, metadata| {
                 Box::pin(async move {
-                    let schema_raw = trx
-                        .get(&metadata.schema_version_key, false)
-                        .await
-                        .map_err(|_| FdbBindingError::from_code(2100))?;
-                    let created_at_raw = trx
-                        .get(&metadata.created_at_key, false)
-                        .await
-                        .map_err(|_| FdbBindingError::from_code(2100))?;
+                    // Preserve the binding error so FoundationDB can apply
+                    // its actual retryability rules to this transaction.
+                    let schema_raw = trx.get(&metadata.schema_version_key, false).await?;
+                    let created_at_raw = trx.get(&metadata.created_at_key, false).await?;
                     Ok((schema_raw, created_at_raw))
                 })
             },
-            idempotent_read_option(),
+            TenantTransactionPolicy::Read(ReadTxnPolicy::default()),
         )
         .await
         .map_err(|_error: FdbBindingError| FdbError::Query {
@@ -144,7 +140,7 @@ pub(super) async fn write_tenant_metadata(
                     Ok(())
                 })
             },
-            mutation_option(),
+            TenantTransactionPolicy::Write(WriteTxnPolicy::default()),
         )
         .await
         .map_err(|_error: FdbBindingError| FdbError::Tenant {
@@ -201,6 +197,48 @@ fn tenant_metadata_now(tenant: FoundationDbTenantName) -> FdbResult<(u32, u64)> 
         })?
         .as_secs();
     Ok((CURRENT_TENANT_SCHEMA_VERSION, created_at))
+}
+
+#[cfg(feature = "tenant-admin")]
+pub(super) async fn repair_empty_tenant_metadata(
+    tenant_handle: &TenantHandle,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<()> {
+    let keys = TenantMetadataKeys::current()?;
+    let (schema_version, created_at) = tenant_metadata_now(tenant)?;
+    let transaction = tenant_handle
+        .inner()
+        .create_trx()
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })?;
+    let mut range = foundationdb::RangeOption::from((b"".as_slice(), b"\xff".as_slice()));
+    range.limit = Some(1);
+    let existing = transaction
+        .get_range(&range, 1, false)
+        .await
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })?;
+    if !existing.is_empty() {
+        return Err(FdbError::Tenant {
+            reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
+        });
+    }
+    // This is one transaction: a racing writer conflicts with the empty-range
+    // read, so repair cannot silently claim a tenant containing app data.
+    transaction.set(
+        &keys.schema_version_key,
+        schema_version.to_le_bytes().as_ref(),
+    );
+    transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref());
+    transaction
+        .commit()
+        .await
+        .map(|_| ())
+        .map_err(|_| FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { tenant },
+        })
 }
 
 #[cfg(test)]

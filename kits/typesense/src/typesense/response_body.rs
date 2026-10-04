@@ -22,16 +22,33 @@ pub(super) async fn read_body(mut response: Response) -> TypesenseResult<Zeroizi
     }
     let mut body = Zeroizing::new(Vec::new());
     while let Some(chunk) = response.chunk().await.map_err(|_| invalid_body())? {
-        let length = body
-            .len()
-            .checked_add(chunk.len())
-            .ok_or_else(invalid_body)?;
-        if length > MAX_RESPONSE_BYTES {
-            return Err(invalid_body());
-        }
-        body.extend_from_slice(&chunk);
+        append_sensitive_chunk(&mut body, &chunk)?;
     }
     Ok(body)
+}
+
+fn append_sensitive_chunk(body: &mut Zeroizing<Vec<u8>>, chunk: &[u8]) -> TypesenseResult<()> {
+    let new_length = body
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(invalid_body)?;
+    if new_length > MAX_RESPONSE_BYTES {
+        return Err(invalid_body());
+    }
+    if body.capacity() < new_length {
+        let doubled = body.capacity().checked_mul(2).unwrap_or(MAX_RESPONSE_BYTES);
+        let capacity = doubled.min(MAX_RESPONSE_BYTES).max(new_length);
+        let mut replacement = Zeroizing::new(Vec::new());
+        replacement
+            .try_reserve_exact(capacity)
+            .map_err(|_| invalid_body())?;
+        replacement.extend_from_slice(body.as_slice());
+        // Explicit replacement zeroizes the old buffer before the next read.
+        let old = std::mem::replace(body, replacement);
+        drop(old);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 pub(super) async fn decode_json<T: DeserializeOwned>(response: Response) -> TypesenseResult<T> {

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::time::Instant;
 
+use futures_util::FutureExt;
 use reallyme_app_kit::AppCleanupHookDescriptor;
 use tokio::time;
 
@@ -63,9 +65,13 @@ impl RuntimeCleanupHook {
     }
 
     pub(crate) async fn run(self, timeout: ShutdownTimeout) -> RuntimeCleanupResult {
-        match time::timeout(timeout.as_duration(), (self.cleanup)()).await {
-            Ok(Ok(())) => RuntimeCleanupResult::Completed,
-            Ok(Err(error)) => RuntimeCleanupResult::Failed { kind: error.kind() },
+        // Both invoking the app callback and polling its future can unwind.
+        // Keep that failure inside the hook so later cleanups still execute.
+        let guarded = AssertUnwindSafe(async move { (self.cleanup)().await }).catch_unwind();
+        match time::timeout(timeout.as_duration(), guarded).await {
+            Ok(Ok(Ok(()))) => RuntimeCleanupResult::Completed,
+            Ok(Ok(Err(error))) => RuntimeCleanupResult::Failed { kind: error.kind() },
+            Ok(Err(_)) => RuntimeCleanupResult::Panicked,
             Err(_) => RuntimeCleanupResult::TimedOut { timeout },
         }
     }
@@ -81,6 +87,8 @@ pub(crate) enum RuntimeCleanupResult {
         /// Low-cardinality failure kind.
         kind: TaskExecutionErrorKind,
     },
+    /// The app callback unwound; no panic payload crosses the boundary.
+    Panicked,
     /// Cleanup exceeded its configured timeout.
     TimedOut {
         /// Timeout enforced by the runtime.
@@ -149,6 +157,21 @@ pub(crate) async fn run_cleanup_hooks(
                 first_error.get_or_insert(ServerRuntimeError::AppCleanup {
                     hook_name,
                     reason: RuntimeAppCleanupErrorReason::Failed { kind },
+                });
+            }
+            RuntimeCleanupResult::Panicked => {
+                crate::observability::record_runtime_app_cleanup_failure(
+                    crate::observability::RuntimeAppFailureOutcome::Failed,
+                );
+                crate::observability::log_runtime_app_cleanup_failed(
+                    server_name,
+                    &app_name,
+                    &hook_name,
+                    TaskExecutionErrorKind::Internal,
+                );
+                first_error.get_or_insert(ServerRuntimeError::AppCleanup {
+                    hook_name,
+                    reason: RuntimeAppCleanupErrorReason::Panicked,
                 });
             }
             RuntimeCleanupResult::TimedOut { timeout: _ } => {

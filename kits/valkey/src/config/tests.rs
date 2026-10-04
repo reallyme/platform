@@ -15,7 +15,7 @@ use temp_env::with_vars;
 fn input() -> ValkeyConfigInput {
     ValkeyConfigInput {
         host: "valkey.internal".to_owned(),
-        key_prefix: "reallyme:test".to_owned(),
+        key_prefix: "reallyme-test".to_owned(),
         transport_security: ValkeyTransportSecurity::RequireTls,
         ..ValkeyConfigInput::default()
     }
@@ -30,6 +30,19 @@ fn valid_configuration_is_bounded_and_tls_explicit() {
         ValkeyTransportSecurity::RequireTls
     );
     assert!(config.response_timeout().as_millis() > 0);
+}
+
+#[test]
+fn key_prefix_cannot_contain_namespace_separator() {
+    let mut value = input();
+    value.key_prefix = "reallyme:example".to_owned();
+    assert!(matches!(
+        ValkeyConfig::new(value),
+        Err(ValkeyError::Config {
+            field: ValkeyConfigField::KeyPrefix,
+            reason: ValkeyConfigErrorReason::InvalidSyntax,
+        })
+    ));
 }
 
 #[test]
@@ -90,7 +103,7 @@ fn environment_loads_all_generic_connector_settings() {
             ("VALKEY_KIT_TEST_VALKEY_DATABASE", Some("7")),
             ("VALKEY_KIT_TEST_VALKEY_USERNAME", Some("service")),
             ("VALKEY_KIT_TEST_VALKEY_PASSWORD", Some("credential")),
-            ("VALKEY_KIT_TEST_VALKEY_KEY_PREFIX", Some("app:test")),
+            ("VALKEY_KIT_TEST_VALKEY_KEY_PREFIX", Some("app-test")),
             (
                 "VALKEY_KIT_TEST_VALKEY_TLS_MODE",
                 Some("allow-plaintext-development"),
@@ -113,7 +126,7 @@ fn environment_loads_all_generic_connector_settings() {
             assert_eq!(config.host(), "127.0.0.1");
             assert_eq!(config.port(), 6_379);
             assert_eq!(config.database(), 7);
-            assert_eq!(config.key_prefix(), "app:test");
+            assert_eq!(config.key_prefix(), "app-test");
             assert_eq!(config.connection_timeout(), Duration::from_secs(4));
             assert_eq!(config.response_timeout(), Duration::from_secs(3));
             assert_eq!(config.retry_attempts(), 4);
@@ -210,4 +223,22 @@ fn private_ca_path_is_redacted_and_conflicts_with_plaintext() {
             reason: ValkeyConfigErrorReason::Incompatible,
         })
     );
+}
+
+#[test]
+fn plaintext_requires_a_loopback_valkey_target() {
+    for host in ["cache.example.com", "192.0.2.5", "cache.local"] {
+        let result = ValkeyConfig::new(ValkeyConfigInput {
+            host: host.to_owned(),
+            transport_security: ValkeyTransportSecurity::AllowPlaintextForDevelopment,
+            ..input()
+        });
+        assert_eq!(
+            result.err(),
+            Some(ValkeyError::Config {
+                field: ValkeyConfigField::TransportSecurity,
+                reason: ValkeyConfigErrorReason::Incompatible,
+            })
+        );
+    }
 }

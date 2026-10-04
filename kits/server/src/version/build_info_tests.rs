@@ -8,7 +8,7 @@ use crate::startup::ServerName;
 fn build_info_captures_server_name() {
     let server_name = ServerName::new("reallyme-api").expect("valid server name");
 
-    let info = BuildInfo::new(server_name);
+    let info = BuildInfo::new(server_name, env!("CARGO_PKG_VERSION"));
 
     assert_eq!(info.server_name(), "reallyme-api");
     assert_eq!(info.service_version(), env!("CARGO_PKG_VERSION"));

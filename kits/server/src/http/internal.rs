@@ -4,6 +4,8 @@
 use axum::http::{Extensions, HeaderMap, HeaderName, HeaderValue};
 use thiserror::Error;
 
+use crate::authn::ServiceToken;
+
 use super::{
     IdentifierHeaderError, RequestId, TraceId, X_REQUEST_ID, X_TRACE_ID,
     request_id_from_extensions, trace_id_from_extensions,
@@ -97,7 +99,7 @@ pub fn attach_internal_request_headers(
     headers: &mut HeaderMap,
     extensions: &Extensions,
     caller: &str,
-    service_token: Option<&str>,
+    service_token: Option<&ServiceToken>,
 ) -> Result<InternalCallCorrelationIds, InternalRequestHeaderError> {
     let correlation_ids = internal_call_correlation_ids_from_extensions(extensions);
 
@@ -121,11 +123,11 @@ pub fn attach_internal_request_headers(
     );
 
     if let Some(service_token) = service_token {
-        headers.insert(
-            X_SERVICE_TOKEN,
-            HeaderValue::from_str(service_token)
-                .map_err(|_| InternalRequestHeaderError::InvalidServiceToken)?,
-        );
+        let mut token_header = HeaderValue::from_str(service_token.expose_secret())
+            .map_err(|_| InternalRequestHeaderError::InvalidServiceToken)?;
+        // HPACK/QPACK must not index bearer material, and Debug must redact it.
+        token_header.set_sensitive(true);
+        headers.insert(X_SERVICE_TOKEN, token_header);
     }
 
     Ok(correlation_ids)

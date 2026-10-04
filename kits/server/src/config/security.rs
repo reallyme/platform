@@ -11,7 +11,7 @@ mod proxy;
 
 use host_authority_validation::{parse_host_authority_parts, validate_host_authority_syntax};
 pub use proxy::{
-    ExternalOriginPolicyConfig, TrustedProxyHeaders, TrustedProxyRange,
+    ExternalOriginPolicyConfig, TrustedProxyHeaderFamily, TrustedProxyHeaders, TrustedProxyRange,
     TrustedProxyRequestMetadataConfig,
 };
 

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use reallyme_app_kit::AppConfig;
-use thiserror::Error;
 
 /// Typed example app behavior config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,17 +22,11 @@ impl ExampleAppConfig {
 }
 
 impl AppConfig for ExampleAppConfig {
-    type Error = ExampleConfigError;
+    type Error = std::convert::Infallible;
 
     fn validate(self) -> Result<Self, Self::Error> {
+        // The only behavior setting is already a bool. The JSONC boundary
+        // rejects any value that cannot be represented by this type.
         Ok(self)
     }
-}
-
-/// Example app config validation error.
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-pub enum ExampleConfigError {
-    /// Reserved for future app-owned config validation.
-    #[error("example app config failed validation")]
-    Invalid,
 }

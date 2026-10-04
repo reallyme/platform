@@ -2,23 +2,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::convert::Infallible;
+use std::error::Error as StdError;
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::extract::MatchedPath;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::Request;
 use axum::http::header::CONTENT_LENGTH;
 use axum::response::{IntoResponse, Response};
+use http_body_util::LengthLimitError;
 use metrics::SharedString;
 use pin_project_lite::pin_project;
 use tower::{Layer, Service};
 
-use crate::authn::Principal;
 use crate::http::{
     ErrorCode, HttpListenerIdentity, HttpListenerName, HttpListenerVisibility,
     HttpRateLimitTierName, HttpRouteVisibilityPolicy, PublicHttpError, RequestBodyLimitBytes,
@@ -53,7 +54,7 @@ pub fn route_visibility_layer(
 }
 
 /// Creates a route visibility guard for one listener with an explicit limiter.
-pub fn route_visibility_layer_with_rate_limit_registry(
+pub(crate) fn route_visibility_layer_with_rate_limit_registry(
     listener_name: HttpListenerName,
     listener_visibility: HttpListenerVisibility,
     listener_rate_limit_tier: Option<HttpRateLimitTierName>,
@@ -122,9 +123,9 @@ where
         let matched_path = request.extensions().get::<MatchedPath>();
         let route_template = MetricRouteTemplateLabel::from_matched_path(matched_path);
 
-        let request_path = matched_path
-            .map(MatchedPath::as_str)
-            .unwrap_or_else(|| request.uri().path());
+        // MatchedPath is a route template; policy must evaluate the concrete
+        // request path so wildcard and parameter routes cannot hide children.
+        let request_path = request.uri().path();
 
         let matching_rule = self.policy.matching_rule_for_request(
             &self.listener_name,
@@ -153,8 +154,9 @@ where
             );
         }
 
-        if let Some(request_body_limit) = matching_rule.and_then(|rule| rule.request_body_limit())
-            && request_exceeds_body_limit(&request, request_body_limit)
+        let request_body_limit = matching_rule.and_then(|rule| rule.request_body_limit());
+        if let Some((status, reason)) =
+            request_body_limit.and_then(|limit| request_body_limit_rejection(&request, limit))
         {
             let request_id = request_id_from_headers(request.headers());
             record_http_request_rejected_for_route_template_with_transport(
@@ -162,20 +164,25 @@ where
                 transport_label_for_request(&request),
                 HttpMethodLabel::from_method(request.method()),
                 &route_template,
-                HttpRejectionReason::PayloadTooLarge,
+                reason,
             );
             return RouteVisibilityResponseFuture::ready(
-                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
-                    ErrorCode::PayloadTooLarge,
-                ))
-                .with_optional_request_id(request_id)
-                .into_response(),
+                JsonErrorResponse::from_public_error(PublicHttpError::from_code(status))
+                    .with_optional_request_id(request_id)
+                    .into_response(),
             );
         }
 
+        // Operational probes must remain observable while a public listener
+        // is saturated. A route-specific policy can still opt them into a
+        // dedicated tier without sharing the public request bucket.
         let rate_limit_tier = matching_rule
             .and_then(|rule| rule.rate_limit_tier())
-            .or(self.listener_rate_limit_tier.as_ref());
+            .or_else(|| {
+                (!matches!(request_path, "/healthz" | "/readyz"))
+                    .then_some(self.listener_rate_limit_tier.as_ref())
+                    .flatten()
+            });
         if let Some(rate_limit_tier) = rate_limit_tier {
             let source_identity = request_source_identity(&request);
             match self
@@ -256,34 +263,77 @@ where
             local_socket_addr,
         ));
 
+        if let Some(limit) = request_body_limit {
+            let mut inner = self.inner.clone();
+            let request_id = request_id_from_headers(request.headers());
+            let future = async move {
+                let (parts, body) = request.into_parts();
+                let bytes = match to_bytes(body, limit.as_usize()).await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        let code = if error
+                            .source()
+                            .is_some_and(|source| source.is::<LengthLimitError>())
+                        {
+                            ErrorCode::PayloadTooLarge
+                        } else {
+                            ErrorCode::BadRequest
+                        };
+                        return Ok(JsonErrorResponse::from_public_error(
+                            PublicHttpError::from_code(code),
+                        )
+                        .with_optional_request_id(request_id)
+                        .into_response());
+                    }
+                };
+                let request = Request::from_parts(parts, Body::from(bytes));
+                std::future::poll_fn(|cx| inner.poll_ready(cx)).await?;
+                inner.call(request).await
+            };
+            return RouteVisibilityResponseFuture::buffered(Box::pin(future));
+        }
+
         RouteVisibilityResponseFuture::inner(self.inner.call(request))
     }
 }
 
-fn request_exceeds_body_limit(
+fn request_body_limit_rejection(
     request: &Request<Body>,
     request_body_limit: RequestBodyLimitBytes,
-) -> bool {
-    let Some(value) = request.headers().get(CONTENT_LENGTH) else {
-        return false;
-    };
+) -> Option<(ErrorCode, HttpRejectionReason)> {
+    let mut values = request.headers().get_all(CONTENT_LENGTH).iter();
+    let value = values.next()?;
+
+    if values.next().is_some() {
+        return Some((
+            ErrorCode::BadRequest,
+            HttpRejectionReason::MalformedContentLength,
+        ));
+    }
 
     let Ok(value) = value.to_str() else {
-        return false;
+        return Some((
+            ErrorCode::BadRequest,
+            HttpRejectionReason::MalformedContentLength,
+        ));
     };
 
     let Ok(content_length) = value.parse::<usize>() else {
-        return false;
+        return Some((
+            ErrorCode::BadRequest,
+            HttpRejectionReason::MalformedContentLength,
+        ));
     };
 
-    content_length > request_body_limit.as_usize()
+    (content_length > request_body_limit.as_usize()).then_some((
+        ErrorCode::PayloadTooLarge,
+        HttpRejectionReason::PayloadTooLarge,
+    ))
 }
 
-fn request_source_identity(request: &Request<Body>) -> RateLimitSourceIdentity<'_> {
-    if let Some(Principal::Authenticated(principal)) = request.extensions().get::<Principal>() {
-        return RateLimitSourceIdentity::Principal(principal.principal_id().as_str());
-    }
-
+fn request_source_identity(request: &Request<Body>) -> RateLimitSourceIdentity {
+    // This listener policy runs before app authentication. Per-principal
+    // quotas belong in an authenticated app adapter, not a transport guard.
     if let Some(forwarded_ip) = request_source_forwarded_ip(request) {
         return RateLimitSourceIdentity::ForwardedIp(forwarded_ip);
     }
@@ -327,6 +377,10 @@ pin_project! {
         Ready {
             response: Option<Response>,
         },
+        Buffered {
+            #[pin]
+            future: Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send>>,
+        },
     }
 }
 
@@ -342,6 +396,14 @@ impl<F> RouteVisibilityResponseFuture<F> {
             state: RouteVisibilityResponseFutureState::Ready {
                 response: Some(response),
             },
+        }
+    }
+
+    fn buffered(
+        future: Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send>>,
+    ) -> Self {
+        Self {
+            state: RouteVisibilityResponseFutureState::Buffered { future },
         }
     }
 }
@@ -360,6 +422,7 @@ where
                 Some(response) => response,
                 None => JsonErrorResponse::internal_server_error().into_response(),
             },
+            RouteVisibilityResponseFutureStateProj::Buffered { future } => ready!(future.poll(cx))?,
         };
 
         Poll::Ready(Ok(response))
@@ -382,5 +445,7 @@ fn transport_label_for_request(request: &Request<Body>) -> TransportLabel {
     TransportLabel::Http
 }
 
+#[cfg(test)]
+mod body_limit_tests;
 #[cfg(test)]
 mod route_visibility_tests;

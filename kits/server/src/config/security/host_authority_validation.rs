@@ -4,6 +4,7 @@
 //! Borrowed HTTP host-authority validation and parsing.
 
 use axum::http::HeaderValue;
+use std::net::{IpAddr, Ipv6Addr};
 
 use super::{HostAuthorityParts, MAX_HOST_AUTHORITY_BYTES, invalid_host_authority};
 use crate::config::{ConfigError, ConfigValidationErrorReason, NetworkPort};
@@ -53,6 +54,11 @@ pub(super) fn parse_host_authority_parts(
                 ConfigValidationErrorReason::InvalidHeaderValue,
             ));
         }
+        if host.parse::<Ipv6Addr>().is_err() {
+            return Err(invalid_host_authority(
+                ConfigValidationErrorReason::InvalidHeaderValue,
+            ));
+        }
 
         let port = if suffix.is_empty() {
             None
@@ -73,6 +79,7 @@ pub(super) fn parse_host_authority_parts(
         && !port_value.is_empty()
         && port_value.chars().all(|char| char.is_ascii_digit())
     {
+        validate_dns_or_ipv4_host(host)?;
         return Ok(HostAuthorityParts {
             host,
             port: Some(parse_host_authority_port(port_value)?),
@@ -85,6 +92,7 @@ pub(super) fn parse_host_authority_parts(
         ));
     }
 
+    validate_dns_or_ipv4_host(authority)?;
     Ok(HostAuthorityParts {
         host: authority,
         port: None,
@@ -92,9 +100,47 @@ pub(super) fn parse_host_authority_parts(
 }
 
 fn parse_host_authority_port(value: &str) -> Result<NetworkPort, ConfigError> {
+    if value.len() > 1 && value.starts_with('0') {
+        return Err(invalid_host_authority(
+            ConfigValidationErrorReason::InvalidHeaderValue,
+        ));
+    }
     let port = value
         .parse::<u16>()
         .map_err(|_| invalid_host_authority(ConfigValidationErrorReason::InvalidHeaderValue))?;
 
     NetworkPort::new(port)
+}
+
+fn validate_dns_or_ipv4_host(host: &str) -> Result<(), ConfigError> {
+    if host.is_empty() || host.starts_with('.') || host.ends_with('.') {
+        return Err(invalid_host_authority(
+            ConfigValidationErrorReason::InvalidHeaderValue,
+        ));
+    }
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    if host
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err(invalid_host_authority(
+            ConfigValidationErrorReason::InvalidHeaderValue,
+        ));
+    }
+    if host.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    }) {
+        Ok(())
+    } else {
+        Err(invalid_host_authority(
+            ConfigValidationErrorReason::InvalidHeaderValue,
+        ))
+    }
 }

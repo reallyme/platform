@@ -3,7 +3,7 @@
 
 use std::collections::hash_map::{HashMap, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard};
 use std::time::Instant;
@@ -29,11 +29,7 @@ static RATE_LIMIT_BUCKET_MUTEX_POISON_WARNED: AtomicBool = AtomicBool::new(false
 
 /// Low-cost source identity used to compute per-source bucket keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitSourceIdentity<'a> {
-    /// Request principal header supplied by upstream auth adapters.
-    Principal(&'a str),
-    /// Authenticated API key identity supplied by upstream auth adapters.
-    ApiKey(&'a str),
+pub enum RateLimitSourceIdentity {
     /// Normalized forwarded IP address.
     ForwardedIp(IpAddr),
     /// Direct peer socket IP address.
@@ -46,6 +42,7 @@ pub enum RateLimitSourceIdentity<'a> {
 #[derive(Debug, Clone, Copy)]
 struct SourceRateBucket {
     tokens: u32,
+    fractional_tokens: u32,
     last_refill_at: Instant,
     last_activity_at: Instant,
 }
@@ -54,6 +51,7 @@ impl SourceRateBucket {
     fn fresh(now: Instant, burst_tokens: u32) -> Self {
         Self {
             tokens: burst_tokens,
+            fractional_tokens: 0,
             last_refill_at: now,
             last_activity_at: now,
         }
@@ -101,46 +99,36 @@ impl RateLimitRegistry {
         }
     }
 
-    fn source_bucket_id(&self, source_identity: RateLimitSourceIdentity<'_>) -> u64 {
+    fn source_bucket_id(&self, source_identity: RateLimitSourceIdentity) -> u64 {
         // SipHash-1-3 with process-randomized state avoids collision attacks
         // against caller-controlled identity values.
         let mut hasher = self.bucket_identity_hasher.build_hasher();
         match source_identity {
-            RateLimitSourceIdentity::Principal(value) => {
-                0u8.hash(&mut hasher);
-                value.hash(&mut hasher);
-            }
-            RateLimitSourceIdentity::ApiKey(value) => {
-                1u8.hash(&mut hasher);
-                value.hash(&mut hasher);
-            }
-            RateLimitSourceIdentity::ForwardedIp(value) => {
+            RateLimitSourceIdentity::ForwardedIp(value)
+            | RateLimitSourceIdentity::PeerIp(value) => {
                 2u8.hash(&mut hasher);
-                value.hash(&mut hasher);
-            }
-            RateLimitSourceIdentity::PeerIp(value) => {
-                3u8.hash(&mut hasher);
-                value.hash(&mut hasher);
+                rate_limit_network(value).hash(&mut hasher);
             }
             RateLimitSourceIdentity::Anonymous => {
-                4u8.hash(&mut hasher);
+                3u8.hash(&mut hasher);
             }
         }
         hasher.finish()
     }
 
     /// Returns the result of applying rate-limit policy for this request.
-    pub fn allow<'a>(
+    pub fn allow(
         &self,
         tier: &HttpRateLimitTierName,
-        source_identity: RateLimitSourceIdentity<'a>,
+        source_identity: RateLimitSourceIdentity,
     ) -> RateLimitDecision {
         let Some(policy) = self
             .tier_policies
             .iter()
             .find_map(|(name, policy)| (name == tier).then_some(*policy))
         else {
-            return RateLimitDecision::Allowed;
+            // A stale or misspelled tier must never turn a configured guard off.
+            return RateLimitDecision::SourceLimitReached;
         };
 
         let source_bucket = match policy.scope() {
@@ -188,6 +176,7 @@ impl RateLimitRegistry {
         refill_bucket(bucket, policy, now);
 
         if bucket.tokens == 0 {
+            bucket.last_activity_at = now;
             return RateLimitDecision::SourceLimitReached;
         }
 
@@ -230,19 +219,38 @@ fn prune_stale_buckets_locked(buckets: &mut RateLimitBucketMap, now: Instant) {
 
 fn refill_bucket(bucket: &mut SourceRateBucket, policy: HttpRateLimitTierPolicy, now: Instant) {
     let elapsed = now.saturating_duration_since(bucket.last_refill_at);
-    let refill = elapsed
-        .as_secs()
-        .saturating_mul(u64::from(policy.refill_tokens_per_second()));
-    if refill == 0 {
-        return;
-    }
-
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let accrued = elapsed
+        .as_nanos()
+        .saturating_mul(u128::from(policy.refill_tokens_per_second()))
+        .saturating_add(u128::from(bucket.fractional_tokens));
+    let refill = accrued / NANOS_PER_SECOND;
     let refill_u32 = u32::try_from(refill).unwrap_or(u32::MAX);
     bucket.tokens = bucket
         .tokens
         .saturating_add(refill_u32)
         .min(policy.burst_tokens());
+    bucket.fractional_tokens = if bucket.tokens == policy.burst_tokens() {
+        0
+    } else {
+        u32::try_from(accrued % NANOS_PER_SECOND).unwrap_or_default()
+    };
     bucket.last_refill_at = now;
+}
+
+pub(crate) fn rate_limit_network(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V4(value) => IpAddr::V4(value),
+        IpAddr::V6(value) => match value.to_ipv4_mapped() {
+            Some(mapped) => IpAddr::V4(mapped),
+            None => {
+                // A single client commonly controls an IPv6 /64. Treat its
+                // interface IDs as one source rather than fresh identities.
+                let network = u128::from(value) & (u128::MAX << 64);
+                IpAddr::V6(Ipv6Addr::from(network))
+            }
+        },
+    }
 }
 
 fn recover_rate_limit_buckets_lock(

@@ -15,7 +15,7 @@ mod url;
 pub use cookies::{AppCookieConfig, AppCookieDomain, AppCookieSameSitePolicy};
 pub use cors::AppCorsConfig;
 pub use downstream::{AppDownstreamConfig, AppDownstreamEndpointConfig};
-pub use error::{AppConfigDocumentError, AppConfigDocumentErrorReason};
+pub use error::{AppConfigDocumentError, AppConfigDocumentErrorReason, AppConfigDocumentField};
 pub use model::{AppJsoncConfigDocument, NoAppCustomConfig, parse_app_jsonc_config_document};
 pub use service_endpoint::{
     AppServiceEndpointResolutionError, AppServiceEndpointResolutionErrorReason,

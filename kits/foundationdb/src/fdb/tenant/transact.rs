@@ -19,7 +19,7 @@ use super::{
 use super::{
     METRIC_FDB_TENANT_OPEN_FAILURES_TOTAL, METRIC_FDB_TRANSACTION_ATTEMPTS_TOTAL,
     METRIC_FDB_TRANSACTION_COMMIT_LATENCY_SECONDS, METRIC_FDB_TRANSACTION_CONFLICTS_TOTAL,
-    METRIC_FDB_TRANSACTION_RETRIES_TOTAL, METRIC_LABEL_OPERATION_CLASS, METRIC_LABEL_TENANT,
+    METRIC_FDB_TRANSACTION_RETRIES_TOTAL, METRIC_LABEL_OPERATION_CLASS,
 };
 use crate::fdb::tenant_name::FoundationDbTenantName;
 
@@ -154,7 +154,7 @@ where
 
 #[cfg(feature = "metrics")]
 fn record_transaction_metrics(
-    tenant: FoundationDbTenantName,
+    _tenant: FoundationDbTenantName,
     operation_class: &'static str,
     attempts: u32,
     retries: u32,
@@ -162,14 +162,12 @@ fn record_transaction_metrics(
     counter!(
         METRIC_FDB_TRANSACTION_ATTEMPTS_TOTAL,
         METRIC_LABEL_OPERATION_CLASS => operation_class,
-        METRIC_LABEL_TENANT => tenant.to_string(),
     )
     .increment(u64::from(attempts));
     if retries > 0 {
         counter!(
             METRIC_FDB_TRANSACTION_RETRIES_TOTAL,
             METRIC_LABEL_OPERATION_CLASS => operation_class,
-            METRIC_LABEL_TENANT => tenant.to_string(),
         )
         .increment(u64::from(retries));
     }
@@ -177,7 +175,7 @@ fn record_transaction_metrics(
 
 #[cfg(feature = "metrics")]
 fn record_transaction_conflicts(
-    tenant: FoundationDbTenantName,
+    _tenant: FoundationDbTenantName,
     operation_class: &'static str,
     conflicts: u32,
 ) {
@@ -185,7 +183,6 @@ fn record_transaction_conflicts(
         counter!(
             METRIC_FDB_TRANSACTION_CONFLICTS_TOTAL,
             METRIC_LABEL_OPERATION_CLASS => operation_class,
-            METRIC_LABEL_TENANT => tenant.to_string(),
         )
         .increment(u64::from(conflicts));
     }
@@ -193,23 +190,21 @@ fn record_transaction_conflicts(
 
 #[cfg(feature = "metrics")]
 fn record_commit_latency(
-    tenant: FoundationDbTenantName,
+    _tenant: FoundationDbTenantName,
     operation_class: &'static str,
     duration: std::time::Duration,
 ) {
     histogram!(
         METRIC_FDB_TRANSACTION_COMMIT_LATENCY_SECONDS,
         METRIC_LABEL_OPERATION_CLASS => operation_class,
-        METRIC_LABEL_TENANT => tenant.to_string()
     )
     .record(duration.as_secs_f64());
 }
 
 #[cfg(feature = "metrics")]
-pub(super) fn record_tenant_open_failure(tenant: FoundationDbTenantName) {
+pub(super) fn record_tenant_open_failure(_tenant: FoundationDbTenantName) {
     counter!(
         METRIC_FDB_TENANT_OPEN_FAILURES_TOTAL,
-        "tenant" => tenant.to_string(),
         "result" => "failed"
     )
     .increment(1);

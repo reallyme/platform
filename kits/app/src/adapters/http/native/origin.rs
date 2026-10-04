@@ -83,6 +83,7 @@ pub(super) fn validate_target(target: &str) -> Result<(), HttpsTransportError> {
             .iter()
             .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
         || bytes.iter().any(|byte| matches!(byte, b'\\' | b'?' | b'#'))
+        || target.contains(';')
         || target.contains(':')
         || has_invalid_percent_escape(bytes)
         || target.split('/').any(is_dot_segment)
@@ -111,6 +112,19 @@ fn has_invalid_percent_escape(bytes: &[u8]) -> bool {
                 return true;
             };
             if !first.is_ascii_hexdigit() || !second.is_ascii_hexdigit() {
+                return true;
+            }
+            let decoded = match (
+                char::from(*first).to_digit(16),
+                char::from(*second).to_digit(16),
+            ) {
+                (Some(upper), Some(lower)) => upper * 16 + lower,
+                _ => return true,
+            };
+            if decoded < 0x20
+                || decoded == 0x7f
+                || matches!(decoded, 0x2f | 0x5c | 0x25 | 0x3f | 0x23 | 0x3b)
+            {
                 return true;
             }
             index = match index.checked_add(3) {

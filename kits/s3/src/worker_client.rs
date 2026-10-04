@@ -4,9 +4,12 @@
 #![forbid(unsafe_code)]
 
 use futures_util::StreamExt;
+use std::sync::Arc;
 use time::OffsetDateTime;
 use worker::{Fetch, Headers, Method, Request, RequestInit, RequestRedirect};
 use zeroize::{Zeroize, Zeroizing};
+
+use crate::bounded_body::append_sensitive_chunk;
 
 use crate::{
     S3SignedMethod, S3StorageConfig, S3StorageError, S3StorageErrorReason, sign_object_request,
@@ -18,19 +21,22 @@ const HEADER_CONTENT_TYPE: &str = "content-type";
 const HEADER_IF_NONE_MATCH: &str = "if-none-match";
 const HEADER_X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
 const HEADER_X_AMZ_DATE: &str = "x-amz-date";
+const HEADER_X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
 const STATUS_NOT_FOUND: u16 = 404;
 
 /// S3-compatible client implemented with the Cloudflare Workers `fetch` runtime.
 #[derive(Clone)]
 pub struct WorkerS3StorageClient {
-    config: S3StorageConfig,
+    config: Arc<S3StorageConfig>,
 }
 
 impl WorkerS3StorageClient {
     /// Creates a Worker transport from already validated S3 configuration.
     #[must_use]
-    pub const fn new(config: S3StorageConfig) -> Self {
-        Self { config }
+    pub fn new(config: S3StorageConfig) -> Self {
+        Self {
+            config: Arc::new(config),
+        }
     }
 
     /// Loads one immutable object while enforcing a caller-selected response bound.
@@ -38,7 +44,7 @@ impl WorkerS3StorageClient {
         &self,
         relative_key: &str,
         maximum_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, S3StorageError> {
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, S3StorageError> {
         if maximum_bytes == 0 {
             return Err(storage_error(S3StorageErrorReason::InvalidRequest));
         }
@@ -75,19 +81,11 @@ impl WorkerS3StorageClient {
         while let Some(next) = stream.next().await {
             let mut chunk =
                 next.map_err(|_| storage_error(S3StorageErrorReason::DownloadUnavailable))?;
-            let next_length = body
-                .len()
-                .checked_add(chunk.len())
-                .ok_or_else(|| storage_error(S3StorageErrorReason::ObjectTooLarge))?;
-            if next_length > maximum_bytes {
-                chunk.zeroize();
-                body.zeroize();
-                return Err(storage_error(S3StorageErrorReason::ObjectTooLarge));
-            }
-            body.extend_from_slice(chunk.as_slice());
+            let appended = append_sensitive_chunk(&mut body, chunk.as_slice(), maximum_bytes);
             chunk.zeroize();
+            appended?;
         }
-        Ok(Some(std::mem::take(&mut *body)))
+        Ok(Some(body))
     }
 
     /// Deletes one immutable object idempotently after coordinator authorization.
@@ -195,7 +193,7 @@ impl core::fmt::Debug for WorkerS3StorageClient {
 }
 
 fn signed_headers(
-    signed: &crate::S3SignedRequest,
+    signed: &crate::S3SignedRequest<'_>,
     content_type: Option<&str>,
 ) -> Result<Headers, S3StorageError> {
     let headers = Headers::new();
@@ -204,6 +202,11 @@ fn signed_headers(
         .and_then(|()| headers.set(HEADER_X_AMZ_CONTENT_SHA256, signed.payload_hash()))
         .and_then(|()| headers.set(HEADER_X_AMZ_DATE, signed.amz_date()))
         .map_err(|_| storage_error(S3StorageErrorReason::InvalidRequest))?;
+    if let Some(token) = signed.session_token() {
+        headers
+            .set(HEADER_X_AMZ_SECURITY_TOKEN, token)
+            .map_err(|_| storage_error(S3StorageErrorReason::InvalidRequest))?;
+    }
     if let Some(value) = content_type {
         headers
             .set(HEADER_CONTENT_TYPE, value)

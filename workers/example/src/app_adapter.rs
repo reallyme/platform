@@ -4,6 +4,7 @@
 //! Worker-host adapter for the example app core.
 
 use example_app::app::{ExampleAppContext, HelloRequest, hello};
+use std::time::Duration;
 
 use crate::error::ExampleWorkerHostError;
 use crate::response::WorkerRouteResponse;
@@ -31,20 +32,25 @@ pub(crate) fn handle_worker_request(
     context: &ExampleAppContext,
     method: ExampleWorkerMethod,
     path: &str,
+    deadline: Option<Duration>,
 ) -> Result<Option<WorkerRouteResponse>, ExampleWorkerHostError> {
     match (method, path) {
         (ExampleWorkerMethod::Get, EXAMPLE_WORKER_HELLO_PATH) => {
-            hello_response(context).map(|body| Some(WorkerRouteResponse::PlainHello(body)))
+            hello_response(context, None).map(|body| Some(WorkerRouteResponse::PlainHello(body)))
         }
         (ExampleWorkerMethod::Post, reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH) => {
-            hello_response(context).map(|body| Some(WorkerRouteResponse::ConnectHello(body)))
+            hello_response(context, deadline)
+                .map(|body| Some(WorkerRouteResponse::ConnectHello(body)))
         }
         _ => Ok(None),
     }
 }
 
-fn hello_response(context: &ExampleAppContext) -> Result<&'static str, ExampleWorkerHostError> {
-    hello(context, HelloRequest, None)
+fn hello_response(
+    context: &ExampleAppContext,
+    deadline: Option<Duration>,
+) -> Result<&'static str, ExampleWorkerHostError> {
+    hello(context, HelloRequest, deadline)
         .map(|response| response.body())
-        .map_err(|_error| ExampleWorkerHostError::AppUnavailable)
+        .map_err(|error| ExampleWorkerHostError::App { kind: error.kind() })
 }

@@ -7,6 +7,8 @@ use tonic::metadata::MetadataMap;
 use tonic::service::Interceptor;
 use tonic::{Request, Status};
 
+use crate::authn::Principal;
+
 use super::metadata::attach_correlation_ids;
 use super::status::ToGrpcStatus;
 
@@ -26,7 +28,7 @@ pub trait GrpcAuthenticationPolicy: Send + Sync {
     type Error: StdError + ToGrpcStatus + Send + Sync + 'static;
 
     /// Authenticates the request metadata.
-    fn authenticate(&self, metadata: &MetadataMap) -> Result<(), Self::Error>;
+    fn authenticate(&self, metadata: &MetadataMap) -> Result<Principal, Self::Error>;
 }
 
 /// Synchronous authorization policy for gRPC interceptors.
@@ -43,7 +45,7 @@ pub trait GrpcAuthorizationPolicy: Send + Sync {
     type Error: StdError + ToGrpcStatus + Send + Sync + 'static;
 
     /// Authorizes the request metadata.
-    fn authorize(&self, metadata: &MetadataMap) -> Result<(), Self::Error>;
+    fn authorize(&self, principal: &Principal, metadata: &MetadataMap) -> Result<(), Self::Error>;
 }
 
 /// Interceptor that normalizes request and trace identifiers on inbound calls.
@@ -58,6 +60,7 @@ impl Interceptor for GrpcCorrelationInterceptor {
 }
 
 /// Interceptor scaffolding for synchronous gRPC authentication.
+#[derive(Clone)]
 pub struct GrpcAuthenticationInterceptor<Policy> {
     policy: Policy,
 }
@@ -73,15 +76,18 @@ impl<Policy> Interceptor for GrpcAuthenticationInterceptor<Policy>
 where
     Policy: GrpcAuthenticationPolicy,
 {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
-        self.policy
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        let principal = self
+            .policy
             .authenticate(request.metadata())
             .map_err(|error| error.to_grpc_status())?;
+        request.extensions_mut().insert(principal);
         Ok(request)
     }
 }
 
 /// Interceptor scaffolding for synchronous gRPC authorization.
+#[derive(Clone)]
 pub struct GrpcAuthorizationInterceptor<Policy> {
     policy: Policy,
 }
@@ -98,10 +104,43 @@ where
     Policy: GrpcAuthorizationPolicy,
 {
     fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        let principal = request
+            .extensions()
+            .get::<Principal>()
+            .ok_or_else(|| Status::unauthenticated("principal missing"))?;
         self.policy
-            .authorize(request.metadata())
+            .authorize(principal, request.metadata())
             .map_err(|error| error.to_grpc_status())?;
         Ok(request)
+    }
+}
+
+/// One composable interceptor that binds authorization to the authenticated principal.
+#[derive(Clone)]
+pub struct GrpcSecurityInterceptor<Authentication, Authorization> {
+    authentication: GrpcAuthenticationInterceptor<Authentication>,
+    authorization: GrpcAuthorizationInterceptor<Authorization>,
+}
+
+impl<Authentication, Authorization> GrpcSecurityInterceptor<Authentication, Authorization> {
+    /// Creates a security interceptor from typed policies.
+    pub fn new(authentication: Authentication, authorization: Authorization) -> Self {
+        Self {
+            authentication: GrpcAuthenticationInterceptor::new(authentication),
+            authorization: GrpcAuthorizationInterceptor::new(authorization),
+        }
+    }
+}
+
+impl<Authentication, Authorization> Interceptor
+    for GrpcSecurityInterceptor<Authentication, Authorization>
+where
+    Authentication: GrpcAuthenticationPolicy,
+    Authorization: GrpcAuthorizationPolicy,
+{
+    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        let authenticated = self.authentication.call(request)?;
+        self.authorization.call(authenticated)
     }
 }
 

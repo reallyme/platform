@@ -34,8 +34,8 @@ pub use error::{
     TypesenseError, TypesenseErrorCategory, TypesenseRequestReason, TypesenseResult,
     TypesenseTransportReason, TypesenseUpstreamReason,
 };
-pub use field::{SearchFieldName, SearchFields};
-pub use filter::{FilterValue, SearchFilter, TextFilterValue};
+pub use field::{SearchFieldName, SearchFields, SearchQueryWeights};
+pub use filter::{FilterValue, FiniteFilterFloat, SearchFilter, TextFilterValue};
 pub use import::{
     ImportAction, ImportBatch, ImportFailureReason, ImportLine, ImportResult,
     parse_import_response_jsonl,

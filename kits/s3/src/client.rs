@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use futures_util::StreamExt;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, RequestBuilder, StatusCode};
+use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
+
+use crate::bounded_body::append_sensitive_chunk;
 
 use crate::{
     S3PutObjectRequest, S3SignedMethod, S3StorageConfig, S3StorageError, S3StorageErrorReason,
@@ -14,23 +17,24 @@ use crate::{
 
 const HEADER_X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
 const HEADER_X_AMZ_DATE: &str = "x-amz-date";
+const HEADER_X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
 
 /// Minimal S3-compatible object storage client.
 #[derive(Clone)]
 pub struct S3StorageClient {
     http_client: Client,
-    config: S3StorageConfig,
+    config: Arc<S3StorageConfig>,
 }
 
 impl S3StorageClient {
     /// Constructs the reusable S3 storage client.
     pub fn new(config: S3StorageConfig) -> Result<Self, S3StorageError> {
-        let http_client = http_client_builder()
+        let http_client = http_client_builder()?
             .build()
             .map_err(|_| S3StorageError::new(S3StorageErrorReason::ClientUnavailable))?;
         Ok(Self {
             http_client,
-            config,
+            config: Arc::new(config),
         })
     }
 
@@ -56,7 +60,7 @@ impl S3StorageClient {
         &self,
         relative_key: &str,
         maximum_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, S3StorageError> {
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, S3StorageError> {
         if maximum_bytes == 0 {
             return Err(S3StorageError::new(S3StorageErrorReason::InvalidRequest));
         }
@@ -68,15 +72,11 @@ impl S3StorageClient {
             &[],
             OffsetDateTime::now_utc(),
         )?;
-        let response = self
-            .http_client
-            .get(signed.object_url().clone())
-            .header(reqwest::header::AUTHORIZATION, signed.authorization())
-            .header(HEADER_X_AMZ_CONTENT_SHA256, signed.payload_hash())
-            .header(HEADER_X_AMZ_DATE, signed.amz_date())
-            .send()
-            .await
-            .map_err(|_| S3StorageError::new(S3StorageErrorReason::DownloadUnavailable))?;
+        let response =
+            signed_request_builder(self.http_client.get(signed.object_url().clone()), &signed)?
+                .send()
+                .await
+                .map_err(|_| S3StorageError::new(S3StorageErrorReason::DownloadUnavailable))?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -98,16 +98,9 @@ impl S3StorageClient {
         while let Some(next) = stream.next().await {
             let chunk =
                 next.map_err(|_| S3StorageError::new(S3StorageErrorReason::DownloadUnavailable))?;
-            let next_length = body
-                .len()
-                .checked_add(chunk.len())
-                .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::ObjectTooLarge))?;
-            if next_length > maximum_bytes {
-                return Err(S3StorageError::new(S3StorageErrorReason::ObjectTooLarge));
-            }
-            body.extend_from_slice(chunk.as_ref());
+            append_sensitive_chunk(&mut body, chunk.as_ref(), maximum_bytes)?;
         }
-        Ok(Some(std::mem::take(&mut *body)))
+        Ok(Some(body))
     }
 
     /// Deletes one immutable object idempotently after coordinator authorization.
@@ -126,15 +119,13 @@ impl S3StorageClient {
             &[],
             OffsetDateTime::now_utc(),
         )?;
-        let response = self
-            .http_client
-            .delete(signed.object_url().clone())
-            .header(reqwest::header::AUTHORIZATION, signed.authorization())
-            .header(HEADER_X_AMZ_CONTENT_SHA256, signed.payload_hash())
-            .header(HEADER_X_AMZ_DATE, signed.amz_date())
-            .send()
-            .await
-            .map_err(|_| S3StorageError::new(S3StorageErrorReason::DeleteUnavailable))?;
+        let response = signed_request_builder(
+            self.http_client.delete(signed.object_url().clone()),
+            &signed,
+        )?
+        .send()
+        .await
+        .map_err(|_| S3StorageError::new(S3StorageErrorReason::DeleteUnavailable))?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(false);
         }
@@ -152,15 +143,11 @@ impl S3StorageClient {
             &[],
             OffsetDateTime::now_utc(),
         )?;
-        let response = self
-            .http_client
-            .head(signed.object_url().clone())
-            .header(reqwest::header::AUTHORIZATION, signed.authorization())
-            .header(HEADER_X_AMZ_CONTENT_SHA256, signed.payload_hash())
-            .header(HEADER_X_AMZ_DATE, signed.amz_date())
-            .send()
-            .await
-            .map_err(|_| S3StorageError::new(S3StorageErrorReason::DeleteUnavailable))?;
+        let response =
+            signed_request_builder(self.http_client.head(signed.object_url().clone()), &signed)?
+                .send()
+                .await
+                .map_err(|_| S3StorageError::new(S3StorageErrorReason::DeleteUnavailable))?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(false);
         }
@@ -186,21 +173,37 @@ impl S3StorageClient {
             body,
             OffsetDateTime::now_utc(),
         )?;
-        let response = self
-            .http_client
-            .put(signed.object_url().clone())
-            .header(reqwest::header::AUTHORIZATION, signed.authorization())
-            .header(reqwest::header::CONTENT_TYPE, content_type)
-            .header(reqwest::header::IF_NONE_MATCH, "*")
-            .header(HEADER_X_AMZ_CONTENT_SHA256, signed.payload_hash())
-            .header(HEADER_X_AMZ_DATE, signed.amz_date())
-            .body(body.to_vec())
-            .send()
-            .await
-            .map_err(|_| S3StorageError::new(S3StorageErrorReason::UploadUnavailable))?;
+        let response =
+            signed_request_builder(self.http_client.put(signed.object_url().clone()), &signed)?
+                .header(reqwest::header::CONTENT_TYPE, content_type)
+                .header(reqwest::header::IF_NONE_MATCH, "*")
+                .body(body.to_vec())
+                .send()
+                .await
+                .map_err(|_| S3StorageError::new(S3StorageErrorReason::UploadUnavailable))?;
 
         crate::upload_status::upload_status(response.status().as_u16())
     }
+}
+
+fn signed_request_builder(
+    builder: RequestBuilder,
+    signed: &crate::S3SignedRequest<'_>,
+) -> Result<RequestBuilder, S3StorageError> {
+    let mut authorization = reqwest::header::HeaderValue::from_str(signed.authorization())
+        .map_err(|_| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    authorization.set_sensitive(true);
+    let builder = builder
+        .header(reqwest::header::AUTHORIZATION, authorization)
+        .header(HEADER_X_AMZ_CONTENT_SHA256, signed.payload_hash())
+        .header(HEADER_X_AMZ_DATE, signed.amz_date());
+    let Some(token) = signed.session_token() else {
+        return Ok(builder);
+    };
+    let mut token = reqwest::header::HeaderValue::from_str(token)
+        .map_err(|_| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    token.set_sensitive(true);
+    Ok(builder.header(HEADER_X_AMZ_SECURITY_TOKEN, token))
 }
 
 impl std::fmt::Debug for S3StorageClient {
@@ -212,10 +215,26 @@ impl std::fmt::Debug for S3StorageClient {
     }
 }
 
-fn http_client_builder() -> reqwest::ClientBuilder {
+fn http_client_builder() -> Result<reqwest::ClientBuilder, S3StorageError> {
     // A signature authorizes one endpoint and method. Redirects can replay an
     // upload body elsewhere, and automatic decompression changes stored bytes.
-    Client::builder()
+    let mut roots = rustls::RootCertStore::empty();
+    let (accepted, _) =
+        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if accepted == 0 {
+        return Err(S3StorageError::new(S3StorageErrorReason::ClientUnavailable));
+    }
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|_| S3StorageError::new(S3StorageErrorReason::ClientUnavailable))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Client::builder()
+        .tls_backend_preconfigured(tls)
+        // Signed requests must reach the configured endpoint directly.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
         .no_gzip()
@@ -223,7 +242,7 @@ fn http_client_builder() -> reqwest::ClientBuilder {
         .no_deflate()
         .no_zstd()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(60)))
 }
 
 #[cfg(test)]

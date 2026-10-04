@@ -17,6 +17,7 @@ use super::cleanup::run_cleanup_hooks;
 use super::critical::{CriticalTaskFailure, CriticalTaskMonitor, log_critical_task_failure};
 use super::error::ServerRuntimeError;
 use super::phase::{ServerRuntimePhase, ServerRuntimePhaseReporter};
+use super::readiness_drain::ReadinessDrainDelay;
 
 pub(crate) enum RuntimeTermination {
     Shutdown(ShutdownReason),
@@ -30,6 +31,7 @@ pub(crate) struct CriticalTerminationContext<'a> {
     pub(crate) tasks: &'a mut BackgroundTaskSet,
     pub(crate) cleanup_hooks: Vec<RuntimeAppCleanup>,
     pub(crate) shutdown_timeout: ShutdownTimeout,
+    pub(crate) readiness_drain_delay: ReadinessDrainDelay,
     pub(crate) cleanup_timeout: ShutdownTimeout,
 }
 
@@ -91,6 +93,8 @@ pub(crate) async fn terminate_for_critical_task(
         context.server_name,
         ServerRuntimePhase::Draining,
     );
+
+    tokio::time::sleep(context.readiness_drain_delay.as_duration()).await;
 
     if context
         .tasks

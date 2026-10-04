@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
+
+mod validation;
 
 /// Validated Typesense HTTP endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +49,18 @@ impl TypesenseEndpoint {
             });
         }
 
+        let local_endpoint = match parsed.host() {
+            Some(Host::Ipv4(address)) => address.is_loopback(),
+            Some(Host::Ipv6(address)) => address.is_loopback(),
+            Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+            None => false,
+        };
+        if parsed.scheme() == "http" && !local_endpoint {
+            return Err(TypesenseConfigError::Invalid {
+                reason: TypesenseConfigErrorReason::PlaintextEndpointNotLoopback,
+            });
+        }
+
         if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
             return Err(TypesenseConfigError::Invalid {
                 reason: TypesenseConfigErrorReason::EndpointContainsPath,
@@ -64,7 +78,6 @@ impl TypesenseEndpoint {
 }
 
 /// Connection and request defaults for Typesense.
-#[derive(Clone)]
 pub struct TypesenseConfig {
     /// Candidate Typesense endpoints in preferred order (nearest first).
     endpoints: Vec<TypesenseEndpoint>,
@@ -146,7 +159,7 @@ impl TypesenseConfig {
             });
         }
 
-        Ok(Self {
+        let config = Self {
             endpoints,
             endpoint_selection: TypesenseEndpointSelection::NearestNode,
             api_key,
@@ -162,7 +175,9 @@ impl TypesenseConfig {
             http2_adaptive_window: false,
             http2_keep_alive_interval: None,
             use_gzip: false,
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// Sets the endpoint selection strategy.
@@ -177,27 +192,19 @@ impl TypesenseConfig {
 
     /// Replaces the endpoint list with validated candidates.
     ///
-    /// If `endpoints` is empty, this keeps the current list unchanged.
+    /// The connector rejects an empty or excessive list before opening sockets.
     #[must_use]
     pub fn with_endpoints(mut self, endpoints: Vec<TypesenseEndpoint>) -> Self {
-        if !endpoints.is_empty() {
-            self.endpoints = endpoints;
-        }
+        self.endpoints = endpoints;
         self
     }
 
     /// Sets the import-request timeout.
     ///
-    /// A zero-duration value is ignored and clears override behavior.
+    /// An invalid duration is rejected when the config is validated.
     #[must_use]
     pub fn with_import_request_timeout(mut self, import_request_timeout: Option<Duration>) -> Self {
-        if let Some(value) = import_request_timeout {
-            if !value.is_zero() {
-                self.import_request_timeout = Some(value);
-            }
-        } else {
-            self.import_request_timeout = None;
-        }
+        self.import_request_timeout = import_request_timeout;
         self
     }
 
@@ -225,7 +232,7 @@ impl TypesenseConfig {
     /// Sets the jitter percentage for retry delays.
     #[must_use]
     pub fn with_retry_jitter_percent(mut self, retry_jitter_percent: u8) -> Self {
-        self.retry_jitter_percent = retry_jitter_percent.min(100);
+        self.retry_jitter_percent = retry_jitter_percent;
         self
     }
 
@@ -363,6 +370,11 @@ impl TypesenseConfig {
     pub const fn use_gzip(&self) -> bool {
         self.use_gzip
     }
+
+    /// Verifies all resource limits after fluent configuration changes.
+    pub fn validate(&self) -> Result<(), TypesenseConfigError> {
+        validation::validate_config(self)
+    }
 }
 
 /// Configuration parsing error.
@@ -383,6 +395,8 @@ pub enum TypesenseConfigErrorReason {
     EmptyEndpoint,
     /// The endpoint did not use an HTTP scheme.
     UnsupportedEndpointScheme,
+    /// Plaintext HTTP is limited to local development endpoints.
+    PlaintextEndpointNotLoopback,
     /// The endpoint failed URL parsing.
     MalformedEndpoint,
     /// The endpoint included embedded credentials in a userinfo segment.
@@ -395,6 +409,14 @@ pub enum TypesenseConfigErrorReason {
     EmptyApiKey,
     /// The request timeout was zero.
     ZeroRequestTimeout,
+    /// The endpoint list exceeded the bounded failover policy.
+    InvalidEndpointCount,
+    /// A request or import deadline was zero or excessive.
+    InvalidRequestDeadline,
+    /// Retry count, delays, or jitter were outside the bounded policy.
+    InvalidRetryPolicy,
+    /// A connection pooling or keepalive interval was outside the bounded policy.
+    InvalidConnectionTiming,
 }
 
 /// Endpoint selection and failover behavior.

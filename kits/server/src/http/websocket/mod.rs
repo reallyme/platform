@@ -13,6 +13,7 @@ mod error;
 mod heartbeat;
 mod limits;
 mod metrics;
+mod origin;
 mod shutdown;
 
 pub use axum::extract::ws::{
@@ -24,8 +25,7 @@ pub use connection::{
     WebSocketApplicationMessageOwned, WebSocketConnectionContext, WebSocketConnectionHandle,
     WebSocketConnectionHooks, WebSocketConnectionLimiter, WebSocketConnectionOutcome,
     WebSocketConnectionPermit, WebSocketConnectionRuntime, WebSocketHandlerAction,
-    WebSocketMessageHandler, configure_websocket_upgrade, run_websocket_connection,
-    websocket_upgrade_response,
+    WebSocketMessageHandler, configure_websocket_upgrade, websocket_upgrade_response,
 };
 pub use error::{
     WebSocketCloseReason, WebSocketConfigError, WebSocketConnectionLimitError,
@@ -49,6 +49,7 @@ pub use metrics::{
     record_websocket_connection_closed, record_websocket_connection_error,
     record_websocket_connection_opened, record_websocket_connection_timeout,
 };
+pub use origin::websocket_same_origin;
 pub use shutdown::{
     CloseGracePeriod, DEFAULT_CLOSE_GRACE_PERIOD, MAXIMUM_CLOSE_GRACE_PERIOD,
     MINIMUM_CLOSE_GRACE_PERIOD, WebSocketShutdownConfig, gracefully_close_websocket,

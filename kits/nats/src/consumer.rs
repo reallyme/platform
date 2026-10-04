@@ -34,6 +34,8 @@ const METRIC_NATS_CONSUMER_CONNECT_DURATION_SECONDS: &str =
     "reallyme_nats_kit_consumer_connect_duration_seconds";
 
 const MAX_PULL_ATTEMPTS: usize = 2;
+const MAX_PULL_MESSAGES: usize = 1_000;
+const MAX_PULL_EXPIRES: Duration = Duration::from_secs(60);
 
 #[path = "consumer/context_backend.rs"]
 mod context_backend;
@@ -50,6 +52,8 @@ pub enum JetStreamAckDisposition {
     Nak,
     /// Terminate further redelivery attempts.
     Term,
+    /// Extend the broker's acknowledgment deadline while work continues.
+    Progress,
 }
 
 /// Reusable JetStream delivery metadata extracted from the server ack subject.
@@ -102,6 +106,7 @@ pub struct JetStreamDelivery {
 #[allow(clippy::large_enum_variant)]
 enum JetStreamDeliveryAcker {
     Context(ContextDeliveryAcker),
+    #[cfg(any(test, feature = "testing"))]
     Fake {
         dispositions: std::sync::Arc<std::sync::Mutex<Vec<JetStreamAckDisposition>>>,
     },
@@ -125,6 +130,7 @@ impl JetStreamDelivery {
         }
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn new_for_test(
         subject: String,
         payload: Bytes,
@@ -187,6 +193,15 @@ impl JetStreamDelivery {
         self.acknowledge(JetStreamAckDisposition::Term, None).await
     }
 
+    /// Extends the broker acknowledgment deadline for a long-running handler.
+    ///
+    /// Callers must send progress before each `ack_wait` interval elapses;
+    /// this operation does not acknowledge or terminate the delivery.
+    pub async fn in_progress(&self) -> Result<(), JetStreamError> {
+        self.acknowledge(JetStreamAckDisposition::Progress, None)
+            .await
+    }
+
     async fn acknowledge(
         &self,
         disposition: JetStreamAckDisposition,
@@ -195,6 +210,7 @@ impl JetStreamDelivery {
         let started = Instant::now();
         let result = match &self.acker {
             JetStreamDeliveryAcker::Context(acker) => acker.acknowledge(disposition, delay).await,
+            #[cfg(any(test, feature = "testing"))]
             JetStreamDeliveryAcker::Fake { dispositions } => {
                 dispositions
                     .lock()
@@ -208,13 +224,15 @@ impl JetStreamDelivery {
             JetStreamAckDisposition::Ack => "ack",
             JetStreamAckDisposition::Nak => "nak",
             JetStreamAckDisposition::Term => "term",
+            JetStreamAckDisposition::Progress => "progress",
         };
         let status_label = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(
+        counter!(
             METRIC_NATS_CONSUMER_DELIVERY_ACK_TOTAL,
             "disposition" => disposition_label,
             "result" => status_label
-        );
+        )
+        .increment(1);
         histogram!(
             METRIC_NATS_CONSUMER_DELIVERY_ACK_DURATION_SECONDS,
             "disposition" => disposition_label,
@@ -229,6 +247,7 @@ impl JetStreamDelivery {
         let started = Instant::now();
         let result = match &self.acker {
             JetStreamDeliveryAcker::Context(acker) => acker.acknowledge_confirmed().await,
+            #[cfg(any(test, feature = "testing"))]
             JetStreamDeliveryAcker::Fake { dispositions } => {
                 dispositions
                     .lock()
@@ -239,11 +258,12 @@ impl JetStreamDelivery {
         };
 
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(
+        counter!(
             METRIC_NATS_CONSUMER_DELIVERY_ACK_TOTAL,
             "disposition" => "ack_confirmed",
             "result" => status
-        );
+        )
+        .increment(1);
         histogram!(
             METRIC_NATS_CONSUMER_DELIVERY_ACK_DURATION_SECONDS,
             "disposition" => "ack_confirmed",
@@ -333,7 +353,7 @@ impl JetStreamPullConsumer<ContextConsumerBackend> {
             );
         }
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(METRIC_NATS_CONSUMER_CONNECT_TOTAL, "result" => status);
+        counter!(METRIC_NATS_CONSUMER_CONNECT_TOTAL, "result" => status).increment(1);
         histogram!(
             METRIC_NATS_CONSUMER_CONNECT_DURATION_SECONDS,
             "result" => status
@@ -395,7 +415,7 @@ where
         }
 
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(METRIC_NATS_CONSUMER_VALIDATE_TOTAL, "result" => status);
+        counter!(METRIC_NATS_CONSUMER_VALIDATE_TOTAL, "result" => status).increment(1);
         histogram!(
             METRIC_NATS_CONSUMER_VALIDATE_DURATION_SECONDS,
             "result" => status
@@ -415,7 +435,11 @@ where
             return Err(JetStreamError::Disabled);
         }
 
-        if max_messages == 0 || expires.is_zero() {
+        if max_messages == 0
+            || max_messages > MAX_PULL_MESSAGES
+            || expires.is_zero()
+            || expires > MAX_PULL_EXPIRES
+        {
             return Err(JetStreamError::InvalidConfiguration);
         }
 
@@ -434,14 +458,16 @@ where
                 error = ?error,
                 "consumer pull failed"
             );
-            let _ = counter!(METRIC_NATS_CONSUMER_PULL_FAILURES_TOTAL, "reason" => "backend_error");
+            counter!(METRIC_NATS_CONSUMER_PULL_FAILURES_TOTAL, "reason" => "backend_error")
+                .increment(1);
         }
 
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(
+        counter!(
             METRIC_NATS_CONSUMER_PULL_TOTAL,
             "result" => status
-        );
+        )
+        .increment(1);
         histogram!(
             METRIC_NATS_CONSUMER_PULL_DURATION_SECONDS,
             "result" => status

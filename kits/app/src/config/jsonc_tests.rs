@@ -52,3 +52,18 @@ fn rejects_too_long_jsonc_input() {
         Err(AppConfigParseErrorReason::TooLong)
     ));
 }
+
+#[test]
+fn rejects_duplicate_keys_at_root_and_inside_nested_policy_objects() {
+    for document in [
+        r#"{"downstream":{},"downstream":{"auth":"other"}}"#,
+        r#"{"cors":{"allowed_origins":[],"allowed_origins":["https://evil.example"]}}"#,
+        r#"{"entries":[{"policy":"allow","policy":"deny"}]}"#,
+    ] {
+        let result = parse_jsonc_config::<serde_json::Value>(document);
+        assert!(matches!(
+            result.map_err(|error| error.reason()),
+            Err(AppConfigParseErrorReason::InvalidJson)
+        ));
+    }
+}

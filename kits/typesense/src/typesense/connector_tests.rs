@@ -19,6 +19,7 @@ async fn excessive_retry_after_returns_rate_limit_without_retrying_early() {
     )
     .expect("config")
     .with_max_retries(2)
+    .with_retry_initial_delay(Duration::from_millis(1))
     .with_retry_max_delay(Duration::from_millis(5));
     let connector = TypesenseConnector::connect(config).expect("connector");
     let serve = async {

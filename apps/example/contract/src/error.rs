@@ -12,6 +12,8 @@ pub enum ExampleContractErrorKind {
     PermissionDenied,
     /// The example app is unavailable.
     Unavailable,
+    /// The requested operation exceeded its deadline.
+    DeadlineExceeded,
 }
 
 /// Typed example contract error.
@@ -26,6 +28,9 @@ pub enum ExampleContractError {
     /// The example app is unavailable.
     #[error("example contract target unavailable")]
     Unavailable,
+    /// The requested operation exceeded its deadline.
+    #[error("example contract deadline exceeded")]
+    DeadlineExceeded,
 }
 
 impl ExampleContractError {
@@ -35,6 +40,7 @@ impl ExampleContractError {
             Self::Unconfigured => ExampleContractErrorKind::Unconfigured,
             Self::PermissionDenied => ExampleContractErrorKind::PermissionDenied,
             Self::Unavailable => ExampleContractErrorKind::Unavailable,
+            Self::DeadlineExceeded => ExampleContractErrorKind::DeadlineExceeded,
         }
     }
 }

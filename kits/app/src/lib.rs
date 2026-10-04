@@ -45,17 +45,17 @@ pub use adapters::{
 pub use app::{StandardAppContext, StandardAppCore, StandardAppState};
 pub use auth::{AppCapability, AppCapabilityName, AppPermission, AppPermissionName};
 pub use config::{
-    AppBaseUrl, AppConfig, AppConfigDocumentError, AppConfigDocumentErrorReason, AppConfigFormat,
-    AppConfigParseError, AppConfigParseErrorReason, AppConfigProfile, AppConfigSource,
-    AppCookieConfig, AppCookieDomain, AppCookieSameSitePolicy, AppCorsConfig, AppDownstreamBaseUrl,
-    AppDownstreamConfig, AppDownstreamEndpointConfig, AppJsoncConfigDocument,
-    AppServiceEndpointResolutionError, AppServiceEndpointResolutionErrorReason,
-    AppServiceEndpointResolver, AppServiceEndpointScheme, AppServiceEndpointSelection,
-    AppServiceEndpointSource, AppServiceEndpointSourceDocument, AppServiceEndpointUrl,
-    AppServiceLocatedEndpoints, AppServiceLocator, AppServiceLocatorDocument,
-    AppServiceLocatorProvider, AppServiceStaticEndpoints, NoAppCustomConfig,
-    TailscaleServiceLocator, parse_app_jsonc_config_document, parse_jsonc_config,
-    strip_jsonc_comments,
+    AppBaseUrl, AppConfig, AppConfigDocumentError, AppConfigDocumentErrorReason,
+    AppConfigDocumentField, AppConfigFormat, AppConfigParseError, AppConfigParseErrorReason,
+    AppConfigProfile, AppConfigSource, AppCookieConfig, AppCookieDomain, AppCookieSameSitePolicy,
+    AppCorsConfig, AppDownstreamBaseUrl, AppDownstreamConfig, AppDownstreamEndpointConfig,
+    AppJsoncConfigDocument, AppServiceEndpointResolutionError,
+    AppServiceEndpointResolutionErrorReason, AppServiceEndpointResolver, AppServiceEndpointScheme,
+    AppServiceEndpointSelection, AppServiceEndpointSource, AppServiceEndpointSourceDocument,
+    AppServiceEndpointUrl, AppServiceLocatedEndpoints, AppServiceLocator,
+    AppServiceLocatorDocument, AppServiceLocatorProvider, AppServiceStaticEndpoints,
+    NoAppCustomConfig, TailscaleServiceLocator, parse_app_jsonc_config_document,
+    parse_jsonc_config, strip_jsonc_comments,
 };
 pub use contract::{
     AppContractDescriptor, AppContractName, AppContractService, AppDependencyBinding,

@@ -4,7 +4,9 @@
 use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
+use axum::response::IntoResponse;
 use axum::routing::{MethodRouter, get};
+use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::config::{HttpRequestLoggingConfig, HttpServerConfig};
 use crate::health::{Readiness, liveness_check, readiness_check};
@@ -18,6 +20,7 @@ use super::layers::{
     normalize_http_error_responses_layer, request_id_layer, security_layer, timeout_layer,
     trace_id_layer, trace_layer,
 };
+use super::response::JsonErrorResponse;
 
 /// Canonical liveness path.
 pub const HEALTHZ_PATH: &str = "/healthz";
@@ -108,18 +111,41 @@ pub fn apply_standard_router_layers_with_request_logging<S>(
 where
     S: Clone + Send + Sync + 'static,
 {
+    let router = match cors_layer(config) {
+        Some(layer) => router.layer(layer),
+        None => router,
+    };
+    apply_standard_router_layers_after_cors(router, config, request_logging)
+}
+
+/// Applies transport layers when CORS has already been placed inside the
+/// route-visibility layer by server composition.
+pub(crate) fn apply_standard_router_layers_after_cors<S>(
+    router: Router<S>,
+    config: &HttpServerConfig,
+    request_logging: HttpRequestLoggingConfig,
+) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     router
-        .layer(trace_layer(request_logging))
+        // Catch app panics at the transport boundary so callers receive the
+        // stable envelope and trace metrics observe the resulting 500.
+        .layer(CatchPanicLayer::custom(|_panic| {
+            JsonErrorResponse::internal_server_error().into_response()
+        }))
         .layer(body_limit_layer(config))
         .layer(normalize_http_error_responses_layer())
         .layer(default_body_limit(config))
         .layer(timeout_layer(config))
         .layer(concurrency_limit_layer(config))
         .layer(security_layer(config.security()))
+        // Observe responses from every inner guard, including timeouts and
+        // policy rejections, while still receiving the generated IDs below.
+        .layer(trace_layer(request_logging))
         .layer(trace_id_layer())
         .layer(request_id_layer())
-        .layer(cors_layer(config))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "testing"))]
 mod tests;

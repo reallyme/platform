@@ -86,18 +86,63 @@ async fn consumer_pull_rejects_zero_expire_timeout() {
 }
 
 #[tokio::test]
+async fn consumer_pull_rejects_unbounded_batch_and_expiry() {
+    let backend = Arc::new(FakeJetStreamConsumerBackend::default());
+    let consumer = JetStreamPullConsumer::new_with_backend(consumer_config(), backend);
+
+    for (max_messages, expires) in [
+        (1_001, Duration::from_secs(1)),
+        (1, Duration::from_secs(61)),
+    ] {
+        assert!(matches!(
+            consumer.pull(max_messages, expires).await,
+            Err(JetStreamError::InvalidConfiguration)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn consumer_delivery_progress_extends_ack_without_finishing_delivery() {
+    let backend = Arc::new(FakeJetStreamConsumerBackend::default());
+    backend
+        .push_delivery(FakeJetStreamDelivery::new("updates.local", vec![1_u8]))
+        .expect("fake delivery should be queued");
+    let consumer = JetStreamPullConsumer::new_with_backend(consumer_config(), backend.clone());
+    let mut deliveries = consumer
+        .pull(1, Duration::from_secs(1))
+        .await
+        .expect("fake pull should succeed");
+    let delivery = deliveries
+        .next()
+        .await
+        .expect("one delivery should be present")
+        .expect("fake delivery should be valid");
+
+    delivery
+        .in_progress()
+        .await
+        .expect("progress should succeed");
+    delivery.ack().await.expect("terminal ack should succeed");
+    assert_eq!(
+        backend
+            .dispositions()
+            .expect("fake dispositions are readable"),
+        [
+            JetStreamAckDisposition::Progress,
+            JetStreamAckDisposition::Ack
+        ]
+    );
+}
+
+#[tokio::test]
 async fn consumer_pull_returns_empty_stream_when_no_deliveries_queued() {
     let backend = Arc::new(FakeJetStreamConsumerBackend::default());
     let consumer = JetStreamPullConsumer::new_with_backend(consumer_config(), backend);
 
-    let pull_result = consumer.pull(1, Duration::from_millis(100)).await;
-    assert!(
-        pull_result.is_ok(),
-        "empty backend pull should return empty stream"
-    );
-    let Ok(mut deliveries) = pull_result else {
-        return;
-    };
+    let mut deliveries = consumer
+        .pull(1, Duration::from_millis(100))
+        .await
+        .expect("empty backend pull should return empty stream");
 
     assert!(deliveries.next().await.is_none());
 }
@@ -116,35 +161,21 @@ async fn consumer_pull_returns_fake_delivery_and_tracks_ack_disposition() {
     );
     let consumer = JetStreamPullConsumer::new_with_backend(consumer_config(), backend.clone());
 
-    let pull_result = consumer.pull(1, Duration::from_millis(100)).await;
-    assert!(
-        pull_result.is_ok(),
-        "fake backend should return one delivery"
-    );
-    let Ok(mut deliveries) = pull_result else {
-        return;
-    };
-
-    let maybe_delivery = deliveries.next().await;
-    assert!(maybe_delivery.is_some(), "one delivery should be available");
-    let Some(delivery) = maybe_delivery else {
-        return;
-    };
-    assert!(delivery.is_ok(), "delivery should be valid");
-    let Ok(delivery) = delivery else {
-        return;
-    };
+    let mut deliveries = consumer
+        .pull(1, Duration::from_millis(100))
+        .await
+        .expect("fake backend should return one delivery");
+    let delivery = deliveries
+        .next()
+        .await
+        .expect("one delivery should be available")
+        .expect("delivery should be valid");
     assert_eq!(delivery.payload(), &[1_u8, 2_u8]);
     assert!(delivery.term().await.is_ok());
 
-    let dispositions_result = backend.dispositions();
-    assert!(
-        dispositions_result.is_ok(),
-        "backend should report dispositions"
-    );
-    let Ok(dispositions) = dispositions_result else {
-        return;
-    };
+    let dispositions = backend
+        .dispositions()
+        .expect("backend should report dispositions");
     assert_eq!(dispositions, [JetStreamAckDisposition::Term]);
 }
 
@@ -166,52 +197,35 @@ async fn consumer_pull_propagates_message_headers() {
     );
     let consumer = JetStreamPullConsumer::new_with_backend(consumer_config(), backend.clone());
 
-    let pull_result = consumer.pull(1, Duration::from_millis(100)).await;
-    assert!(
-        pull_result.is_ok(),
-        "fake backend should return one delivery"
-    );
-    let Ok(mut deliveries) = pull_result else {
-        return;
-    };
-
-    let maybe_delivery = deliveries.next().await;
-    assert!(maybe_delivery.is_some(), "one delivery should be available");
-    let Some(delivery) = maybe_delivery else {
-        return;
-    };
-    assert!(delivery.is_ok(), "delivery should be valid");
-    let Ok(delivery) = delivery else {
-        return;
-    };
+    let mut deliveries = consumer
+        .pull(1, Duration::from_millis(100))
+        .await
+        .expect("fake backend should return one delivery");
+    let delivery = deliveries
+        .next()
+        .await
+        .expect("one delivery should be available")
+        .expect("delivery should be valid");
     assert!(delivery.headers().is_some());
     assert_eq!(delivery.payload(), &[9_u8]);
 }
 
 #[tokio::test]
+#[ignore = "requires a local NATS JetStream server"]
 async fn real_publish_consume_and_ack_round_trip() {
-    if !should_run_nats_integration() {
-        println!(
-            "SKIP: set REALLYME_RUN_NATS_INTEGRATION=1 to run this local JetStream integration test"
-        );
-        return;
-    }
-
-    let connected = connect_to_local_nats_for_integration().await;
     assert!(
-        connected.is_ok(),
-        "integration test requires nats-server at nats://127.0.0.1:4222"
+        should_run_nats_integration(),
+        "set REALLYME_RUN_NATS_INTEGRATION=1"
     );
-    let Ok(client) = connected else {
-        return;
-    };
 
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH);
-    assert!(nanos.is_ok(), "system time should be after unix epoch");
-    let Ok(nanos) = nanos else {
-        return;
-    };
-    let nanos = nanos.as_nanos();
+    let client = connect_to_local_nats_for_integration()
+        .await
+        .expect("integration test requires nats-server at nats://127.0.0.1:4222");
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
     let stream_name = format!("rmn_{nanos}");
     let consumer_name = format!("rmn_consumer_{nanos}");
     let subject = format!("rmn.subject.{nanos}");
@@ -219,29 +233,19 @@ async fn real_publish_consume_and_ack_round_trip() {
 
     let context = async_nats::jetstream::new(client.clone());
 
-    let stream_created = context
+    context
         .create_stream(async_nats::jetstream::stream::Config {
             name: stream_name.clone(),
             subjects: vec![subject.to_owned()],
             ..Default::default()
         })
-        .await;
-    assert!(
-        stream_created.is_ok(),
-        "stream create should succeed for integration test"
-    );
-    if stream_created.is_err() {
-        return;
-    }
+        .await
+        .expect("stream create should succeed for integration test");
 
-    let stream_visible = context.get_stream(stream_name.to_owned()).await;
-    assert!(
-        stream_visible.is_ok(),
-        "stream should be visible after create"
-    );
-    if stream_visible.is_err() {
-        return;
-    }
+    context
+        .get_stream(stream_name.to_owned())
+        .await
+        .expect("stream should be visible after create");
 
     let publisher =
         JetStreamPublisher::from_client(client.clone(), publisher_config(&stream_name, &subject));
@@ -260,47 +264,33 @@ async fn real_publish_consume_and_ack_round_trip() {
         inactive_threshold: Duration::from_secs(30),
         num_replicas: 1,
         tls_policy: JetStreamTlsPolicy::Disabled,
-    });
-    assert!(consumer_config.is_ok(), "consumer config should validate");
-    let Ok(consumer_config) = consumer_config else {
-        return;
-    };
+    })
+    .expect("consumer config should validate");
     let consumer = JetStreamPullConsumer::from_client(client.clone(), consumer_config);
 
     let ack = publisher
         .publish_bytes(payload.as_ref(), None)
         .await
-        .map_err(|_| ())
-        .ok();
-    assert!(ack.is_some(), "publish should succeed and return an ack");
-    let Some(ack) = ack else {
-        return;
-    };
+        .expect("publish should succeed and return an ack");
     assert_eq!(ack.stream_name(), stream_name.as_str());
     assert!(!ack.duplicate());
     assert!(!ack.stream_name().is_empty());
 
-    let flush_result = client.flush().await;
-    assert!(flush_result.is_ok(), "flush should succeed");
-    if flush_result.is_err() {
-        return;
-    }
-    let pull_result = consumer.pull(1, Duration::from_secs(5)).await;
-    assert!(pull_result.is_ok(), "consumer pull should return stream");
-    let Ok(mut deliveries) = pull_result else {
-        return;
-    };
-    let maybe_delivery = deliveries.next().await;
-    assert!(maybe_delivery.is_some(), "expected one delivery");
-    let Some(delivery) = maybe_delivery else {
-        return;
-    };
-    assert!(delivery.is_ok(), "delivery should be valid");
-    let Ok(delivery) = delivery else {
-        return;
-    };
+    client.flush().await.expect("flush should succeed");
+    let mut deliveries = consumer
+        .pull(1, Duration::from_secs(5))
+        .await
+        .expect("consumer pull should return stream");
+    let delivery = deliveries
+        .next()
+        .await
+        .expect("expected one delivery")
+        .expect("delivery should be valid");
     assert_eq!(delivery.payload(), payload.as_ref());
-    assert!(delivery.ack().await.is_ok());
+    delivery.ack().await.expect("ack should succeed");
 
-    let _ = context.delete_stream(stream_name.to_owned()).await;
+    context
+        .delete_stream(stream_name.to_owned())
+        .await
+        .expect("integration stream should be deleted");
 }

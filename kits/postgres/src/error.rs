@@ -3,7 +3,12 @@
 
 //! Typed PostgreSQL kit errors.
 
+use std::error::Error as StdError;
+use std::io;
+
 use thiserror::Error;
+
+const MAX_ERROR_SOURCE_DEPTH: usize = 8;
 
 /// PostgreSQL kit result.
 pub type PostgresResult<T> = Result<T, PostgresError>;
@@ -146,6 +151,9 @@ impl PostgresQueryErrorReason {
     /// Classifies a driver error without retaining server messages, SQL text,
     /// identifiers, or other potentially sensitive diagnostic fields.
     pub fn classify(error: &tokio_postgres::Error) -> Self {
+        if error.code().is_none() && has_transport_failure(error) {
+            return Self::ConnectionUnavailable;
+        }
         classify_sqlstate(
             error.code().map(tokio_postgres::error::SqlState::code),
             error.is_closed(),
@@ -167,6 +175,35 @@ impl PostgresQueryErrorReason {
             | Self::MigrationLockUnavailable => PostgresRetryHint::DoNotRetry,
         }
     }
+}
+
+fn has_transport_failure(error: &(dyn StdError + 'static)) -> bool {
+    let mut source = Some(error);
+    for _ in 0..MAX_ERROR_SOURCE_DEPTH {
+        let Some(current) = source else {
+            return false;
+        };
+        if current.is::<tokio::time::error::Elapsed>() {
+            return true;
+        }
+        if let Some(io_error) = current.downcast_ref::<io::Error>()
+            && matches!(
+                io_error.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::NotConnected
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::WouldBlock
+            )
+        {
+            return true;
+        }
+        source = current.source();
+    }
+    false
 }
 
 fn classify_sqlstate(code: Option<&str>, connection_closed: bool) -> PostgresQueryErrorReason {

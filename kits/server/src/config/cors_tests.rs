@@ -32,14 +32,28 @@ fn exact_origin_accepts_valid_localhost_origin() {
 }
 
 #[test]
+fn exact_origin_rejects_remote_plaintext() {
+    for origin in ["http://app.reallyme.net", "http://198.51.100.42"] {
+        assert_invalid_origin(origin);
+    }
+}
+
+#[test]
 fn exact_origin_rejects_invalid_path() {
     assert_invalid_origin("https://app.reallyme.net/app");
 }
 
 #[test]
-fn exact_origin_allows_empty_path_or_root_path() {
+fn exact_origin_requires_browser_serialized_form() {
     assert!(ExactCorsOrigin::new("https://app.reallyme.net").is_ok());
-    assert!(ExactCorsOrigin::new("https://app.reallyme.net/").is_ok());
+    for value in [
+        "https://app.reallyme.net/",
+        "https://APP.reallyme.net",
+        "https://app.reallyme.net:443",
+        "https://app.reallyme.net\\.attacker.test",
+    ] {
+        assert_invalid_origin(value);
+    }
 }
 
 #[test]
@@ -62,7 +76,7 @@ fn cors_config_accepts_multiple_exact_origins() {
         "https://admin.reallyme.net".to_owned(),
     ]);
 
-    assert!(matches!(result, Ok(CorsConfig::ExactOrigins(_))));
+    assert!(result.is_ok_and(|config| config.exact_origins().is_some()));
 }
 
 #[test]
@@ -88,14 +102,14 @@ fn exact_origin_rejects_invalid_scheme() {
 
 #[test]
 fn cors_any_is_allowed_only_in_non_production_environments() {
-    assert!(matches!(
-        CorsConfig::allow_any_for_development_only(ServiceEnvironment::Local),
-        Ok(CorsConfig::AnyForDevelopmentOnly)
-    ));
-    assert!(matches!(
-        CorsConfig::allow_any_for_development_only(ServiceEnvironment::Dev),
-        Ok(CorsConfig::AnyForDevelopmentOnly)
-    ));
+    assert!(
+        CorsConfig::allow_any_for_development_only(ServiceEnvironment::Local)
+            .is_ok_and(|config| config.allows_any_origin())
+    );
+    assert!(
+        CorsConfig::allow_any_for_development_only(ServiceEnvironment::Dev)
+            .is_ok_and(|config| config.allows_any_origin())
+    );
     assert_eq!(
         CorsConfig::allow_any_for_development_only(ServiceEnvironment::Staging),
         Err(ConfigError::CorsPolicyDisallowedInEnvironment {

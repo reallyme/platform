@@ -3,19 +3,21 @@
 
 //! Runtime builder validation and listener composition.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use axum::Router;
+use axum::routing::get;
 use tokio::net::TcpListener;
 
 use crate::config::ObservabilityConfig;
 use crate::health::Readiness;
 use crate::http::{
-    apply_standard_router_layers_with_request_logging, listener_identity_layer, operational_routes,
-    route_visibility_layer_with_rate_limit_registry,
+    apply_standard_router_layers_after_cors, cors_layer, listener_identity_layer,
+    operational_routes, route_visibility_layer_with_rate_limit_registry,
 };
 use crate::shutdown::ShutdownPolicy;
-use crate::startup::{DeploymentRegion, ServerName, StartupBanner};
+use crate::startup::{DeploymentRegion, ServerName, StartupBanner, TaskName};
 use crate::task::ShutdownTimeout;
 use crate::version::BuildInfo;
 
@@ -31,6 +33,7 @@ use super::super::grpc::GrpcServerSpec;
 use super::super::http::HttpServerSpec;
 use super::super::phase::ServerRuntimePhaseReporter;
 use super::super::rate_limit::RateLimitRegistry;
+use super::super::readiness_drain::ReadinessDrainDelay;
 use super::super::startup_check::RuntimeStartupCheck;
 use super::ServerRuntime;
 
@@ -43,6 +46,7 @@ pub struct ServerRuntimeBuilder {
     build_info: Option<BuildInfo>,
     readiness: Option<Readiness>,
     shutdown_timeout: Option<ShutdownTimeout>,
+    readiness_drain_delay: Option<ReadinessDrainDelay>,
     cleanup_timeout: Option<ShutdownTimeout>,
     fast_shutdown_timeout: Option<ShutdownTimeout>,
     shutdown_policy: Option<ShutdownPolicy>,
@@ -91,6 +95,12 @@ impl ServerRuntimeBuilder {
     /// Sets the graceful shutdown drain timeout.
     pub fn shutdown_timeout(mut self, value: ShutdownTimeout) -> Self {
         self.shutdown_timeout = Some(value);
+        self
+    }
+
+    /// Sets the delay between publishing NotReady and closing listeners.
+    pub fn readiness_drain_delay(mut self, value: ReadinessDrainDelay) -> Self {
+        self.readiness_drain_delay = Some(value);
         self
     }
 
@@ -195,7 +205,16 @@ impl ServerRuntimeBuilder {
             #[cfg(feature = "tonic-grpc")]
             self.grpc_servers.as_slice(),
         )?;
+        validate_listener_guards(
+            self.http_servers.as_slice(),
+            #[cfg(feature = "tonic-grpc")]
+            self.grpc_servers.as_slice(),
+        )?;
         let app_parts = collect_apps(self.apps)?;
+        validate_route_composition(self.http_servers.as_slice(), &app_parts.http_router)?;
+        // The first health sample must complete before app readiness can be
+        // published, even if the process startup path is otherwise complete.
+        readiness.set_app_health(app_parts.health_contributors.is_empty());
 
         Ok(ServerRuntime {
             server_name,
@@ -204,6 +223,7 @@ impl ServerRuntimeBuilder {
             build_info,
             readiness,
             shutdown_timeout,
+            readiness_drain_delay: self.readiness_drain_delay.unwrap_or_default(),
             cleanup_timeout,
             fast_shutdown_timeout,
             shutdown_policy: self.shutdown_policy.unwrap_or_default(),
@@ -232,6 +252,100 @@ fn required<T>(
     value.ok_or(ServerRuntimeError::MissingRequiredField { field })
 }
 
+fn validate_listener_guards(
+    http_servers: &[HttpServerSpec],
+    #[cfg(feature = "tonic-grpc")] grpc_servers: &[GrpcServerSpec],
+) -> Result<(), ServerRuntimeError> {
+    let invalid = |reason| ServerRuntimeError::ListenerComposition { reason };
+    for server in http_servers {
+        if server
+            .route_visibility_policy()
+            .rules()
+            .iter()
+            .any(|rule| rule.auth_policy().is_some())
+        {
+            return Err(invalid(
+                RuntimeListenerCompositionErrorReason::UnenforcedAuthPolicy,
+            ));
+        }
+        let policies = server.rate_limit_policies();
+        for (index, (name, _)) in policies.iter().enumerate() {
+            if policies
+                .iter()
+                .skip(index + 1)
+                .any(|(other, _)| other == name)
+            {
+                return Err(invalid(
+                    RuntimeListenerCompositionErrorReason::DuplicateRateLimitTier,
+                ));
+            }
+        }
+        let known = |tier: &_| policies.iter().any(|(name, _)| name == tier);
+        if server.rate_limit_tier().is_some_and(|tier| !known(tier))
+            || server
+                .route_visibility_policy()
+                .rules()
+                .iter()
+                .any(|rule| rule.rate_limit_tier().is_some_and(|tier| !known(tier)))
+        {
+            return Err(invalid(
+                RuntimeListenerCompositionErrorReason::UnknownRateLimitTier,
+            ));
+        }
+    }
+    #[cfg(feature = "tonic-grpc")]
+    for server in grpc_servers {
+        let policies = server.rate_limit_policies();
+        for (index, (name, _)) in policies.iter().enumerate() {
+            if policies
+                .iter()
+                .skip(index + 1)
+                .any(|(other, _)| other == name)
+            {
+                return Err(invalid(
+                    RuntimeListenerCompositionErrorReason::DuplicateRateLimitTier,
+                ));
+            }
+        }
+        for method in server.method_policies() {
+            if method
+                .rate_limit_tier()
+                .is_some_and(|tier| !policies.iter().any(|(name, _)| name == tier))
+            {
+                return Err(invalid(
+                    RuntimeListenerCompositionErrorReason::UnknownRateLimitTier,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_route_composition(
+    http_servers: &[HttpServerSpec],
+    app_router: &Router,
+) -> Result<(), ServerRuntimeError> {
+    for server in http_servers {
+        // Axum reports overlapping route trees by panicking during merge.
+        // Exercise the same merge before binding so bad composition is typed.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            Router::new()
+                .route("/healthz", get(|| async {}))
+                .route("/readyz", get(|| async {}))
+                .route("/version", get(|| async {}))
+                .route("/metrics", get(|| async {}))
+                .merge(app_router.clone())
+                .merge(server.router().clone())
+        }));
+        if result.is_err() {
+            return Err(ServerRuntimeError::ListenerComposition {
+                reason: RuntimeListenerCompositionErrorReason::RouteConflict,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_listener_ports(
     http_servers: &[HttpServerSpec],
     #[cfg(feature = "tonic-grpc")] grpc_servers: &[GrpcServerSpec],
@@ -248,6 +362,9 @@ fn validate_listener_ports(
     };
 
     for (left_index, left) in http_servers.iter().enumerate() {
+        // Both derived task names must fit before any listener is bound.
+        TaskName::new(format!("http-{}", left.name().as_str()))?;
+        TaskName::new(format!("http-rate-limit-sweep-{}", left.name().as_str()))?;
         for right in http_servers.iter().skip(left_index + 1) {
             if left.name() == right.name() {
                 return Err(ServerRuntimeError::ListenerComposition {
@@ -283,7 +400,16 @@ fn validate_listener_ports(
 
     #[cfg(feature = "tonic-grpc")]
     for (left_index, left) in grpc_servers.iter().enumerate() {
+        TaskName::new(format!(
+            "grpc-rate-limit-sweep-{}",
+            left.task_name().as_str()
+        ))?;
         for right in grpc_servers.iter().skip(left_index + 1) {
+            if left.task_name() == right.task_name() {
+                return Err(ServerRuntimeError::ListenerComposition {
+                    reason: RuntimeListenerCompositionErrorReason::DuplicateGrpcListenerName,
+                });
+            }
             let left_bind_address = left.config().bind_address().as_socket_addr();
             let right_bind_address = right.config().bind_address().as_socket_addr();
 
@@ -348,7 +474,11 @@ pub(super) fn build_runtime_http_router(
         .merge(app_router)
         .merge(http_server.into_router());
 
-    apply_standard_router_layers_with_request_logging(
+    let router = match cors_layer(&config) {
+        Some(layer) => router.layer(layer),
+        None => router,
+    };
+    apply_standard_router_layers_after_cors(
         router.layer(route_visibility_layer_with_rate_limit_registry(
             listener_name.clone(),
             visibility.clone(),

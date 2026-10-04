@@ -66,6 +66,8 @@ impl HttpRoutePrefix {
         }
 
         if !value.starts_with('/')
+            || (value.len() > 1 && value.ends_with('/'))
+            || value.contains("//")
             || value.contains('?')
             || value.contains('#')
             || value.contains("://")
@@ -73,6 +75,7 @@ impl HttpRoutePrefix {
             || value.contains('}')
             || value.split('/').any(|segment| segment.starts_with(':'))
             || value.chars().any(char::is_whitespace)
+            || value.chars().any(char::is_control)
         {
             return Err(HttpRoutePolicyError::RoutePrefix {
                 reason: HttpRoutePolicyErrorReason::InvalidRouteShape,
@@ -323,6 +326,11 @@ impl HttpRouteVisibilityPolicy {
             .filter_map(|rule| rule.match_score(path).map(|score| (score, rule)))
             .max_by_key(|(score, _rule)| *score)
             .map(|(_score, rule)| rule)
+    }
+
+    /// Returns the validated rules for listener composition checks.
+    pub fn rules(&self) -> &[HttpRouteVisibilityRule] {
+        self.rules.as_slice()
     }
 
     /// Returns whether the configured route policy allows this listener.

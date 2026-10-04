@@ -40,4 +40,10 @@ async fn health_and_ready_routes_return_stable_responses() {
         "status": "serving",
         "readiness": "ready"
     }));
+
+    readiness.set_app_health(false);
+    let app_not_ready = server.get(READYZ_PATH).await;
+    app_not_ready.assert_status_service_unavailable();
+    readiness.set_app_health(true);
+    server.get(READYZ_PATH).await.assert_status_ok();
 }

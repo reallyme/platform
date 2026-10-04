@@ -152,10 +152,15 @@ fn spawn_config_test(test_name: &str, variables: &[(&str, &str)]) -> Output {
 }
 
 fn assert_subprocess_success(output: &Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
         "subprocess failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        stdout.contains("running 1 test") && stdout.contains("1 passed;"),
+        "subprocess did not execute exactly one test: {stdout}"
     );
 }

@@ -11,8 +11,10 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::error::{PostgresConfigErrorReason, PostgresConfigField, PostgresError, PostgresResult};
 
 mod env;
+mod transport;
 
 use env::{env_name, optional_env, parse_env_u32, parse_env_u64};
+use transport::validate_plaintext_target;
 
 const DEFAULT_MAX_POOL_SIZE: u32 = 16;
 const DEFAULT_MIN_POOL_SIZE: u32 = 1;
@@ -169,7 +171,7 @@ impl PostgresConfig {
             MAX_POOL_SIZE_UPPER_BOUND,
             PostgresConfigField::MaxPoolSize,
         )?;
-        validate_bounded_u32(
+        validate_positive_bounded_u32(
             input.min_pool_size,
             input.max_pool_size,
             PostgresConfigField::MinPoolSize,
@@ -223,6 +225,12 @@ impl PostgresConfig {
                 PostgresConfigField::TlsCaCertificatePath,
                 PostgresConfigErrorReason::Incompatible,
             ));
+        }
+        if matches!(
+            input.transport_security,
+            PostgresTransportSecurity::AllowPlaintextForDevelopment
+        ) {
+            validate_plaintext_target(&input.connection_uri)?;
         }
 
         Ok(Self {
@@ -426,17 +434,6 @@ fn validate_application_name(value: String) -> PostgresResult<String> {
     }
 
     Ok(trimmed.to_owned())
-}
-
-fn validate_bounded_u32(
-    value: u32,
-    upper_bound: u32,
-    field: PostgresConfigField,
-) -> PostgresResult<()> {
-    if value > upper_bound {
-        return Err(config_error(field, PostgresConfigErrorReason::TooLarge));
-    }
-    Ok(())
 }
 
 fn validate_positive_bounded_u32(

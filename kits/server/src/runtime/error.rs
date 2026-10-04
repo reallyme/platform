@@ -243,6 +243,8 @@ pub enum RuntimeAppCompositionErrorReason {
     DuplicateDependency,
     /// Runtime app dependencies contain a cycle.
     DependencyCycle,
+    /// App routers contain overlapping routes or mount paths.
+    RouteConflict,
 }
 
 /// Typed runtime listener-composition validation reasons.
@@ -252,6 +254,16 @@ pub enum RuntimeListenerCompositionErrorReason {
     DuplicateListenerPort,
     /// Two HTTP listeners were configured with the same listener name.
     DuplicateHttpListenerName,
+    /// Two gRPC listeners were configured with the same managed task name.
+    DuplicateGrpcListenerName,
+    /// A rate-limit tier name was configured more than once on one listener.
+    DuplicateRateLimitTier,
+    /// A listener or route refers to a rate-limit tier that is not configured.
+    UnknownRateLimitTier,
+    /// A route declares an auth policy without an installed enforcement adapter.
+    UnenforcedAuthPolicy,
+    /// Runtime-owned and app/server routes overlap.
+    RouteConflict,
 }
 
 /// Typed runtime app cleanup failure reasons.
@@ -259,6 +271,8 @@ pub enum RuntimeListenerCompositionErrorReason {
 pub enum RuntimeAppCleanupErrorReason {
     /// Cleanup exceeded the bounded runtime cleanup timeout.
     TimedOut,
+    /// An app cleanup callback unwound.
+    Panicked,
     /// Cleanup returned a typed operational failure.
     Failed {
         /// Low-cardinality failure kind.

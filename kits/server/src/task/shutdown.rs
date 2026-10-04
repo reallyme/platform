@@ -124,12 +124,22 @@ impl ShutdownToken {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShutdownTimeout(Duration);
 
+const MAX_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3_600);
+
 impl ShutdownTimeout {
     /// Constructs a validated shutdown timeout.
     pub fn new(value: Duration) -> Result<Self, ShutdownError> {
         if value.is_zero() {
             return Err(ShutdownError::InvalidTimeout {
                 reason: ShutdownValidationErrorReason::MustBeGreaterThanZero,
+            });
+        }
+
+        // A bounded timeout prevents Instant deadline arithmetic from
+        // panicking when an operator supplies an extreme config value.
+        if value > MAX_SHUTDOWN_TIMEOUT {
+            return Err(ShutdownError::InvalidTimeout {
+                reason: ShutdownValidationErrorReason::TooLarge,
             });
         }
 

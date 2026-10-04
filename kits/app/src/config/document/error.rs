@@ -7,20 +7,55 @@ use super::super::AppConfigParseErrorReason;
 
 /// Standard app config document error.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-#[error("standard app JSONC config failed validation")]
+#[error("standard app JSONC config field {field:?} failed validation: {reason:?}")]
 pub struct AppConfigDocumentError {
+    field: AppConfigDocumentField,
     reason: AppConfigDocumentErrorReason,
 }
 
 impl AppConfigDocumentError {
     pub(super) const fn new(reason: AppConfigDocumentErrorReason) -> Self {
-        Self { reason }
+        Self {
+            field: AppConfigDocumentField::Document,
+            reason,
+        }
+    }
+
+    pub(super) const fn with_field(mut self, field: AppConfigDocumentField) -> Self {
+        self.field = field;
+        self
+    }
+
+    /// Returns the reviewed config field associated with the failure.
+    pub const fn field(self) -> AppConfigDocumentField {
+        self.field
     }
 
     /// Returns the typed validation reason.
     pub const fn reason(self) -> AppConfigDocumentErrorReason {
         self.reason
     }
+}
+
+/// Fixed field paths used in config diagnostics without echoing input values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppConfigDocumentField {
+    /// The document could not be parsed or its field is unavailable.
+    Document,
+    /// `public_base_url`.
+    PublicBaseUrl,
+    /// `cors.allowed_origins`.
+    CorsAllowedOrigins,
+    /// `cookies.secure`.
+    CookiesSecure,
+    /// `cookies.domain`.
+    CookiesDomain,
+    /// `cookies.same_site_policy`.
+    CookiesSameSitePolicy,
+    /// `reflection_enabled`.
+    ReflectionEnabled,
+    /// `downstream`.
+    Downstream,
 }
 
 /// Standard app config document validation reason.
@@ -31,12 +66,6 @@ pub enum AppConfigDocumentErrorReason {
         /// Typed parse reason.
         reason: AppConfigParseErrorReason,
     },
-    /// CORS origins are omitted or empty, meaning CORS is disabled.
-    EmptyCorsOrigins,
-    /// Numeric config value must be greater than zero.
-    MustBeGreaterThanZero,
-    /// Numeric config value must not exceed the configured maximum.
-    MustNotExceedMaximum,
     /// URL scheme was unsupported.
     InvalidUrlScheme,
     /// URL value was empty.
@@ -77,8 +106,6 @@ pub enum AppConfigDocumentErrorReason {
     InvalidLocatorIdentifier,
     /// Service-locator tag set was invalid.
     InvalidLocatorTag,
-    /// App-specific custom config failed validation after standard-envelope parsing.
-    InvalidCustomConfig,
     /// App-level reflection is not supported by the standard config envelope.
     ReflectionNotSupported,
 }

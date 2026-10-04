@@ -40,6 +40,7 @@ fn map_example_app_error_to_contract_error(
         crate::app::ExampleAppError::MetricConfigurationInvalid => {
             ExampleContractError::Unavailable
         }
+        crate::app::ExampleAppError::DeadlineExceeded => ExampleContractError::DeadlineExceeded,
     }
 }
 

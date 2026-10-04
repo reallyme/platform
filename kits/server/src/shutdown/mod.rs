@@ -31,4 +31,5 @@ pub use error::{
 };
 pub use policy::{ShutdownMode, ShutdownModeParseError, ShutdownPolicy};
 pub use reason::ShutdownReason;
+pub(crate) use signal::install_shutdown_signal_listener;
 pub use signal::shutdown_signal;

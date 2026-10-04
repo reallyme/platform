@@ -84,6 +84,12 @@ pub enum TenantErrorReason {
         /// Requested logical tenant.
         tenant: FoundationDbTenantName,
     },
+    /// Metadata repair refuses to adopt a tenant that already contains keys.
+    #[error("tenant `{tenant}` must be empty before metadata repair")]
+    RepairRequiresEmptyTenant {
+        /// Tenant that was not empty.
+        tenant: FoundationDbTenantName,
+    },
     /// Tenant metadata is missing required key(s).
     #[error("tenant `{tenant}` metadata is missing required field `{field:?}")]
     MetadataMissing {

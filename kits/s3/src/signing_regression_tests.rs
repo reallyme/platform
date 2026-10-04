@@ -40,9 +40,26 @@ fn canonical_authority_retains_nondefault_ports() {
 }
 
 #[test]
+fn signing_and_presigning_refuse_keys_outside_configured_prefix() {
+    let config = config("https://objects.example.com");
+    let outside = S3ObjectKey::new("other/object".to_owned()).expect("valid key shape");
+    let timestamp = datetime!(2026-05-14 23:11:12 UTC);
+    assert!(matches!(
+        sign_object_request(&config, S3SignedMethod::Get, &outside, &[], timestamp),
+        Err(error) if error.reason == crate::S3StorageErrorReason::InvalidObjectKey
+    ));
+    assert!(matches!(
+        presign_get_object(&config, &outside, 60, timestamp),
+        Err(error) if error.reason == crate::S3StorageErrorReason::InvalidObjectKey
+    ));
+    let already_scoped = config.scoped_object_key("item").expect("scoped key");
+    assert!(config.scoped_object_key(already_scoped.as_str()).is_err());
+}
+
+#[test]
 fn signatures_use_utc_across_calendar_boundaries() {
     let config = config("https://objects.example.com:9443");
-    let key = S3ObjectKey::new("item".to_owned()).expect("key");
+    let key = config.scoped_object_key("item").expect("scoped key");
     let utc = datetime!(2026-05-14 23:11:12 UTC);
     let offset = datetime!(2026-05-15 01:11:12 +02:00);
     let first = sign_object_request(&config, S3SignedMethod::Get, &key, &[], utc).expect("UTC");
@@ -53,7 +70,7 @@ fn signatures_use_utc_across_calendar_boundaries() {
     // Independently computed with Python hashlib/hmac from the canonical request.
     assert!(
         first.authorization().ends_with(
-            "Signature=3c3ea1bb063488c9c8d559586a7ad6b21a197e059ab65c7b66998f3f6eb3491d"
+            "Signature=42475e6f3e8674d198f0b85bbee36c5147381ad7be3ab71722440e3edeee81d7"
         )
     );
     assert_eq!(
@@ -64,6 +81,32 @@ fn signatures_use_utc_across_calendar_boundaries() {
             .expect("offset")
             .expose_url()
     );
+}
+
+#[test]
+fn temporary_credentials_sign_the_session_token_in_headers_and_presigned_urls() {
+    let config = config("https://objects.example.com")
+        .with_session_token(SecretString::from("token+/="))
+        .expect("valid temporary credential");
+    let key = config.scoped_object_key("item").expect("scoped key");
+    let timestamp = datetime!(2026-05-14 23:11:12 UTC);
+    let signed = sign_object_request(&config, S3SignedMethod::Get, &key, &[], timestamp)
+        .expect("signed request");
+    assert_eq!(signed.session_token(), Some("token+/="));
+    assert!(
+        signed
+            .authorization()
+            .contains("x-amz-date;x-amz-security-token")
+    );
+    assert!(!format!("{signed:?}").contains("token+/="));
+
+    let presigned = presign_get_object(&config, &key, 60, timestamp).expect("presigned URL");
+    assert!(
+        presigned
+            .expose_url()
+            .contains("X-Amz-Security-Token=token%2B%2F%3D")
+    );
+    assert!(!format!("{presigned:?}").contains("token+/="));
 }
 
 #[test]

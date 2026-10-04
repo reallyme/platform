@@ -19,9 +19,10 @@ pub use concurrency::concurrency_limit_layer;
 pub use listener::listener_identity_layer;
 pub use normalize::normalize_http_error_responses_layer;
 pub use request_id::request_id_layer;
-pub use route_visibility::{
-    route_visibility_layer, route_visibility_layer_with_rate_limit_registry,
-};
+pub use route_visibility::route_visibility_layer;
+pub(crate) use route_visibility::route_visibility_layer_with_rate_limit_registry;
+#[cfg(feature = "tonic-grpc")]
+pub(crate) use security::client_ip_from_x_forwarded_for;
 pub use security::{
     ExternalRequestOrigin, ForwardedClientIp, ForwardedHost, ForwardedProto, security_layer,
 };

@@ -60,6 +60,7 @@ tokio-stream = { version = "0.1", features = ["net"] }
 tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime", "with-serde_json-1", "with-uuid-1"] }
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
 tokio-tungstenite = "0.30"
+tungstenite = { version = "0.29", default-features = false }
 tonic = "0.14"
 tonic-health = "0.14"
 tonic-prost = "0.14"
@@ -67,7 +68,9 @@ tonic-reflection = "0.14"
 opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
 bytes = "1"
 pin-project-lite = "0.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["gzip", "http2", "json", "query", "rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["gzip", "http2", "json", "query", "rustls-no-provider"] }
+hyper = { version = "1", default-features = false, features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
 redis = { version = "1.6.0", default-features = false, features = ["connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 reallyme-codec = { version = "=0.3.1", default-features = false }
 reallyme-crypto = { version = "=0.3.12", default-features = false, features = ["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"] }
@@ -75,7 +78,7 @@ rustls-native-certs = "0.8.4"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 time = { version = "0.3", default-features = false, features = ["formatting", "macros", "parsing", "std"] }
 tower = { version = "0.5", features = ["limit", "timeout"] }
-tower-http = { version = "0.7", features = ["cors", "limit", "request-id", "timeout", "trace"] }
+tower-http = { version = "0.7", features = ["catch-panic", "cors", "limit", "request-id", "timeout", "trace"] }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
@@ -94,7 +97,7 @@ reallyme-example-contract = { path = "apps/example/contract", version = "0.2.0" 
 reallyme-foundationdb-kit = { path = "kits/foundationdb", version = "0.2.0" }
 reallyme-nats-kit = { path = "kits/nats", version = "0.2.0" }
 reallyme-postgres-kit = { path = "kits/postgres", version = "0.2.0" }
-reallyme-s3-kit = { path = "kits/s3", version = "0.2.0" }
+reallyme-s3-kit = { path = "kits/s3", version = "0.2.0", default-features = false }
 reallyme-server-kit = { path = "kits/server", version = "0.2.0", default-features = false }
 reallyme-typesense-kit = { path = "kits/typesense", version = "0.2.0" }
 reallyme-valkey-kit = { path = "kits/valkey", version = "0.2.0" }

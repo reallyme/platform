@@ -79,6 +79,11 @@ fn validates_listener_names_and_route_prefixes() {
     assert!(HttpRoutePrefix::new("/api?x=1").is_err());
     assert!(HttpRoutePrefix::new("/users/:id").is_err());
     assert!(HttpRoutePrefix::new("/users/{id}").is_err());
+    assert!(HttpRoutePrefix::new("/admin/").is_err());
+    assert!(HttpRoutePrefix::new("//admin").is_err());
+    assert!(HttpRoutePrefix::new("/a//b").is_err());
+    assert!(HttpRoutePrefix::new("/a/\0b").is_err());
+    assert!(HttpRoutePrefix::new("/").is_ok());
 }
 
 #[test]

@@ -13,6 +13,8 @@ pub enum ExampleAppErrorKind {
     HelloDisabled,
     /// Static app metric descriptors are invalid.
     MetricConfigurationInvalid,
+    /// The caller's deadline elapsed before the use-case could run.
+    DeadlineExceeded,
 }
 
 /// Host-neutral example app error.
@@ -24,6 +26,9 @@ pub enum ExampleAppError {
     /// Static app metric descriptors are invalid.
     #[error("example app metric configuration is invalid")]
     MetricConfigurationInvalid,
+    /// The caller's deadline elapsed before the use-case could run.
+    #[error("example app deadline exceeded")]
+    DeadlineExceeded,
 }
 
 impl ExampleAppError {
@@ -32,6 +37,7 @@ impl ExampleAppError {
         match self {
             Self::HelloDisabled => ExampleAppErrorKind::HelloDisabled,
             Self::MetricConfigurationInvalid => ExampleAppErrorKind::MetricConfigurationInvalid,
+            Self::DeadlineExceeded => ExampleAppErrorKind::DeadlineExceeded,
         }
     }
 
@@ -44,11 +50,13 @@ impl ExampleAppError {
         let code = match self {
             Self::HelloDisabled => AppErrorCode::new("hello_disabled")?,
             Self::MetricConfigurationInvalid => AppErrorCode::new("metric_configuration_invalid")?,
+            Self::DeadlineExceeded => AppErrorCode::new("deadline_exceeded")?,
         };
 
         let category = match self {
             Self::HelloDisabled => AppErrorCategory::PermissionDenied,
             Self::MetricConfigurationInvalid => AppErrorCategory::Internal,
+            Self::DeadlineExceeded => AppErrorCategory::DeadlineExceeded,
         };
 
         Ok(AppErrorContract::new(

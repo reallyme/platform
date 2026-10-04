@@ -142,7 +142,7 @@ impl JetStreamPublisher<ContextPublisherBackend> {
             );
         }
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(METRIC_NATS_PUBLISHER_CONNECT_TOTAL, "result" => status);
+        counter!(METRIC_NATS_PUBLISHER_CONNECT_TOTAL, "result" => status).increment(1);
         histogram!(
             METRIC_NATS_PUBLISHER_CONNECT_DURATION_SECONDS,
             "result" => status
@@ -200,14 +200,15 @@ where
                 error = ?error,
                 "publisher startup validation failed"
             );
-            let _ = counter!(
+            counter!(
                 METRIC_NATS_PUBLISHER_VALIDATE_FAILURES_TOTAL,
                 "reason" => "backend_error"
-            );
+            )
+            .increment(1);
         }
 
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(METRIC_NATS_PUBLISHER_VALIDATE_TOTAL, "result" => status);
+        counter!(METRIC_NATS_PUBLISHER_VALIDATE_TOTAL, "result" => status).increment(1);
         histogram!(
             METRIC_NATS_PUBLISHER_VALIDATE_DURATION_SECONDS,
             "result" => status
@@ -234,6 +235,14 @@ where
             return Err(JetStreamError::PayloadTooLarge);
         }
 
+        if message_id.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > 256
+                || !value.bytes().all(|byte| byte.is_ascii_graphic())
+        }) {
+            return Err(JetStreamError::InvalidMessageId);
+        }
+
         let message_id_value = message_id.map(str::to_owned);
         let message_id = if message_id_value.is_some() {
             "provided"
@@ -258,11 +267,12 @@ where
             );
         }
         let status = if result.is_ok() { "ok" } else { "error" };
-        let _ = counter!(
+        counter!(
             METRIC_NATS_PUBLISHER_PUBLISH_TOTAL,
             "result" => status,
             "message_id" => message_id
-        );
+        )
+        .increment(1);
         histogram!(
             METRIC_NATS_PUBLISHER_PUBLISH_DURATION_SECONDS,
             "result" => status,
@@ -270,7 +280,7 @@ where
         )
         .record(started.elapsed().as_secs_f64());
         if result.is_err() {
-            let _ = counter!(METRIC_NATS_PUBLISHER_PUBLISH_FAILURES_TOTAL, "result" => status);
+            counter!(METRIC_NATS_PUBLISHER_PUBLISH_FAILURES_TOTAL, "result" => status).increment(1);
         }
 
         result
@@ -407,11 +417,12 @@ impl JetStreamPublisherBackend for ContextPublisherBackend {
             );
             JetStreamError::PublishNotAcknowledged
         })?;
-        let _ = counter!(
+        counter!(
             METRIC_NATS_PUBLISHER_ACK_TOTAL,
             "result" => "ok",
             "message_id" => message_id_label
-        );
+        )
+        .increment(1);
         histogram!(
             METRIC_NATS_PUBLISHER_ACK_DURATION_SECONDS,
             "result" => "ok",

@@ -5,6 +5,13 @@ use super::AppPortError;
 
 #[test]
 fn port_error_metric_labels_are_stable() {
-    assert_eq!(AppPortError::Unconfigured.as_metric_label(), "unconfigured");
-    assert_eq!(AppPortError::Timeout.as_metric_label(), "timeout");
+    for (error, expected) in [
+        (AppPortError::Unconfigured, "unconfigured"),
+        (AppPortError::Timeout, "timeout"),
+        (AppPortError::Unavailable, "unavailable"),
+        (AppPortError::ProtocolViolation, "protocol_violation"),
+        (AppPortError::NotImplemented, "not_implemented"),
+    ] {
+        assert_eq!(error.as_metric_label(), expected);
+    }
 }

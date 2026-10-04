@@ -22,6 +22,13 @@ fn readiness_can_transition_to_ready() {
 }
 
 #[test]
+fn readiness_transition_before_subscription_is_retained() {
+    let readiness = Readiness::new();
+    readiness.mark_ready();
+    assert_eq!(readiness.watch().current(), ReadinessState::Ready);
+}
+
+#[test]
 fn readiness_can_transition_back_to_not_ready() {
     let readiness = Readiness::new();
     readiness.mark_ready();

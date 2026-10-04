@@ -37,12 +37,28 @@ async fn publisher_rejects_payloads_above_limit_before_backend_call() {
     let result = publisher.publish_bytes(vec![0_u8; 33], Some("msg-1")).await;
 
     assert_eq!(result, Err(JetStreamError::PayloadTooLarge));
-    let calls = backend.calls();
-    assert!(calls.is_ok(), "backend calls should be available");
-    let Ok(calls) = calls else {
-        return;
-    };
+    let calls = backend.calls().expect("backend calls should be available");
     assert!(calls.is_empty());
+}
+
+#[tokio::test]
+async fn publisher_rejects_unsafe_message_ids_before_backend_call() {
+    let backend = Arc::new(FakeJetStreamPublisherBackend::default());
+    let publisher = JetStreamPublisher::new_with_backend(publisher_config(), backend.clone());
+
+    for message_id in ["", "line\r\nbreak", "with space", "nul\0byte"] {
+        assert_eq!(
+            publisher.publish_bytes(vec![1_u8], Some(message_id)).await,
+            Err(JetStreamError::InvalidMessageId),
+        );
+    }
+    assert_eq!(
+        publisher
+            .publish_bytes(vec![1_u8], Some(&"a".repeat(257)))
+            .await,
+        Err(JetStreamError::InvalidMessageId),
+    );
+    assert!(backend.calls().expect("fake backend calls").is_empty());
 }
 
 #[tokio::test]
@@ -63,11 +79,7 @@ async fn publisher_forwards_message_id_and_payload_to_backend() {
     };
 
     assert_eq!(result.sequence(), 7);
-    let calls = backend.calls();
-    assert!(calls.is_ok(), "backend calls should be available");
-    let Ok(calls) = calls else {
-        return;
-    };
+    let calls = backend.calls().expect("backend calls should be available");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].subject, TEST_SUBJECT);
     assert_eq!(calls[0].stream_name, "search_spider");
@@ -88,11 +100,7 @@ async fn publisher_dedupe_helper_uses_deterministic_message_id() {
     let result = publisher.publish_bytes_deduplicated(payload.clone()).await;
     assert!(result.is_ok());
 
-    let calls = backend.calls();
-    assert!(calls.is_ok(), "backend calls should be available");
-    let Ok(calls) = calls else {
-        return;
-    };
+    let calls = backend.calls().expect("backend calls should be available");
     assert_eq!(calls.len(), 1);
     assert_eq!(
         calls[0].message_id.as_deref(),
@@ -113,9 +121,7 @@ async fn publisher_publish_without_backend_ack_fails() {
 fn publish_ack_preserves_exact_stream_name() {
     let ack = JetStreamPublishAck::new("  search_spider  ", 11, false);
     assert!(ack.is_ok());
-    let Ok(ack) = ack else {
-        return;
-    };
+    let ack = ack.expect("ack fixture should be valid");
 
     assert_eq!(ack.stream_name(), "  search_spider  ");
 }

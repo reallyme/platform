@@ -43,6 +43,31 @@ fn config_rejects_missing_required_values() {
 }
 
 #[test]
+fn temporary_credential_token_is_validated_and_redacted() {
+    let build = || {
+        S3StorageConfig::new(
+            "https://objects.example.com".to_owned(),
+            "eu-central-1".to_owned(),
+            "archive".to_owned(),
+            SecretString::from("access-key"),
+            SecretString::from("secret-key"),
+            "objects/v1".to_owned(),
+        )
+        .expect("valid config")
+    };
+    assert!(build().with_session_token(SecretString::from("")).is_err());
+    assert!(
+        build()
+            .with_session_token(SecretString::from("line\nfeed"))
+            .is_err()
+    );
+    let config = build()
+        .with_session_token(SecretString::from("temporary-token"))
+        .expect("valid token");
+    assert!(!format!("{config:?}").contains("temporary-token"));
+}
+
+#[test]
 fn config_accepts_endpoint_configured_s3_provider() {
     let result = S3StorageConfig::new(
         String::from("https://objects.example.com:9443"),

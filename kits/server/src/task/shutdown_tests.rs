@@ -43,3 +43,13 @@ fn rejects_zero_shutdown_timeout() {
         })
     );
 }
+
+#[test]
+fn rejects_shutdown_timeout_that_could_overflow_deadline() {
+    assert_eq!(
+        ShutdownTimeout::new(Duration::from_secs(u64::MAX)),
+        Err(ShutdownError::InvalidTimeout {
+            reason: ShutdownValidationErrorReason::TooLarge,
+        })
+    );
+}

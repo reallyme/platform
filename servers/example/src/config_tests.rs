@@ -34,6 +34,131 @@ fn checked_in_local_config_is_valid_and_loopback_only()
 }
 
 #[test]
+fn container_config_uses_production_profile_and_exact_host()
+-> Result<(), crate::error::ExampleServerError> {
+    let config = ExampleServerConfig::from_jsonc_str(include_str!(
+        "../deploy/example-server.container.jsonc"
+    ))?;
+    assert_eq!(config.application_profile(), AppConfigProfile::Prod);
+    assert!(!config.http().bind_address().ip_addr().is_loopback());
+    let hosts = config.http().security().host_authority_policy();
+    assert!(hosts.allows("example.reallyme.net"));
+    assert!(!hosts.allows("untrusted.example.net"));
+    Ok(())
+}
+
+#[test]
+fn non_loopback_bind_requires_explicit_allowed_hosts() {
+    let result = ExampleServerConfig::from_jsonc_str(
+        r#"{
+            "application_profile": "prod",
+            "bind_address": "0.0.0.0:8080",
+            "request_timeout_seconds": 30,
+            "request_body_limit_bytes": 1048576,
+            "metrics_idle_timeout_seconds": 30,
+            "shutdown_timeout_seconds": 10
+        }"#,
+    );
+    assert!(matches!(
+        result,
+        Err(error) if error.reason() == ExampleServerErrorReason::AllowedHostsInvalid
+    ));
+}
+
+#[test]
+fn trusted_proxy_jsonc_selects_exact_ranges_and_header_family()
+-> Result<(), crate::error::ExampleServerError> {
+    let config = ExampleServerConfig::from_jsonc_str(
+        r#"{
+            "application_profile": "prod",
+            "bind_address": "0.0.0.0:8080",
+            "allowed_hosts": ["example.reallyme.net"],
+            "trusted_proxy_ranges": ["127.0.0.1/32"],
+            "external_origin_policy": {
+                "header_family": "x_forwarded",
+                "trusted_forwarded_host": true,
+                "trusted_forwarded_proto": true,
+                "require_https_external_scheme": true,
+                "strict_forwarded_header_consistency": true,
+                "strip_raw_proxy_headers": true
+            },
+            "request_timeout_seconds": 30,
+            "request_body_limit_bytes": 1048576,
+            "metrics_idle_timeout_seconds": 30,
+            "shutdown_timeout_seconds": 10
+        }"#,
+    )?;
+    let security = config.http().security();
+    assert!(
+        security
+            .trusted_proxy_headers()
+            .trusts_peer(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+    );
+    assert!(
+        !security
+            .trusted_proxy_headers()
+            .trusts_peer(Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))))
+    );
+    assert_eq!(
+        security.external_origin_policy().header_family(),
+        reallyme_server_kit::config::TrustedProxyHeaderFamily::XForwarded
+    );
+    assert!(
+        security
+            .external_origin_policy()
+            .require_https_external_scheme()
+    );
+    Ok(())
+}
+
+#[test]
+fn external_origin_policy_without_trusted_proxy_ranges_fails_closed() {
+    let result = ExampleServerConfig::from_jsonc_str(
+        r#"{
+            "application_profile": "prod",
+            "bind_address": "0.0.0.0:8080",
+            "allowed_hosts": ["example.reallyme.net"],
+            "external_origin_policy": {
+                "header_family": "x_forwarded",
+                "trusted_forwarded_host": true,
+                "trusted_forwarded_proto": true,
+                "require_https_external_scheme": true,
+                "strict_forwarded_header_consistency": true,
+                "strip_raw_proxy_headers": true
+            },
+            "request_timeout_seconds": 30,
+            "request_body_limit_bytes": 1048576,
+            "metrics_idle_timeout_seconds": 30,
+            "shutdown_timeout_seconds": 10
+        }"#,
+    );
+    assert!(matches!(
+        result,
+        Err(error) if error.reason() == ExampleServerErrorReason::ExternalOriginPolicyInvalid
+    ));
+}
+
+#[test]
+fn invalid_trusted_proxy_range_is_rejected_at_jsonc_boundary() {
+    let result = ExampleServerConfig::from_jsonc_str(
+        r#"{
+            "application_profile": "prod",
+            "bind_address": "0.0.0.0:8080",
+            "allowed_hosts": ["example.reallyme.net"],
+            "trusted_proxy_ranges": ["0.0.0.0/0"],
+            "request_timeout_seconds": 30,
+            "request_body_limit_bytes": 1048576,
+            "metrics_idle_timeout_seconds": 30,
+            "shutdown_timeout_seconds": 10
+        }"#,
+    );
+    assert!(matches!(
+        result,
+        Err(error) if error.reason() == ExampleServerErrorReason::TrustedProxyRangesInvalid
+    ));
+}
+
+#[test]
 fn unknown_fields_are_rejected() {
     let result = ExampleServerConfig::from_jsonc_str(
         r#"{

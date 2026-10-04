@@ -11,6 +11,7 @@ async fn signed_transport_never_follows_redirects() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address = listener.local_addr().expect("address");
     let client = http_client_builder()
+        .expect("hardened builder")
         .https_only(false)
         .no_proxy()
         .build()
@@ -44,7 +45,10 @@ async fn signed_transport_never_follows_redirects() {
 
 #[tokio::test]
 async fn signed_transport_rejects_plaintext() {
-    let client = http_client_builder().build().expect("client");
+    let client = http_client_builder()
+        .expect("hardened builder")
+        .build()
+        .expect("client");
     let error = client
         .get("http://127.0.0.1/object")
         .send()
@@ -65,6 +69,7 @@ async fn object_bytes_are_not_automatically_decompressed() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address = listener.local_addr().expect("address");
     let client = http_client_builder()
+        .expect("hardened builder")
         .https_only(false)
         .no_proxy()
         .build()

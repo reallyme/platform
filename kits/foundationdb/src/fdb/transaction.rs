@@ -55,6 +55,24 @@ pub struct WriteTxnPolicy {
     time_out: Duration,
 }
 
+/// Bounded transaction policy accepted by tenant operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TenantTransactionPolicy {
+    /// Read with a validated retry and timeout budget.
+    Read(ReadTxnPolicy),
+    /// Mutation with a validated retry and timeout budget.
+    Write(WriteTxnPolicy),
+}
+
+impl TenantTransactionPolicy {
+    pub(crate) const fn to_transact_option(self) -> foundationdb::TransactOption {
+        match self {
+            Self::Read(policy) => policy.to_transact_option(),
+            Self::Write(policy) => policy.to_transact_option(),
+        }
+    }
+}
+
 impl ReadTxnPolicy {
     /// Builds an explicit read policy with validated parameters.
     pub fn try_new(retry_limit: u32, time_out: Duration) -> Result<Self, TransactionPolicyError> {

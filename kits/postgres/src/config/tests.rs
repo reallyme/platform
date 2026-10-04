@@ -84,14 +84,19 @@ fn config_rejects_minimum_pool_size_above_maximum() {
 }
 
 #[test]
-fn config_allows_a_zero_minimum_for_explicit_lazy_test_fixtures() {
-    let config = PostgresConfig::new(PostgresConfigInput {
+fn config_rejects_zero_minimum_because_startup_must_connect() {
+    let result = PostgresConfig::new(PostgresConfigInput {
         min_pool_size: 0,
         ..valid_input()
-    })
-    .expect("zero minimum remains a valid explicit pool policy");
+    });
 
-    assert_eq!(config.min_pool_size(), 0);
+    assert_eq!(
+        result.err(),
+        Some(PostgresError::Config {
+            field: PostgresConfigField::MinPoolSize,
+            reason: PostgresConfigErrorReason::Zero,
+        })
+    );
 }
 
 #[test]
@@ -176,6 +181,27 @@ fn config_rejects_tls_trust_when_plaintext_is_selected() {
             reason: PostgresConfigErrorReason::Incompatible,
         })
     );
+}
+
+#[test]
+fn plaintext_requires_a_loopback_postgres_target() {
+    for uri in [
+        "postgres://db.example.com/app",
+        "host=localhost hostaddr=203.0.113.9 dbname=app",
+    ] {
+        let result = PostgresConfig::new(PostgresConfigInput {
+            connection_uri: SecretString::from(uri.to_owned()),
+            transport_security: PostgresTransportSecurity::AllowPlaintextForDevelopment,
+            ..valid_input()
+        });
+        assert_eq!(
+            result.err(),
+            Some(PostgresError::Config {
+                field: PostgresConfigField::TransportSecurity,
+                reason: PostgresConfigErrorReason::Incompatible,
+            })
+        );
+    }
 }
 
 #[test]
