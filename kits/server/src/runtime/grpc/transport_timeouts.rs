@@ -105,10 +105,6 @@ impl GrpcTransportTimeouts {
         self.max_age
     }
 
-    pub(crate) const fn drain_grace(self) -> Duration {
-        self.drain_grace
-    }
-
     pub(crate) fn hard_cap(self) -> Duration {
         // The constructor validates this sum, including for the default.
         self.max_age.saturating_add(self.drain_grace)

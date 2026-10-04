@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use axum::serve::Listener;
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::time::{Instant, sleep_until};
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_health::pb::health_server::HealthServer;
@@ -23,7 +23,7 @@ use crate::health::{GrpcServingStatus, Readiness, ReadinessWatcher, readiness_ch
 use crate::http::HttpRateLimitTierName;
 use crate::runtime::{HttpRateLimitTierPolicy, RateLimitRegistry};
 use crate::startup::TaskName;
-use crate::task::{ShutdownToken, TaskExecutionError, TaskExecutionErrorKind};
+use crate::task::{ShutdownToken, TaskExecutionError};
 
 const DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 const DEFAULT_GRPC_MAX_CONCURRENT_STREAMS: u32 = 128;
@@ -50,6 +50,8 @@ pub use app_routes::{GrpcAppRoutes, GrpcAppRoutesError, GrpcAppRoutesErrorReason
 #[path = "grpc/health_service.rs"]
 mod health_service;
 use health_service::RuntimeHealthService;
+#[path = "grpc/serve_connections.rs"]
+mod serve_connections;
 
 /// gRPC server input owned by server composition and run by [`crate::runtime::ServerRuntime`].
 ///
@@ -250,7 +252,7 @@ pub(crate) async fn serve_health_grpc(
         None => Routes::new(health_service),
     };
 
-    let mut shutdown_for_server = shutdown.clone();
+    let shutdown_for_server = shutdown.clone();
     let trusted_proxies = policy.trusted_proxy_headers.clone();
     let grpc_policy = crate::grpc::GrpcPolicy::new(
         policy.listener_name,
@@ -268,40 +270,46 @@ pub(crate) async fn serve_health_grpc(
                 .unwrap_or(DEFAULT_GRPC_MAX_CONCURRENT_STREAMS),
         )
         .http2_keepalive_interval(Some(policy.transport_timeouts.keepalive_interval()))
-        .http2_keepalive_timeout(Some(policy.transport_timeouts.keepalive_timeout()))
-        // Tonic 0.14.6 re-polls a completed timeout future after graceful
-        // connection-age retirement, which panics a connection task. Keep
-        // its finite force-close grace until an upstream fix is published.
-        .max_connection_age(policy.transport_timeouts.max_age())
-        .max_connection_age_grace(policy.transport_timeouts.drain_grace());
+        .http2_keepalive_timeout(Some(policy.transport_timeouts.keepalive_timeout()));
+    // A per-connection shutdown signal below asks Tonic to send GOAWAY.
+    // Tonic 0.14.6's age timer can otherwise force-close without GOAWAY,
+    // while its no-grace age path re-polls a completed future.
     if let Some(max_timeout) = policy.max_timeout {
         builder = builder.timeout(max_timeout.as_duration());
     }
-    let incoming = stream::unfold(
+    let listener =
         BoundedTcpListener::with_force_close(listener, force_close, policy.connection_limits)
             .with_trusted_proxies(trusted_proxies)
-            .with_grpc_transport_timeouts(policy.transport_timeouts),
-        |mut listener| async move {
-            let (stream, _peer) = listener.accept().await;
-            Some((Ok::<_, std::io::Error>(stream), listener))
+            .with_grpc_transport_timeouts(policy.transport_timeouts);
+    let service = ServiceBuilder::new()
+        .layer(GrpcActivityLayer)
+        .layer(grpc_policy_layer(grpc_policy))
+        // The service is cloned per connection, so this semaphore remains
+        // shared across the listener rather than becoming a per-peer limit.
+        .layer(LoadShedLayer::new())
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit.as_usize()))
+        .service(routes);
+    let transport_timeouts = policy.transport_timeouts;
+    let server = serve_connections::serve_connections(
+        listener,
+        move |stream, mut connection_shutdown| {
+            let activity = stream.grpc_activity();
+            let incoming = stream::once(async move { Ok::<_, std::io::Error>(stream) })
+                .chain(stream::pending());
+            let signal = async move {
+                tokio::select! {
+                    _reason = connection_shutdown.cancelled() => {},
+                    () = retire_grpc_connection(activity, transport_timeouts) => {},
+                }
+            };
+            Box::pin(builder.clone().serve_with_incoming_shutdown(
+                service.clone(),
+                incoming,
+                signal,
+            ))
         },
+        shutdown_for_server,
     );
-    let server = builder
-        .layer(
-            ServiceBuilder::new()
-                .layer(GrpcActivityLayer)
-                .layer(grpc_policy_layer(grpc_policy))
-                // Load shedding keeps policy dispatch ready even when the
-                // concurrency limit is full, so callers receive a gRPC
-                // resource-exhausted response instead of timing out at the
-                // connection's first-request guard.
-                .layer(LoadShedLayer::new())
-                .layer(ConcurrencyLimitLayer::new(concurrency_limit.as_usize())),
-        )
-        .add_routes(routes)
-        .serve_with_incoming_shutdown(incoming, async move {
-            let _reason = shutdown_for_server.cancelled().await;
-        });
 
     tokio::pin!(health_sync);
     tokio::pin!(server);
@@ -312,15 +320,47 @@ pub(crate) async fn serve_health_grpc(
             for service_name in service_names_for_exit {
                 reporter.set_service_status(service_name, GrpcHealthServingStatus::NotServing).await;
             }
-            server_result.map_err(|_| TaskExecutionError::new(TaskExecutionErrorKind::Internal))
+            server_result
         }
         () = &mut health_sync => {
             // The health reporter has published NOT_SERVING. Keep polling the
             // tonic server so its graceful shutdown can wait for in-flight
             // RPCs; the task supervisor owns the finite drain deadline.
-            server
-                .await
-                .map_err(|_| TaskExecutionError::new(TaskExecutionErrorKind::Internal))
+            server.await
+        }
+    }
+}
+
+async fn retire_grpc_connection(
+    activity: Option<Arc<super::grpc_idle::GrpcConnectionActivity>>,
+    timeouts: GrpcTransportTimeouts,
+) {
+    let age_deadline = tokio::time::sleep(timeouts.max_age());
+    tokio::pin!(age_deadline);
+    let Some(activity) = activity else {
+        age_deadline.await;
+        return;
+    };
+    let mut idle = activity.subscribe_idle();
+    loop {
+        let idle_since = *idle.borrow_and_update();
+        let Some(idle_since) = idle_since else {
+            tokio::select! {
+                _ = &mut age_deadline => return,
+                changed = idle.changed() => if changed.is_err() { return },
+            }
+            continue;
+        };
+        let deadline = idle_since + timeouts.idle_timeout();
+        tokio::select! {
+            biased;
+            changed = idle.changed() => if changed.is_err() { return },
+            _ = &mut age_deadline => return,
+            _ = sleep_until(deadline) => {
+                if *idle.borrow() == Some(idle_since) && Instant::now() >= deadline {
+                    return;
+                }
+            }
         }
     }
 }

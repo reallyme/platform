@@ -101,22 +101,12 @@ impl ConnectionActivity {
         if enough_response_progress {
             pending.written_since_idle_activity = 0;
         }
-        self.sender.send_modify(|snapshot| {
-            // A response can outlive its body producer while Hyper drains
-            // queued bytes to a slow reader. Small HTTP/2 keepalive PINGs
-            // alone must not keep an otherwise idle connection admitted.
-            if snapshot.active_requests == 0
-                && (snapshot.has_h2_websocket || enough_response_progress)
-            {
-                snapshot.idle_since = Instant::now();
-            }
-        });
-    }
-
-    pub(super) fn record_read_progress(&self, read: usize) {
-        if read > 0 {
+        if enough_response_progress {
             self.sender.send_modify(|snapshot| {
-                if snapshot.has_h2_websocket && snapshot.active_requests == 0 {
+                // A response can outlive its body producer while Hyper drains
+                // queued bytes to a slow reader. Small HTTP/2 keepalive PINGs
+                // alone must not keep an otherwise idle connection admitted.
+                if snapshot.active_requests == 0 {
                     snapshot.idle_since = Instant::now();
                 }
             });
