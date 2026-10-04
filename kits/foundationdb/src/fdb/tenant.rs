@@ -113,6 +113,10 @@ impl TenantHandle {
     ///   must avoid implicitly retrying a `maybe_committed` commit.
     /// - Cancellation of the caller future remains propagated into the FoundationDB
     ///   transaction.
+    /// - The closure receives a raw FoundationDB transaction. Tenant scoping does
+    ///   not reserve the kit's `__meta/v1/` keys against writes from code using
+    ///   this method. Callers must be trusted to keep application keys outside
+    ///   that namespace; use the tenant-admin API for metadata changes.
     ///
     /// Prefer [`Self::transact_boxed_arc`] for callsites where `D` is expensive
     /// to copy or should be reused read-only across retries.
