@@ -6,7 +6,7 @@ use crate::fdb::tenant_name::FoundationDbTenantName;
 use super::metadata_keys;
 use super::{
     TenantHandle, clear_metadata_if_empty, delete_tenant, ensure_tenant, finish_delete_after_clear,
-    read_tenant_metadata, recover_interrupted_delete, restore_metadata,
+    read_tenant_metadata, recover_interrupted_delete, repair_tenant_metadata, restore_metadata,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
@@ -34,6 +34,29 @@ async fn tenant_delete_recovery_live_cases() {
     failed_second_delete_phase_restores_metadata_after_concurrent_write(&connector).await;
     interrupted_delete_recovery_restores_metadata_even_with_application_data(&connector).await;
     restore_write_conflicts_with_in_flight_clear(&connector).await;
+    interrupted_creation_requires_explicit_empty_tenant_repair(&connector).await;
+}
+
+async fn interrupted_creation_requires_explicit_empty_tenant_repair(
+    connector: &FoundationDbConnector,
+) {
+    let tenant = FoundationDbTenantName::new("kit-create-repair-test").expect("fixed tenant name");
+    TenantManagement::create_tenant(connector.database(), tenant.as_bytes())
+        .await
+        .expect("create tenant before simulated interruption");
+    assert!(
+        ensure_tenant(connector, tenant).await.is_err(),
+        "normal startup must not silently adopt a tenant without kit metadata"
+    );
+    repair_tenant_metadata(connector, tenant)
+        .await
+        .expect("operator repair of an empty tenant");
+    ensure_tenant(connector, tenant)
+        .await
+        .expect("repaired tenant is compatible");
+    delete_tenant(connector, tenant)
+        .await
+        .expect("remove repair fixture");
 }
 
 async fn restore_write_conflicts_with_in_flight_clear(connector: &FoundationDbConnector) {
