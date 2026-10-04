@@ -143,6 +143,6 @@ impl IntoResponse for JsonErrorResponse {
     }
 }
 
-#[cfg(all(test, feature = "testing"))]
+#[cfg(test)]
 #[path = "response_tests.rs"]
 mod tests;

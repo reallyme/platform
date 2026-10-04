@@ -106,7 +106,7 @@ pub struct JetStreamDelivery {
 #[allow(clippy::large_enum_variant)]
 enum JetStreamDeliveryAcker {
     Context(ContextDeliveryAcker),
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(feature = "testing")]
     Fake {
         dispositions: std::sync::Arc<std::sync::Mutex<Vec<JetStreamAckDisposition>>>,
     },
@@ -130,7 +130,7 @@ impl JetStreamDelivery {
         }
     }
 
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(feature = "testing")]
     pub(crate) fn new_for_test(
         subject: String,
         payload: Bytes,
@@ -210,7 +210,7 @@ impl JetStreamDelivery {
         let started = Instant::now();
         let result = match &self.acker {
             JetStreamDeliveryAcker::Context(acker) => acker.acknowledge(disposition, delay).await,
-            #[cfg(any(test, feature = "testing"))]
+            #[cfg(feature = "testing")]
             JetStreamDeliveryAcker::Fake { dispositions } => {
                 dispositions
                     .lock()
@@ -247,7 +247,7 @@ impl JetStreamDelivery {
         let started = Instant::now();
         let result = match &self.acker {
             JetStreamDeliveryAcker::Context(acker) => acker.acknowledge_confirmed().await,
-            #[cfg(any(test, feature = "testing"))]
+            #[cfg(feature = "testing")]
             JetStreamDeliveryAcker::Fake { dispositions } => {
                 dispositions
                     .lock()
@@ -481,5 +481,4 @@ where
 mod debug;
 
 #[cfg(test)]
-#[path = "consumer/tests.rs"]
 mod tests;

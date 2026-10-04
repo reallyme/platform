@@ -27,5 +27,5 @@ pub mod message_id;
 /// Publisher backends and ack helpers.
 pub mod publisher;
 /// Test fakes and in-memory fixtures for local verification.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(feature = "testing")]
 pub mod testing;

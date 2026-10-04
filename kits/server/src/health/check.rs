@@ -22,6 +22,6 @@ pub fn readiness_check(readiness: &Readiness) -> HealthResponse {
     HealthResponse::for_readiness(readiness.state())
 }
 
-#[cfg(all(test, feature = "testing"))]
+#[cfg(test)]
 #[path = "check_tests.rs"]
 mod tests;

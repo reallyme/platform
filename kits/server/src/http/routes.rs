@@ -147,5 +147,5 @@ where
         .layer(request_id_layer())
 }
 
-#[cfg(all(test, feature = "testing"))]
+#[cfg(test)]
 mod tests;

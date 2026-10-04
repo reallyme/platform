@@ -31,26 +31,5 @@ pub(super) fn map_example_app_error_to_connect_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use connectrpc::ErrorCode;
-
-    use super::map_example_app_error_to_connect_error;
-    use crate::app::ExampleAppError;
-
-    #[test]
-    fn app_error_categories_map_to_distinct_connect_statuses() {
-        assert_eq!(
-            map_example_app_error_to_connect_error(ExampleAppError::HelloDisabled).code,
-            ErrorCode::PermissionDenied
-        );
-        assert_eq!(
-            map_example_app_error_to_connect_error(ExampleAppError::MetricConfigurationInvalid)
-                .code,
-            ErrorCode::Internal
-        );
-        assert_eq!(
-            map_example_app_error_to_connect_error(ExampleAppError::DeadlineExceeded).code,
-            ErrorCode::DeadlineExceeded
-        );
-    }
-}
+#[path = "error_tests.rs"]
+mod tests;

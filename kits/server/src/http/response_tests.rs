@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#![cfg(feature = "testing")]
+
 use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
