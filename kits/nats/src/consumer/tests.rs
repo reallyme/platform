@@ -6,8 +6,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
+use metrics::with_local_recorder;
+use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
-use super::{JetStreamAckDisposition, JetStreamConsumerConfig, JetStreamPullConsumer};
+use super::{
+    JetStreamAckDisposition, JetStreamConsumerBackend, JetStreamConsumerConfig,
+    JetStreamDeliveryStream, JetStreamPullConsumer, METRIC_NATS_CONSUMER_VALIDATE_FAILURES_TOTAL,
+    METRIC_NATS_CONSUMER_VALIDATE_TOTAL,
+};
 use crate::testing::{FakeJetStreamConsumerBackend, FakeJetStreamDelivery};
 use crate::{
     config::{JetStreamConsumerConfigInput, JetStreamPublisherConfig, JetStreamTlsPolicy},
@@ -60,6 +66,56 @@ fn should_run_nats_integration() -> bool {
         env::var("REALLYME_RUN_NATS_INTEGRATION").as_deref(),
         Ok("1")
     )
+}
+
+struct RejectingConsumerBackend;
+
+impl JetStreamConsumerBackend for RejectingConsumerBackend {
+    async fn validate_startup(
+        &self,
+        _config: &JetStreamConsumerConfig,
+    ) -> Result<(), JetStreamError> {
+        Err(JetStreamError::ConnectFailed)
+    }
+
+    async fn pull(
+        &self,
+        _config: &JetStreamConsumerConfig,
+        _max_messages: usize,
+        _expires: Duration,
+    ) -> Result<JetStreamDeliveryStream, JetStreamError> {
+        Err(JetStreamError::PullFailed)
+    }
+}
+
+#[test]
+fn consumer_validation_failure_increments_both_outcome_counters() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let consumer =
+        JetStreamPullConsumer::new_with_backend(consumer_config(), RejectingConsumerBackend);
+
+    with_local_recorder(&recorder, || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime should build");
+        for _ in 0..3 {
+            assert_eq!(
+                runtime.block_on(consumer.validate_startup()),
+                Err(JetStreamError::ConnectFailed)
+            );
+        }
+    });
+
+    let counters = snapshotter.snapshot().into_vec();
+    for metric_name in [
+        METRIC_NATS_CONSUMER_VALIDATE_FAILURES_TOTAL,
+        METRIC_NATS_CONSUMER_VALIDATE_TOTAL,
+    ] {
+        assert!(counters.iter().any(|(key, _, _, value)| {
+            key.key().name() == metric_name && *value == DebugValue::Counter(3)
+        }));
+    }
 }
 
 async fn connect_to_local_nats_for_integration()

@@ -410,8 +410,8 @@ where
                 error = ?error,
                 "consumer validate_startup failed"
             );
-            let _ =
-                counter!(METRIC_NATS_CONSUMER_VALIDATE_FAILURES_TOTAL, "reason" => "backend_error");
+            counter!(METRIC_NATS_CONSUMER_VALIDATE_FAILURES_TOTAL, "reason" => "backend_error")
+                .increment(1);
         }
 
         let status = if result.is_ok() { "ok" } else { "error" };

@@ -39,3 +39,4 @@ workspace = true
 [dev-dependencies]
 # Exercise NATS TLS construction in the unified reqwest/rustls feature graph.
 reallyme-typesense-kit = { path = "../typesense" }
+metrics-util.workspace = true
