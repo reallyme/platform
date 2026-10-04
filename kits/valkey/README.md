@@ -55,7 +55,7 @@ export EXAMPLE_SEARCH_VALKEY_PORT="6379"
 export EXAMPLE_SEARCH_VALKEY_DATABASE="0"
 export EXAMPLE_SEARCH_VALKEY_USERNAME="example-search"
 export EXAMPLE_SEARCH_VALKEY_PASSWORD="..."
-export EXAMPLE_SEARCH_VALKEY_KEY_PREFIX="reallyme:example-search"
+export EXAMPLE_SEARCH_VALKEY_KEY_PREFIX="reallyme-example-search"
 export EXAMPLE_SEARCH_VALKEY_TLS_MODE="require"
 # Optional private/internal CA; omit to use the maintained public root set.
 export EXAMPLE_SEARCH_VALKEY_TLS_CA_PEM_PATH="/run/secrets/valkey-ca.pem"

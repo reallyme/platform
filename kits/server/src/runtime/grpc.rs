@@ -1,24 +1,51 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use axum::serve::Listener;
+use futures_util::stream;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
 use tonic::service::Routes;
 use tonic::transport::Server;
+use tonic_health::pb::health_server::HealthServer;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
 
-use crate::config::{GrpcServerConfig, RuntimeConcurrencyLimit};
+use super::connection_guard::{BoundedTcpListener, ForceCloseConnections};
+use crate::config::{GrpcServerConfig, RuntimeConcurrencyLimit, TrustedProxyHeaders};
 use crate::grpc::{GrpcHealthServingStatus, health_reporter};
 use crate::grpc::{GrpcTimeout, grpc_policy_layer};
-use crate::health::{GrpcServingStatus, Readiness, readiness_check};
+use crate::health::{GrpcServingStatus, Readiness, ReadinessWatcher, readiness_check};
 use crate::http::HttpRateLimitTierName;
 use crate::runtime::{HttpRateLimitTierPolicy, RateLimitRegistry};
 use crate::startup::TaskName;
 use crate::task::{ShutdownToken, TaskExecutionError, TaskExecutionErrorKind};
 
 const DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
+const DEFAULT_GRPC_MAX_CONCURRENT_STREAMS: u32 = 128;
+const GRPC_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+const GRPC_CONNECTION_MAX_AGE: Duration = Duration::from_secs(600);
+const GRPC_CONNECTION_MAX_AGE_GRACE: Duration = Duration::from_secs(30);
+
+struct CloseConnectionsOnDrop(Arc<ForceCloseConnections>);
+
+impl Drop for CloseConnectionsOnDrop {
+    fn drop(&mut self) {
+        // Tonic owns detached per-connection tasks. If the supervisor aborts
+        // this serving future at the drain deadline, wake their IO so those
+        // tasks cannot keep serving while app cleanup releases dependencies.
+        self.0.close();
+    }
+}
+
+#[path = "grpc/app_routes.rs"]
+mod app_routes;
+pub use app_routes::{GrpcAppRoutes, GrpcAppRoutesError, GrpcAppRoutesErrorReason};
+#[path = "grpc/health_service.rs"]
+mod health_service;
+use health_service::RuntimeHealthService;
 
 /// gRPC server input owned by server composition and run by [`crate::runtime::ServerRuntime`].
 ///
@@ -26,22 +53,20 @@ const DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 /// routes. In both cases the runtime mounts standard gRPC health and owns the
 /// listener/serve/shutdown mechanics.
 ///
-/// Size-limit model:
-/// - `max_decoding_message_bytes` is authoritative for inbound message size.
-/// - Per-method `max_request_message_bytes` is an early/advisory header-based
-///   reject path and is not full streaming byte accounting.
+/// App-owned tonic services must configure their own decode and encode limits.
+/// Per-method `max_request_message_bytes` is an early header check, not full
+/// streaming byte accounting.
 pub struct GrpcServerSpec {
     task_name: TaskName,
     config: GrpcServerConfig,
-    routes: Option<Routes>,
-    max_decoding_message_bytes: usize,
-    max_encoding_message_bytes: usize,
+    routes: Option<GrpcAppRoutes>,
     max_concurrent_streams: Option<u32>,
     deadline_required: bool,
     max_timeout: Option<GrpcTimeout>,
     max_header_list_size_bytes: u32,
     method_policies: Vec<GrpcMethodPolicy>,
     rate_limit_policies: std::sync::Arc<Vec<(HttpRateLimitTierName, HttpRateLimitTierPolicy)>>,
+    trusted_proxy_headers: TrustedProxyHeaders,
 }
 
 impl GrpcServerSpec {
@@ -51,44 +76,40 @@ impl GrpcServerSpec {
             task_name,
             config,
             routes: None,
-            max_decoding_message_bytes: crate::grpc::DEFAULT_GRPC_DECODING_MESSAGE_SIZE_BYTES,
-            max_encoding_message_bytes: crate::grpc::DEFAULT_GRPC_ENCODING_MESSAGE_SIZE_BYTES,
             max_concurrent_streams: None,
             deadline_required: false,
             max_timeout: None,
             max_header_list_size_bytes: DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE,
             method_policies: Vec::new(),
             rate_limit_policies: std::sync::Arc::new(Vec::new()),
+            trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
         }
     }
 
     /// Creates a gRPC server spec from app-owned tonic routes.
     ///
     /// The runtime will mount the standard gRPC health service alongside these
-    /// routes. App crates should therefore provide product/internal RPC
-    /// services only and let the runtime own health behavior.
-    pub fn with_routes(task_name: TaskName, config: GrpcServerConfig, routes: Routes) -> Self {
+    /// routes and publish readiness under each registered service name. Build
+    /// routes through [`GrpcAppRoutes`] so named health cannot silently remain
+    /// unknown. App crates provide product/internal RPC services only.
+    pub fn with_routes(
+        task_name: TaskName,
+        config: GrpcServerConfig,
+        routes: GrpcAppRoutes,
+    ) -> Self {
         Self {
             task_name,
             config,
             routes: Some(routes),
-            max_decoding_message_bytes: crate::grpc::DEFAULT_GRPC_DECODING_MESSAGE_SIZE_BYTES,
-            max_encoding_message_bytes: crate::grpc::DEFAULT_GRPC_ENCODING_MESSAGE_SIZE_BYTES,
             max_concurrent_streams: None,
             deadline_required: false,
             max_timeout: None,
             max_header_list_size_bytes: DEFAULT_GRPC_HTTP2_MAX_HEADER_LIST_SIZE,
             method_policies: Vec::new(),
             rate_limit_policies: std::sync::Arc::new(Vec::new()),
+            trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
         }
     }
-    /// Attaches shared gRPC message size limits for app-owned services.
-    pub fn with_message_size_limits(mut self, max_decoding: usize, max_encoding: usize) -> Self {
-        self.max_decoding_message_bytes = max_decoding;
-        self.max_encoding_message_bytes = max_encoding;
-        self
-    }
-
     /// Attaches optional HTTP/2 concurrent stream cap.
     pub fn with_max_concurrent_streams(mut self, max_concurrent_streams: Option<u32>) -> Self {
         self.max_concurrent_streams = max_concurrent_streams;
@@ -127,6 +148,16 @@ impl GrpcServerSpec {
         self
     }
 
+    /// Trusts X-Forwarded-For only from the configured gRPC ingress ranges.
+    pub fn with_trusted_proxy_headers(mut self, headers: TrustedProxyHeaders) -> Self {
+        self.trusted_proxy_headers = headers;
+        self
+    }
+
+    pub(crate) fn trusted_proxy_headers(&self) -> TrustedProxyHeaders {
+        self.trusted_proxy_headers.clone()
+    }
+
     pub(crate) fn task_name(&self) -> TaskName {
         self.task_name.clone()
     }
@@ -135,8 +166,14 @@ impl GrpcServerSpec {
         self.config
     }
 
-    pub(crate) fn into_routes(self) -> Option<Routes> {
-        self.routes
+    pub(crate) fn into_routes(self) -> (Option<Routes>, Vec<&'static str>) {
+        match self.routes {
+            Some(routes) => {
+                let (routes, names) = routes.into_parts();
+                (Some(routes), names)
+            }
+            None => (None, Vec::new()),
+        }
     }
 
     pub(crate) fn max_concurrent_streams(&self) -> Option<u32> {
@@ -169,15 +206,28 @@ impl GrpcServerSpec {
 pub(crate) async fn serve_health_grpc(
     listener: TcpListener,
     routes: Option<Routes>,
+    service_names: Vec<&'static str>,
     readiness: Readiness,
     policy: GrpcServePolicy,
     concurrency_limit: RuntimeConcurrencyLimit,
     shutdown: ShutdownToken,
 ) -> Result<(), TaskExecutionError> {
-    let (mut reporter, health_service) = health_reporter();
-    set_overall_health_status(&mut reporter, &readiness).await;
-    let health_sync =
-        sync_grpc_health_with_readiness(reporter.clone(), readiness.clone(), shutdown.clone());
+    let force_close = Arc::new(ForceCloseConnections::new());
+    let _close_connections_on_drop = CloseConnectionsOnDrop(Arc::clone(&force_close));
+    let (mut reporter, _health_service) = health_reporter();
+    let watcher = readiness.watch();
+    set_registered_health_status(&mut reporter, &readiness, &service_names).await;
+    let service_names_for_exit = service_names.clone();
+    let health_sync = sync_grpc_health_with_readiness(
+        reporter.clone(),
+        readiness.clone(),
+        watcher,
+        service_names,
+        shutdown.clone(),
+    );
+    let health_service = HealthServer::new(RuntimeHealthService::new(
+        tonic_health::server::HealthService::from_health_reporter(reporter.clone()),
+    ));
     let routes = match routes {
         Some(routes) => routes.add_service(health_service),
         None => Routes::new(health_service),
@@ -190,36 +240,55 @@ pub(crate) async fn serve_health_grpc(
         policy.deadline_required,
         policy.method_policies,
         policy.rate_limit_registry,
-    );
-    let mut builder =
-        Server::builder().http2_max_header_list_size(policy.max_header_list_size_bytes);
-    if let Some(max_streams) = policy.max_concurrent_streams {
-        builder = builder.max_concurrent_streams(max_streams);
+    )
+    .with_trusted_proxy_headers(policy.trusted_proxy_headers);
+    let mut builder = Server::builder()
+        .http2_max_header_list_size(policy.max_header_list_size_bytes)
+        .max_concurrent_streams(
+            policy
+                .max_concurrent_streams
+                .unwrap_or(DEFAULT_GRPC_MAX_CONCURRENT_STREAMS),
+        )
+        .http2_keepalive_interval(Some(GRPC_KEEPALIVE_INTERVAL))
+        .http2_keepalive_timeout(Some(GRPC_KEEPALIVE_TIMEOUT))
+        .max_connection_age(GRPC_CONNECTION_MAX_AGE)
+        .max_connection_age_grace(GRPC_CONNECTION_MAX_AGE_GRACE);
+    if let Some(max_timeout) = policy.max_timeout {
+        builder = builder.timeout(max_timeout.as_duration());
     }
+    let incoming = stream::unfold(
+        BoundedTcpListener::with_force_close(listener, force_close),
+        |mut listener| async move {
+            let (stream, _peer) = listener.accept().await;
+            Some((Ok::<_, std::io::Error>(stream), listener))
+        },
+    );
     let server = builder
         .layer(ServiceBuilder::new().layer(grpc_policy_layer(grpc_policy)))
         .layer(ConcurrencyLimitLayer::new(concurrency_limit.as_usize()))
         .add_routes(routes)
-        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+        .serve_with_incoming_shutdown(incoming, async move {
             let _reason = shutdown_for_server.cancelled().await;
         });
 
-    let mut shutdown_for_forced_stop = shutdown;
+    tokio::pin!(health_sync);
+    tokio::pin!(server);
 
     tokio::select! {
-        server_result = server => {
-            health_sync.await;
+        server_result = &mut server => {
+            reporter.set_service_status("", GrpcHealthServingStatus::NotServing).await;
+            for service_name in service_names_for_exit {
+                reporter.set_service_status(service_name, GrpcHealthServingStatus::NotServing).await;
+            }
             server_result.map_err(|_| TaskExecutionError::new(TaskExecutionErrorKind::Internal))
         }
-        _reason = shutdown_for_forced_stop.cancelled() => {
-            // Tonic/Hyper can keep an otherwise idle HTTP/2 connection alive
-            // after the listener has entered graceful shutdown. Dropping the
-            // server future after the runtime has requested shutdown prevents
-            // an idle client channel from turning process shutdown into a
-            // timeout while still letting in-flight RPC handlers observe the
-            // same shutdown token through app-owned cancellation paths.
-            health_sync.await;
-            Ok(())
+        () = &mut health_sync => {
+            // The health reporter has published NOT_SERVING. Keep polling the
+            // tonic server so its graceful shutdown can wait for in-flight
+            // RPCs; the task supervisor owns the finite drain deadline.
+            server
+                .await
+                .map_err(|_| TaskExecutionError::new(TaskExecutionErrorKind::Internal))
         }
     }
 }
@@ -233,6 +302,7 @@ pub(crate) struct GrpcServePolicy {
     pub(crate) max_header_list_size_bytes: u32,
     pub(crate) method_policies: Vec<GrpcMethodPolicy>,
     pub(crate) rate_limit_registry: Arc<RateLimitRegistry>,
+    pub(crate) trusted_proxy_headers: TrustedProxyHeaders,
 }
 
 /// Native gRPC method-level runtime policy.
@@ -273,13 +343,16 @@ impl GrpcMethodPolicy {
     }
 }
 
-async fn set_overall_health_status(
+async fn set_registered_health_status(
     reporter: &mut crate::grpc::GrpcHealthReporter,
     readiness: &Readiness,
+    service_names: &[&'static str],
 ) {
-    reporter
-        .set_service_status("", grpc_health_status_for_readiness(readiness))
-        .await;
+    let status = grpc_health_status_for_readiness(readiness);
+    reporter.set_service_status("", status).await;
+    for service_name in service_names {
+        reporter.set_service_status(service_name, status).await;
+    }
 }
 
 fn grpc_health_status_for_readiness(readiness: &Readiness) -> GrpcHealthServingStatus {
@@ -292,22 +365,27 @@ fn grpc_health_status_for_readiness(readiness: &Readiness) -> GrpcHealthServingS
 async fn sync_grpc_health_with_readiness(
     mut reporter: crate::grpc::GrpcHealthReporter,
     readiness: Readiness,
+    mut watcher: ReadinessWatcher,
+    service_names: Vec<&'static str>,
     mut shutdown: ShutdownToken,
 ) {
-    let mut watcher = readiness.watch();
-
     loop {
         tokio::select! {
             state = watcher.changed() => {
                 if state.is_err() {
                     return;
                 }
-                set_overall_health_status(&mut reporter, &readiness).await;
+                set_registered_health_status(&mut reporter, &readiness, &service_names).await;
             }
             _reason = shutdown.cancelled() => {
                 reporter
                     .set_service_status("", GrpcHealthServingStatus::NotServing)
                     .await;
+                for service_name in &service_names {
+                    reporter
+                        .set_service_status(service_name, GrpcHealthServingStatus::NotServing)
+                        .await;
+                }
                 return;
             }
         }

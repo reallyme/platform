@@ -3,8 +3,11 @@
 
 //! WebSocket connection identity, messages, outcomes, hooks, and admission permits.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use axum::extract::ws::Utf8Bytes;
 use bytes::Bytes;
@@ -33,6 +36,33 @@ pub(super) enum OutboundWebSocketEvent {
 #[derive(Debug, Clone)]
 pub struct WebSocketConnectionLimiter {
     semaphore: Arc<Semaphore>,
+    source_counts: Arc<Mutex<HashMap<WebSocketSource, usize>>>,
+}
+
+const MAX_CONNECTIONS_PER_SOURCE: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum WebSocketSource {
+    Ip(IpAddr),
+    Anonymous,
+}
+
+impl WebSocketSource {
+    fn from_ip(source: Option<IpAddr>) -> Self {
+        match source {
+            Some(IpAddr::V4(ip)) => Self::Ip(IpAddr::V4(ip)),
+            Some(IpAddr::V6(ip)) => match ip.to_ipv4_mapped() {
+                Some(mapped) => Self::Ip(IpAddr::V4(mapped)),
+                None => {
+                    // A rotating IPv6 interface identifier must share one
+                    // connection budget with its /64 network.
+                    let network = u128::from(ip) & (u128::MAX << 64);
+                    Self::Ip(IpAddr::V6(Ipv6Addr::from(network)))
+                }
+            },
+            None => Self::Anonymous,
+        }
+    }
 }
 
 impl WebSocketConnectionLimiter {
@@ -40,29 +70,70 @@ impl WebSocketConnectionLimiter {
     pub fn new(limit: RuntimeConcurrencyLimit) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(limit.as_usize())),
+            source_counts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Attempts to reserve capacity for one active WebSocket connection.
     pub fn try_acquire(&self) -> Result<WebSocketConnectionPermit, WebSocketConnectionLimitError> {
-        Arc::clone(&self.semaphore)
+        self.try_acquire_for_source(None)
+    }
+
+    /// Reserves global and per-source capacity for one connection.
+    pub fn try_acquire_for_source(
+        &self,
+        source_ip: Option<IpAddr>,
+    ) -> Result<WebSocketConnectionPermit, WebSocketConnectionLimitError> {
+        let global_permit = Arc::clone(&self.semaphore)
             .try_acquire_owned()
-            .map(WebSocketConnectionPermit)
             .map_err(|_| {
                 WebSocketConnectionLimitError::new(
                     WebSocketConnectionLimitErrorReason::TooManyActiveConnections,
                 )
-            })
+            })?;
+        let source = WebSocketSource::from_ip(source_ip);
+        let mut counts = self.source_counts.lock().map_err(|_| {
+            WebSocketConnectionLimitError::new(WebSocketConnectionLimitErrorReason::Internal)
+        })?;
+        let active = counts.entry(source).or_insert(0);
+        if *active >= MAX_CONNECTIONS_PER_SOURCE {
+            return Err(WebSocketConnectionLimitError::new(
+                WebSocketConnectionLimitErrorReason::TooManyActiveConnections,
+            ));
+        }
+        *active += 1;
+        Ok(WebSocketConnectionPermit {
+            _global_permit: global_permit,
+            source_counts: Arc::clone(&self.source_counts),
+            source,
+        })
     }
 }
 
 /// Permit held while one WebSocket connection is active.
 #[derive(Debug)]
-pub struct WebSocketConnectionPermit(OwnedSemaphorePermit);
+pub struct WebSocketConnectionPermit {
+    _global_permit: OwnedSemaphorePermit,
+    source_counts: Arc<Mutex<HashMap<WebSocketSource, usize>>>,
+    source: WebSocketSource,
+}
 
 impl WebSocketConnectionPermit {
     pub(super) fn keep_alive(&self) {
-        let _permit = &self.0;
+        let _permit = &self._global_permit;
+    }
+}
+
+impl Drop for WebSocketConnectionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = self.source_counts.lock()
+            && let Some(active) = counts.get_mut(&self.source)
+        {
+            *active -= 1;
+            if *active == 0 {
+                counts.remove(&self.source);
+            }
+        }
     }
 }
 
@@ -94,6 +165,7 @@ pub struct WebSocketConnectionContext {
     connection_id: ConnectionId,
     request_id: Option<RequestId>,
     trace_id: Option<TraceId>,
+    source_ip: Option<IpAddr>,
 }
 
 impl WebSocketConnectionContext {
@@ -103,7 +175,19 @@ impl WebSocketConnectionContext {
             connection_id: ConnectionId::generate(),
             request_id,
             trace_id,
+            source_ip: None,
         }
+    }
+
+    /// Records the validated client IP used for per-source admission.
+    pub fn with_source_ip(mut self, source_ip: IpAddr) -> Self {
+        self.source_ip = Some(source_ip);
+        self
+    }
+
+    /// Returns the source IP if the host supplied one.
+    pub const fn source_ip(self) -> Option<IpAddr> {
+        self.source_ip
     }
 
     /// Returns the typed connection identifier.
@@ -233,6 +317,7 @@ pub(super) enum ApplicationMessageOutcome {
     Continue,
     Close(WebSocketCloseReason),
     HandlerError,
+    TransportError,
     ShutdownRequested,
 }
 

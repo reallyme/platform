@@ -1,7 +1,19 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{PostgresQueryErrorReason, PostgresRetryHint, classify_sqlstate};
+use super::{
+    PostgresQueryErrorReason, PostgresRetryHint, classify_sqlstate, has_transport_failure,
+};
+
+#[test]
+fn transport_errors_are_distinguished_from_non_network_io_errors() {
+    let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+    let timed_out = std::io::Error::from(std::io::ErrorKind::TimedOut);
+    let invalid_data = std::io::Error::from(std::io::ErrorKind::InvalidData);
+    assert!(has_transport_failure(&reset));
+    assert!(has_transport_failure(&timed_out));
+    assert!(!has_transport_failure(&invalid_data));
+}
 
 #[test]
 fn sqlstate_classification_is_stable_and_low_cardinality() {

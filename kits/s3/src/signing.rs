@@ -18,8 +18,17 @@ const HEADER_HOST: &str = "host";
 const HEADER_IF_NONE_MATCH: &str = "if-none-match";
 const HEADER_X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
 const HEADER_X_AMZ_DATE: &str = "x-amz-date";
+const HEADER_X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
 const PUT_IF_ABSENT_SIGNED_HEADERS: &str = "host;if-none-match;x-amz-content-sha256;x-amz-date";
 const GET_SIGNED_HEADERS: &str = "host;x-amz-content-sha256;x-amz-date";
+const PUT_WITH_TOKEN_SIGNED_HEADERS: &str =
+    "host;if-none-match;x-amz-content-sha256;x-amz-date;x-amz-security-token";
+const GET_WITH_TOKEN_SIGNED_HEADERS: &str =
+    "host;x-amz-content-sha256;x-amz-date;x-amz-security-token";
+// These fixed reservations exceed every literal header/separator appended
+// below, so a sensitive session token never enters a freed growth buffer.
+const CANONICAL_HEADER_STATIC_BYTES: usize = 128;
+const CANONICAL_REQUEST_SEPARATOR_BYTES: usize = 16;
 
 /// SHA-256 digest of an empty request body, required by SigV4 GET requests.
 pub const EMPTY_SHA256_HEX: &str =
@@ -48,10 +57,12 @@ impl S3SignedMethod {
         }
     }
 
-    const fn signed_headers(self) -> &'static str {
-        match self {
-            Self::Get | Self::Head | Self::Delete => GET_SIGNED_HEADERS,
-            Self::PutIfAbsent => PUT_IF_ABSENT_SIGNED_HEADERS,
+    const fn signed_headers(self, with_session_token: bool) -> &'static str {
+        match (self, with_session_token) {
+            (Self::Get | Self::Head | Self::Delete, false) => GET_SIGNED_HEADERS,
+            (Self::PutIfAbsent, false) => PUT_IF_ABSENT_SIGNED_HEADERS,
+            (Self::Get | Self::Head | Self::Delete, true) => GET_WITH_TOKEN_SIGNED_HEADERS,
+            (Self::PutIfAbsent, true) => PUT_WITH_TOKEN_SIGNED_HEADERS,
         }
     }
 
@@ -63,15 +74,16 @@ impl S3SignedMethod {
 }
 
 /// Fully signed request metadata for a S3 transport adapter.
-pub struct S3SignedRequest {
+pub struct S3SignedRequest<'a> {
     object_url: Url,
     authorization: Zeroizing<String>,
     amz_date: String,
     payload_hash: String,
     method: S3SignedMethod,
+    session_token: Option<&'a secrecy::SecretString>,
 }
 
-impl S3SignedRequest {
+impl S3SignedRequest<'_> {
     /// Returns the exact allowlisted object URL covered by the signature.
     #[must_use]
     pub const fn object_url(&self) -> &Url {
@@ -101,9 +113,14 @@ impl S3SignedRequest {
     pub const fn method(&self) -> S3SignedMethod {
         self.method
     }
+
+    /// Returns the signed temporary credential token, if configured.
+    pub fn session_token(&self) -> Option<&str> {
+        self.session_token.map(ExposeSecret::expose_secret)
+    }
 }
 
-impl std::fmt::Debug for S3SignedRequest {
+impl std::fmt::Debug for S3SignedRequest<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("S3SignedRequest")
@@ -112,18 +129,19 @@ impl std::fmt::Debug for S3SignedRequest {
             .field("amz_date", &self.amz_date)
             .field("payload_hash", &self.payload_hash)
             .field("method", &self.method)
+            .field("session_token", &self.session_token.map(|_| "<redacted>"))
             .finish()
     }
 }
 
 /// Signs one bounded immutable-object operation using AWS Signature Version 4.
-pub fn sign_object_request(
-    config: &S3StorageConfig,
+pub fn sign_object_request<'a>(
+    config: &'a S3StorageConfig,
     method: S3SignedMethod,
     object_key: &S3ObjectKey,
     body: &[u8],
     timestamp: OffsetDateTime,
-) -> Result<S3SignedRequest, S3StorageError> {
+) -> Result<S3SignedRequest<'a>, S3StorageError> {
     if !matches!(method, S3SignedMethod::PutIfAbsent) && !body.is_empty() {
         return Err(S3StorageError::new(S3StorageErrorReason::InvalidRequest));
     }
@@ -151,13 +169,15 @@ pub fn sign_object_request(
         host_header.as_str(),
         payload_hash.as_str(),
         amz_date.as_str(),
-    );
+        config.session_token().map(ExposeSecret::expose_secret),
+    )?;
     let canonical_request = canonical_request(
         method,
         canonical_uri.as_str(),
         canonical_headers.as_str(),
         payload_hash.as_str(),
-    );
+        config.session_token().is_some(),
+    )?;
     let credential_scope = credential_scope(short_date.as_str(), config.region());
     let string_to_sign = string_to_sign(
         amz_date.as_str(),
@@ -169,20 +189,21 @@ pub fn sign_object_request(
         short_date.as_str(),
         config.region(),
     )?;
-    let signature = hmac_hex(signing_key.as_ref(), string_to_sign.as_bytes())?;
+    let signature = Zeroizing::new(hmac_hex(signing_key.as_ref(), string_to_sign.as_bytes())?);
     let authorization = authorization_header(
         config.access_key_id().expose_secret(),
         credential_scope.as_str(),
-        method.signed_headers(),
+        method.signed_headers(config.session_token().is_some()),
         signature.as_str(),
-    );
+    )?;
 
     Ok(S3SignedRequest {
         object_url,
-        authorization: Zeroizing::new(authorization),
+        authorization,
         amz_date,
         payload_hash,
         method,
+        session_token: config.session_token(),
     })
 }
 
@@ -190,6 +211,7 @@ pub(crate) fn object_url(
     config: &S3StorageConfig,
     object_key: &S3ObjectKey,
 ) -> Result<Url, S3StorageError> {
+    config.validate_scoped_key(object_key)?;
     let mut endpoint = config.endpoint().clone();
     let path_length = config
         .bucket()
@@ -234,8 +256,18 @@ fn canonical_headers(
     host: &str,
     payload_hash: &str,
     amz_date: &str,
-) -> String {
-    let mut value = String::new();
+    session_token: Option<&str>,
+) -> Result<Zeroizing<String>, S3StorageError> {
+    // Reserve once: the optional token is secret and must not be left in a
+    // freed growth buffer while constructing the canonical headers.
+    let capacity = host
+        .len()
+        .checked_add(payload_hash.len())
+        .and_then(|length| length.checked_add(amz_date.len()))
+        .and_then(|length| length.checked_add(session_token.map_or(0, str::len)))
+        .and_then(|length| length.checked_add(CANONICAL_HEADER_STATIC_BYTES))
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut value = Zeroizing::new(String::with_capacity(capacity));
     value.push_str(HEADER_HOST);
     value.push(':');
     value.push_str(host);
@@ -252,7 +284,13 @@ fn canonical_headers(
     value.push(':');
     value.push_str(amz_date);
     value.push('\n');
-    value
+    if let Some(token) = session_token {
+        value.push_str(HEADER_X_AMZ_SECURITY_TOKEN);
+        value.push(':');
+        value.push_str(token);
+        value.push('\n');
+    }
+    Ok(value)
 }
 
 fn canonical_request(
@@ -260,18 +298,26 @@ fn canonical_request(
     canonical_uri: &str,
     canonical_headers: &str,
     payload_hash: &str,
-) -> String {
-    let mut value = String::new();
+    with_session_token: bool,
+) -> Result<Zeroizing<String>, S3StorageError> {
+    let capacity = canonical_uri
+        .len()
+        .checked_add(canonical_headers.len())
+        .and_then(|length| length.checked_add(payload_hash.len()))
+        .and_then(|length| length.checked_add(method.signed_headers(with_session_token).len()))
+        .and_then(|length| length.checked_add(CANONICAL_REQUEST_SEPARATOR_BYTES))
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut value = Zeroizing::new(String::with_capacity(capacity));
     value.push_str(method.as_http_method());
     value.push('\n');
     value.push_str(canonical_uri);
     value.push_str("\n\n");
     value.push_str(canonical_headers);
     value.push('\n');
-    value.push_str(method.signed_headers());
+    value.push_str(method.signed_headers(with_session_token));
     value.push('\n');
     value.push_str(payload_hash);
-    value
+    Ok(value)
 }
 
 pub(crate) fn credential_scope(short_date: &str, region: &str) -> String {
@@ -307,8 +353,15 @@ fn authorization_header(
     credential_scope: &str,
     signed_headers: &str,
     signature: &str,
-) -> String {
-    let mut value = String::new();
+) -> Result<Zeroizing<String>, S3StorageError> {
+    let capacity = access_key_id
+        .len()
+        .checked_add(credential_scope.len())
+        .and_then(|length| length.checked_add(signed_headers.len()))
+        .and_then(|length| length.checked_add(signature.len()))
+        .and_then(|length| length.checked_add(64))
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut value = Zeroizing::new(String::with_capacity(capacity));
     value.push_str(AWS_ALGORITHM);
     value.push_str(" Credential=");
     value.push_str(access_key_id);
@@ -318,7 +371,7 @@ fn authorization_header(
     value.push_str(signed_headers);
     value.push_str(", Signature=");
     value.push_str(signature);
-    value
+    Ok(value)
 }
 
 pub(crate) fn derive_signing_key(
@@ -326,9 +379,13 @@ pub(crate) fn derive_signing_key(
     short_date: &str,
     region: &str,
 ) -> Result<Zeroizing<[u8; 32]>, S3StorageError> {
-    let mut k_secret = Zeroizing::new(String::from("AWS4"));
-    k_secret.push_str(secret_access_key);
-    let k_date = hmac_bytes(k_secret.as_bytes(), short_date.as_bytes())?;
+    let capacity = 4_usize
+        .checked_add(secret_access_key.len())
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut k_secret = Zeroizing::new(Vec::with_capacity(capacity));
+    k_secret.extend_from_slice(b"AWS4");
+    k_secret.extend_from_slice(secret_access_key.as_bytes());
+    let k_date = hmac_bytes(k_secret.as_slice(), short_date.as_bytes())?;
     let k_region = hmac_bytes(k_date.as_slice(), region.as_bytes())?;
     let k_service = hmac_bytes(k_region.as_slice(), AWS_SERVICE.as_bytes())?;
     let k_signing = hmac_bytes(k_service.as_slice(), AWS_REQUEST_TYPE.as_bytes())?;

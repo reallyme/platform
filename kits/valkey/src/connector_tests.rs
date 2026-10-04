@@ -1,8 +1,38 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{MAX_TLS_CA_PEM_BYTES, decode_deleted_count, read_custom_root};
-use crate::{ValkeyCommandErrorReason, ValkeyError, ValkeySetupErrorReason};
+use super::{
+    MAX_TLS_CA_PEM_BYTES, decode_bounded_get_result, decode_deleted_count, read_custom_root,
+};
+use crate::{
+    ValkeyCommandErrorReason, ValkeyDataErrorReason, ValkeyDataKind, ValkeyError,
+    ValkeySetupErrorReason,
+};
+
+#[test]
+fn bounded_get_decodes_missing_empty_and_oversized_values() {
+    assert!(matches!(
+        decode_bounded_get_result((0, Vec::new())),
+        Ok(None)
+    ));
+    assert!(matches!(
+        decode_bounded_get_result((1, Vec::new())),
+        Ok(Some(value)) if value.as_bytes().is_empty()
+    ));
+    assert!(matches!(
+        decode_bounded_get_result((2, Vec::new())),
+        Err(ValkeyError::InvalidData {
+            kind: ValkeyDataKind::Value,
+            reason: ValkeyDataErrorReason::TooLarge,
+        })
+    ));
+    assert!(matches!(
+        decode_bounded_get_result((0, vec![1])),
+        Err(ValkeyError::Command {
+            reason: ValkeyCommandErrorReason::InvalidResponse,
+        })
+    ));
+}
 
 #[test]
 fn delete_count_rejects_protocol_violation() {

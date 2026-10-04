@@ -25,7 +25,7 @@ fn downstream_config_resolves_locator_backed_endpoint() {
                 service: "search".to_owned(),
                 tags: vec!["prod".to_owned(), "eu".to_owned()],
                 port: Some(8108),
-                scheme: Some("http".to_owned()),
+                scheme: Some("https".to_owned()),
             }),
         },
     )]))
@@ -44,7 +44,7 @@ fn downstream_config_resolves_locator_backed_endpoint() {
             .endpoints()
             .and_then(|endpoints| endpoints.first())
             .map(AppServiceEndpointUrl::as_str),
-        Some("http://100.64.0.10:8108")
+        Some("https://100.64.0.10:8108")
     );
 }
 
@@ -73,7 +73,7 @@ fn downstream_endpoint_static_config_is_preserved() {
 #[test]
 fn downstream_endpoint_prefers_located_endpoints_and_keeps_static_fallbacks() {
     let endpoint = AppDownstreamEndpointConfig::try_from(RawDownstreamEndpointConfig {
-        base_url: Some("http://typesense-fallback:8108".to_owned()),
+        base_url: Some("https://typesense-fallback:8108".to_owned()),
         endpoints: Vec::new(),
         endpoint_selection: Some("round_robin".to_owned()),
         locator: Some(AppServiceLocatorDocument {
@@ -81,7 +81,7 @@ fn downstream_endpoint_prefers_located_endpoints_and_keeps_static_fallbacks() {
             service: "search".to_owned(),
             tags: vec!["prod".to_owned(), "eu".to_owned()],
             port: Some(8108),
-            scheme: Some("http".to_owned()),
+            scheme: Some("https".to_owned()),
         }),
     })
     .expect("locator with static fallback should validate");
@@ -98,14 +98,17 @@ fn downstream_endpoint_prefers_located_endpoints_and_keeps_static_fallbacks() {
 
     assert_eq!(
         endpoint_values,
-        ["http://100.64.0.10:8108", "http://typesense-fallback:8108"]
+        [
+            "https://100.64.0.10:8108",
+            "https://typesense-fallback:8108"
+        ]
     );
 }
 
 #[test]
 fn downstream_endpoint_uses_static_fallback_when_locator_resolution_fails() {
     let endpoint = AppDownstreamEndpointConfig::try_from(RawDownstreamEndpointConfig {
-        base_url: Some("http://typesense-fallback:8108".to_owned()),
+        base_url: Some("https://typesense-fallback:8108".to_owned()),
         endpoints: Vec::new(),
         endpoint_selection: Some("failover".to_owned()),
         locator: Some(AppServiceLocatorDocument {
@@ -113,7 +116,7 @@ fn downstream_endpoint_uses_static_fallback_when_locator_resolution_fails() {
             service: "search".to_owned(),
             tags: vec!["prod".to_owned(), "eu".to_owned()],
             port: Some(8108),
-            scheme: Some("http".to_owned()),
+            scheme: Some("https".to_owned()),
         }),
     })
     .expect("locator with static fallback should validate");
@@ -128,7 +131,7 @@ fn downstream_endpoint_uses_static_fallback_when_locator_resolution_fails() {
         .map(AppServiceEndpointUrl::as_str)
         .collect::<Vec<_>>();
 
-    assert_eq!(endpoint_values, ["http://typesense-fallback:8108"]);
+    assert_eq!(endpoint_values, ["https://typesense-fallback:8108"]);
 }
 
 struct StaticResolver;
@@ -139,7 +142,7 @@ impl AppServiceEndpointResolver for StaticResolver {
         _locator: &AppServiceLocator,
     ) -> Result<AppServiceLocatedEndpoints, AppServiceEndpointResolutionError> {
         AppServiceLocatedEndpoints::new(vec![
-            AppServiceEndpointUrl::new("http://100.64.0.10:8108")
+            AppServiceEndpointUrl::new("https://100.64.0.10:8108")
                 .expect("test endpoint should validate"),
         ])
     }

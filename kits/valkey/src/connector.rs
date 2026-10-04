@@ -6,19 +6,26 @@ use std::num::NonZeroU64;
 
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use redis::{
-    Client, Cmd, ConnectionAddr, ErrorKind, FromRedisValue, IntoConnectionInfo, Pipeline,
-    ProtocolVersion, RedisConnectionInfo, RedisError, TlsCertificates,
+    Client, ConnectionAddr, ErrorKind, FromRedisValue, IntoConnectionInfo, ProtocolVersion,
+    RedisConnectionInfo, RedisError, TlsCertificates,
 };
 use rustls::pki_types::pem::PemObject;
 use secrecy::ExposeSecret;
 use zeroize::Zeroizing;
 
+use crate::value::MAX_VALUE_BYTES;
 use crate::{
-    ValkeyCommandErrorReason, ValkeyConfig, ValkeyError, ValkeyKey, ValkeyResult,
-    ValkeySetupErrorReason, ValkeyTimeToLive, ValkeyTlsTrust, ValkeyTransportSecurity, ValkeyValue,
+    ValkeyCommand, ValkeyCommandErrorReason, ValkeyConfig, ValkeyDataErrorReason, ValkeyDataKind,
+    ValkeyError, ValkeyKey, ValkeyPipeline, ValkeyResult, ValkeySetupErrorReason, ValkeyTimeToLive,
+    ValkeyTlsTrust, ValkeyTransportSecurity, ValkeyValue,
 };
 
 const NAMESPACE_SEPARATOR: u8 = b':';
+const BOUNDED_GET_SCRIPT: &str = r"
+if redis.call('EXISTS', KEYS[1]) == 0 then return {0, ''} end
+if redis.call('STRLEN', KEYS[1]) > tonumber(ARGV[1]) then return {2, ''} end
+return {1, redis.call('GET', KEYS[1])}
+";
 const RELEASE_LEASE_SCRIPT: &str = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 // Redis integer replies become Lua doubles. Return GET's exact decimal bytes
 // so counters above 2^53 retain precision, and test existence before increment
@@ -164,12 +171,13 @@ impl ValkeyConnector {
     /// use keys should call [`Self::namespaced_key`] so deployments retain
     /// namespace isolation. Raw driver diagnostics are discarded at this
     /// boundary and never become application errors or logs.
-    pub async fn query<T>(&self, command: &Cmd) -> ValkeyResult<T>
+    pub async fn query<T>(&self, command: &ValkeyCommand) -> ValkeyResult<T>
     where
         T: FromRedisValue,
     {
         let mut connection = self.connection.clone();
         command
+            .as_driver_command()
             .query_async(&mut connection)
             .await
             .map_err(map_command_error)
@@ -180,12 +188,13 @@ impl ValkeyConnector {
     /// A pipeline is not atomic unless the caller explicitly enables
     /// transaction mode on the pipeline. The same namespace and untrusted-input
     /// requirements as [`Self::query`] apply.
-    pub async fn query_pipeline<T>(&self, pipeline: &Pipeline) -> ValkeyResult<T>
+    pub async fn query_pipeline<T>(&self, pipeline: &ValkeyPipeline) -> ValkeyResult<T>
     where
         T: FromRedisValue,
     {
         let mut connection = self.connection.clone();
         pipeline
+            .as_driver_pipeline()
             .query_async(&mut connection)
             .await
             .map_err(map_command_error)
@@ -195,12 +204,17 @@ impl ValkeyConnector {
     pub async fn get(&self, key: &ValkeyKey) -> ValkeyResult<Option<ValkeyValue>> {
         let namespaced_key = self.namespaced_key(key)?;
         let mut connection = self.connection.clone();
-        let response: Option<Vec<u8>> = redis::cmd("GET")
+        // Check the value length atomically on the server before asking the
+        // driver to allocate the reply. A post-read size check is too late.
+        let response: (u8, Vec<u8>) = redis::cmd("EVAL")
+            .arg(BOUNDED_GET_SCRIPT)
+            .arg(1_u8)
             .arg(namespaced_key.as_slice())
+            .arg(MAX_VALUE_BYTES)
             .query_async(&mut connection)
             .await
             .map_err(map_command_error)?;
-        response.map(ValkeyValue::new).transpose()
+        decode_bounded_get_result(response)
     }
 
     /// Stores a value with a mandatory expiration.
@@ -400,6 +414,18 @@ fn decode_deleted_count(value: u64) -> ValkeyResult<bool> {
     match value {
         0 => Ok(false),
         1 => Ok(true),
+        _ => Err(command_error(ValkeyCommandErrorReason::InvalidResponse)),
+    }
+}
+
+fn decode_bounded_get_result((status, value): (u8, Vec<u8>)) -> ValkeyResult<Option<ValkeyValue>> {
+    match status {
+        0 if value.is_empty() => Ok(None),
+        1 => ValkeyValue::new(value).map(Some),
+        2 if value.is_empty() => Err(ValkeyError::InvalidData {
+            kind: ValkeyDataKind::Value,
+            reason: ValkeyDataErrorReason::TooLarge,
+        }),
         _ => Err(command_error(ValkeyCommandErrorReason::InvalidResponse)),
     }
 }

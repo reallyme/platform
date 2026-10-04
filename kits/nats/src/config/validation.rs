@@ -4,11 +4,11 @@
 //! NATS endpoint, subject, and transport-policy validation.
 
 use std::net::IpAddr;
-use std::str::{self, FromStr};
+use std::str;
 
 use url::Url;
 
-use super::{JetStreamTlsPolicy, LOCAL_SUBJECT_SUFFIX, MAX_NATS_URL_BYTES};
+use super::{JetStreamTlsPolicy, MAX_NATS_URL_BYTES};
 use crate::error::JetStreamError;
 
 pub(crate) fn validate_nats_url(
@@ -41,8 +41,9 @@ pub(crate) fn validate_nats_url(
 
     if matches!(
         tls_policy,
-        JetStreamTlsPolicy::Required if !url.scheme().eq_ignore_ascii_case("tls")
-    ) {
+        JetStreamTlsPolicy::Required | JetStreamTlsPolicy::Optional
+    ) && !url.scheme().eq_ignore_ascii_case("tls")
+    {
         return Err(JetStreamError::InvalidConfiguration);
     }
 
@@ -52,6 +53,14 @@ pub(crate) fn validate_nats_url(
     }
 
     if url.host().is_none() {
+        return Err(JetStreamError::InvalidConfiguration);
+    }
+    if tls_policy == JetStreamTlsPolicy::Disabled
+        && scheme == "nats"
+        && !url.host_str().is_some_and(is_loopback_host)
+    {
+        // A caller selecting the legacy plaintext policy must not turn a
+        // public endpoint into a cleartext credential transport.
         return Err(JetStreamError::InvalidConfiguration);
     }
 
@@ -71,8 +80,15 @@ pub(super) fn validate_publish_subject(
     max_bytes: usize,
     required: bool,
 ) -> Result<String, JetStreamError> {
-    let subject = validate_component(value, max_bytes, required)?;
-    if subject.contains('*') || subject.contains('>') {
+    let subject = validate_subject_text(value, max_bytes, required)?;
+    if !subject.is_empty()
+        && !subject.split('.').all(|token| {
+            !token.is_empty()
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+    {
         return Err(JetStreamError::InvalidConfiguration);
     }
 
@@ -84,7 +100,23 @@ pub(super) fn validate_filter_subject(
     max_bytes: usize,
     required: bool,
 ) -> Result<String, JetStreamError> {
-    validate_component(value, max_bytes, required)
+    let subject = validate_subject_text(value, max_bytes, required)?;
+    if !subject.is_empty() {
+        let mut tokens = subject.split('.').peekable();
+        while let Some(token) = tokens.next() {
+            if token.is_empty()
+                || (token == ">" && tokens.peek().is_some())
+                || (token != "*"
+                    && token != ">"
+                    && !token
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+            {
+                return Err(JetStreamError::InvalidConfiguration);
+            }
+        }
+    }
+    Ok(subject)
 }
 
 pub(super) fn validate_component(
@@ -92,8 +124,7 @@ pub(super) fn validate_component(
     max_bytes: usize,
     required: bool,
 ) -> Result<String, JetStreamError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if value.is_empty() {
         return if required {
             Err(JetStreamError::InvalidConfiguration)
         } else {
@@ -101,11 +132,33 @@ pub(super) fn validate_component(
         };
     }
 
-    if trimmed.len() > max_bytes || trimmed.chars().any(char::is_whitespace) {
+    if value.len() > max_bytes
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
         return Err(JetStreamError::InvalidConfiguration);
     }
 
-    Ok(trimmed.to_owned())
+    Ok(value.to_owned())
+}
+
+fn validate_subject_text(
+    value: &str,
+    max_bytes: usize,
+    required: bool,
+) -> Result<String, JetStreamError> {
+    if value.is_empty() {
+        return if required {
+            Err(JetStreamError::InvalidConfiguration)
+        } else {
+            Ok(String::new())
+        };
+    }
+    if value.len() > max_bytes {
+        return Err(JetStreamError::InvalidConfiguration);
+    }
+    Ok(value.to_owned())
 }
 
 impl JetStreamTlsPolicy {
@@ -121,7 +174,7 @@ impl JetStreamTlsPolicy {
         if scheme.eq_ignore_ascii_case("tls") {
             return Ok(Self::Required);
         }
-        if is_private_network_host(&host) {
+        if is_loopback_host(&host) {
             Ok(Self::Disabled)
         } else {
             Ok(Self::Required)
@@ -174,21 +227,26 @@ pub(crate) fn redact_nats_url(value: &str) -> String {
     redacted
 }
 
-fn is_private_network_host(host: &str) -> bool {
+fn is_loopback_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    let host = host.to_ascii_lowercase();
-    if host.ends_with(LOCAL_SUBJECT_SUFFIX) {
-        return true;
-    }
-
-    if let Ok(ip) = IpAddr::from_str(&host) {
+    // The URL crate reports `nats:` IPv4 literals as domains and encloses
+    // IPv6 literals in brackets. Parse both explicitly before deciding TLS.
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = unbracketed.parse::<IpAddr>() {
         return match ip {
-            IpAddr::V4(ipv4) => ipv4.is_loopback() || ipv4.is_private() || ipv4.is_unspecified(),
-            IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
+            IpAddr::V4(ipv4) => ipv4.is_loopback(),
+            IpAddr::V6(ipv6) => {
+                ipv6.is_loopback()
+                    || ipv6
+                        .to_ipv4_mapped()
+                        .is_some_and(|mapped| mapped.is_loopback())
+            }
         };
     }
-
-    !host.contains('.')
+    false
 }

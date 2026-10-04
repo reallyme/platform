@@ -7,11 +7,7 @@ use super::{AdminToolError, parse_tenant};
 
 #[test]
 fn parses_valid_tenant() {
-    let expected = FoundationDbTenantName::new("catalog");
-    assert!(expected.is_ok());
-    let Ok(expected) = expected else {
-        return;
-    };
+    let expected = FoundationDbTenantName::new("catalog").expect("valid tenant fixture");
     assert_eq!(parse_tenant(String::from("catalog")), Ok(expected));
 }
 

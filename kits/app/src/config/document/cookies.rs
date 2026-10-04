@@ -135,7 +135,7 @@ fn validate_cookie_domain(value: &str) -> Result<(), AppConfigDocumentError> {
         ));
     }
 
-    let mut saw_dot = false;
+    let saw_dot = value.contains('.');
     for label in value.split('.') {
         if label.is_empty() {
             return Err(AppConfigDocumentError::new(
@@ -143,7 +143,6 @@ fn validate_cookie_domain(value: &str) -> Result<(), AppConfigDocumentError> {
             ));
         }
 
-        saw_dot = true;
         if label.starts_with('-') || label.ends_with('-') {
             return Err(AppConfigDocumentError::new(
                 AppConfigDocumentErrorReason::InvalidCookieDomain,

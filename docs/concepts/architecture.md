@@ -182,8 +182,10 @@ the server.
 - cancellation, graceful shutdown, and bounded termination.
 
 Startup is phased. Configuration is validated before external resources are
-opened. Required dependencies become ready before traffic is admitted.
-Readiness is revoked before shutdown begins. Managed tasks receive
+opened. Readiness stays false until required dependencies have passed their
+startup checks; HTTP listeners can accept requests while those checks run, so
+traffic routers must honor `/readyz`. Readiness is revoked before shutdown
+begins. Managed tasks receive
 cancellation, drain within their deadlines, and report typed failures to the
 runtime.
 

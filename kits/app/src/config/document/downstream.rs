@@ -84,7 +84,7 @@ impl AppDownstreamEndpointConfig {
     pub fn base_url(&self) -> Option<AppDownstreamBaseUrl> {
         self.source
             .primary_static_endpoint()
-            .and_then(|endpoint| AppDownstreamBaseUrl::new(endpoint.as_str()).ok())
+            .map(AppDownstreamBaseUrl::from_endpoint)
     }
 
     /// Returns all static endpoint URLs, when statically configured.

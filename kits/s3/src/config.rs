@@ -6,14 +6,16 @@ use url::Url;
 
 use crate::{S3ObjectKey, S3StorageError, S3StorageErrorReason};
 
+const MAX_SESSION_TOKEN_BYTES: usize = 16 * 1_024;
+
 /// Typed S3-compatible object storage configuration.
-#[derive(Clone)]
 pub struct S3StorageConfig {
     endpoint: Url,
     region: String,
     bucket: String,
     access_key_id: SecretString,
     secret_access_key: SecretString,
+    session_token: Option<SecretString>,
     key_prefix: S3ObjectKey,
 }
 
@@ -56,6 +58,7 @@ impl S3StorageConfig {
             bucket: bucket.trim().to_owned(),
             access_key_id,
             secret_access_key,
+            session_token: None,
             key_prefix,
         })
     }
@@ -85,6 +88,26 @@ impl S3StorageConfig {
         &self.secret_access_key
     }
 
+    /// Adds the temporary-credential token used by AWS STS credentials.
+    pub fn with_session_token(mut self, token: SecretString) -> Result<Self, S3StorageError> {
+        if token.expose_secret().is_empty()
+            || token.expose_secret().len() > MAX_SESSION_TOKEN_BYTES
+            || !token
+                .expose_secret()
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(S3StorageError::new(S3StorageErrorReason::InvalidRequest));
+        }
+        self.session_token = Some(token);
+        Ok(self)
+    }
+
+    /// Returns the optional temporary-credential token without copying it.
+    pub fn session_token(&self) -> Option<&SecretString> {
+        self.session_token.as_ref()
+    }
+
     /// Returns the configured default object key prefix.
     pub fn key_prefix(&self) -> &S3ObjectKey {
         &self.key_prefix
@@ -93,6 +116,11 @@ impl S3StorageConfig {
     /// Resolves a validated relative key beneath the configured immutable prefix.
     pub fn scoped_object_key(&self, relative_key: &str) -> Result<S3ObjectKey, S3StorageError> {
         let relative = S3ObjectKey::new(relative_key.to_owned())?;
+        if relative.as_str().starts_with(self.key_prefix.as_str())
+            && relative.as_str()[self.key_prefix.as_str().len()..].starts_with('/')
+        {
+            return Err(S3StorageError::new(S3StorageErrorReason::InvalidObjectKey));
+        }
         let joined_length = self
             .key_prefix
             .as_str()
@@ -105,6 +133,18 @@ impl S3StorageConfig {
         joined.push('/');
         joined.push_str(relative.as_str());
         S3ObjectKey::new(joined)
+    }
+
+    /// Rejects signing keys outside this config's immutable namespace.
+    pub(crate) fn validate_scoped_key(&self, key: &S3ObjectKey) -> Result<(), S3StorageError> {
+        let suffix = key
+            .as_str()
+            .strip_prefix(self.key_prefix.as_str())
+            .and_then(|remaining| remaining.strip_prefix('/'));
+        if suffix.is_none_or(str::is_empty) {
+            return Err(S3StorageError::new(S3StorageErrorReason::InvalidObjectKey));
+        }
+        Ok(())
     }
 }
 
@@ -131,6 +171,10 @@ impl std::fmt::Debug for S3StorageConfig {
             .field("bucket", &self.bucket)
             .field("access_key_id", &"<redacted>")
             .field("secret_access_key", &"<redacted>")
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("key_prefix", &self.key_prefix)
             .finish()
     }

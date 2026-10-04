@@ -5,9 +5,9 @@ use secrecy::SecretString;
 use time::macros::datetime;
 
 use super::{MAX_S3_PRESIGN_TTL_SECONDS, percent_encode};
-use crate::{S3ObjectKey, S3StorageConfig, presign_get_object};
+use crate::{S3ObjectKey, S3StorageConfig, S3StorageError, presign_get_object};
 
-fn config() -> Option<S3StorageConfig> {
+fn config() -> Result<S3StorageConfig, S3StorageError> {
     S3StorageConfig::new(
         String::from("https://example.r2.cloudflarestorage.com"),
         String::from("auto"),
@@ -16,23 +16,13 @@ fn config() -> Option<S3StorageConfig> {
         SecretString::from(String::from("secret-key")),
         String::from("tenant/v1"),
     )
-    .ok()
 }
 
 #[test]
-fn presigned_get_is_deterministic_scoped_and_redacted() {
-    let Some(config) = config() else {
-        return;
-    };
-    let key = match config.scoped_object_key("chunks/01/02/03.pb") {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let issued = presign_get_object(&config, &key, 30, datetime!(2026-09-10 12:34:56 UTC));
-    assert!(issued.is_ok());
-    let Ok(issued) = issued else {
-        return;
-    };
+fn presigned_get_is_deterministic_scoped_and_redacted() -> Result<(), S3StorageError> {
+    let config = config()?;
+    let key = config.scoped_object_key("chunks/01/02/03.pb")?;
+    let issued = presign_get_object(&config, &key, 30, datetime!(2026-09-10 12:34:56 UTC))?;
     let url = issued.expose_url();
     assert!(url.starts_with(
         "https://example.r2.cloudflarestorage.com/archive/tenant/v1/chunks/01/02/03.pb?"
@@ -57,27 +47,29 @@ fn presigned_get_is_deterministic_scoped_and_redacted() {
     );
     assert!(!format!("{issued:?}").contains("X-Amz-Signature"));
     assert!(!url.contains("secret-key"));
+    Ok(())
 }
 
 #[test]
-fn presigned_get_rejects_zero_and_provider_excessive_expiry() {
-    let Some(config) = config() else {
-        return;
-    };
-    let key = match S3ObjectKey::new(String::from("tenant/v1/chunks/01.pb")) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
+fn presigned_get_rejects_zero_and_provider_excessive_expiry() -> Result<(), S3StorageError> {
+    let config = config()?;
+    let key = S3ObjectKey::new(String::from("tenant/v1/chunks/01.pb"))?;
     for expiry in [0, MAX_S3_PRESIGN_TTL_SECONDS.saturating_add(1)] {
         assert!(
             presign_get_object(&config, &key, expiry, datetime!(2026-09-10 12:34:56 UTC),).is_err()
         );
     }
+    Ok(())
 }
 
 #[test]
 fn sigv4_query_percent_encoding_never_uses_form_encoding() {
-    assert_eq!(percent_encode(b"a/b c+d~").as_str(), "a%2Fb%20c%2Bd~");
+    assert_eq!(
+        percent_encode(b"a/b c+d~")
+            .expect("small input should encode")
+            .as_str(),
+        "a%2Fb%20c%2Bd~"
+    );
 }
 
 #[test]

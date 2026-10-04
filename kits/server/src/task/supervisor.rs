@@ -3,6 +3,7 @@
 
 use std::future::Future;
 use std::mem;
+use std::time::Duration;
 
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
@@ -19,6 +20,7 @@ use crate::startup::TaskName;
 
 const DEFAULT_BACKGROUND_TASK_CAPACITY_VALUE: usize = 1024;
 const MAX_BACKGROUND_TASK_CAPACITY_VALUE: usize = 16_384;
+const ABORT_SETTLE_GRACE: Duration = Duration::from_millis(100);
 
 /// Default maximum number of tracked background tasks in a task set.
 pub const DEFAULT_BACKGROUND_TASK_CAPACITY: TaskSetCapacity =
@@ -272,31 +274,36 @@ impl BackgroundTaskSet {
         }
 
         if !join_set.is_empty() {
-            let timed_out_task_name = abort_handles
-                .first()
-                .map(|(task_name, _)| task_name.clone());
+            let timed_out_task_name = pending_names.first().cloned();
             for (_, abort_handle) in abort_handles {
                 abort_handle.abort();
             }
-
-            while let Some(task_result) = join_set.join_next().await {
-                if let Ok((task_name, join_result)) = task_result {
-                    if let Some(pos) = pending_names.iter().position(|name| name == &task_name) {
-                        pending_names.remove(pos);
-                    }
-                    let task_error = map_task_completion(task_name, join_result);
-                    if let Some(ShutdownError::TaskJoinFailed {
-                        reason: TaskJoinFailureReason::Cancelled,
-                        ..
-                    }) = task_error
-                    {
-                        continue;
-                    }
-                    if let Some(error) = task_error {
-                        first_error.get_or_insert(error);
+            join_set.abort_all();
+            // Give cooperative cancellations a short bounded window to drop
+            // resources before returning. A task blocked in synchronous code
+            // cannot hold process shutdown indefinitely.
+            let _ = time::timeout(ABORT_SETTLE_GRACE, async {
+                while let Some(task_result) = join_set.join_next().await {
+                    if let Ok((task_name, join_result)) = task_result {
+                        if let Some(pos) = pending_names.iter().position(|name| name == &task_name)
+                        {
+                            pending_names.remove(pos);
+                        }
+                        if let Some(error) = map_task_completion(task_name, join_result)
+                            && !matches!(
+                                &error,
+                                ShutdownError::TaskJoinFailed {
+                                    reason: TaskJoinFailureReason::Cancelled,
+                                    ..
+                                }
+                            )
+                        {
+                            first_error.get_or_insert(error);
+                        }
                     }
                 }
-            }
+            })
+            .await;
 
             if let Some(task_name) = timed_out_task_name {
                 first_error

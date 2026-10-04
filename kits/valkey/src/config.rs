@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -220,6 +221,16 @@ impl ValkeyConfig {
                 ValkeyConfigErrorReason::Incompatible,
             ));
         }
+        if matches!(
+            input.transport_security,
+            ValkeyTransportSecurity::AllowPlaintextForDevelopment
+        ) && !is_loopback_host(input.host.as_str())
+        {
+            return Err(config_error(
+                ValkeyConfigField::TransportSecurity,
+                ValkeyConfigErrorReason::Incompatible,
+            ));
+        }
 
         Ok(Self {
             host: input.host,
@@ -391,6 +402,13 @@ impl ValkeyConfig {
     pub const fn pipeline_buffer_size(&self) -> u32 {
         self.pipeline_buffer_size
     }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 impl std::fmt::Debug for ValkeyConfig {

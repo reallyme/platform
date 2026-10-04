@@ -22,8 +22,12 @@ pub enum ErrorCode {
     MethodNotAllowed,
     /// The request conflicts with current resource state.
     Conflict,
+    /// The request requires a body length.
+    LengthRequired,
     /// The request body exceeds the configured limit.
     PayloadTooLarge,
+    /// The request target exceeds the supported length.
+    UriTooLong,
     /// The request headers exceed configured limits.
     RequestHeaderFieldsTooLarge,
     /// The request exceeded the configured timeout.
@@ -34,6 +38,10 @@ pub enum ErrorCode {
     ServiceUnavailable,
     /// The caller sent an unsupported content type.
     UnsupportedMediaType,
+    /// The request content could not be processed.
+    UnprocessableEntity,
+    /// The requested protocol upgrade is unsupported.
+    UpgradeRequired,
     /// An unexpected server-side failure occurred.
     InternalServerError,
 }
@@ -48,12 +56,16 @@ impl ErrorCode {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::Conflict => StatusCode::CONFLICT,
+            Self::LengthRequired => StatusCode::LENGTH_REQUIRED,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::UriTooLong => StatusCode::URI_TOO_LONG,
             Self::RequestHeaderFieldsTooLarge => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::UpgradeRequired => StatusCode::UPGRADE_REQUIRED,
             Self::InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -67,12 +79,16 @@ impl ErrorCode {
             Self::NotFound => "Not found",
             Self::MethodNotAllowed => "Method not allowed",
             Self::Conflict => "Conflict",
+            Self::LengthRequired => "Length required",
             Self::PayloadTooLarge => "Payload too large",
+            Self::UriTooLong => "URI too long",
             Self::RequestHeaderFieldsTooLarge => "Request headers too large",
             Self::RequestTimeout => "Request timeout",
             Self::TooManyRequests => "Too many requests",
             Self::ServiceUnavailable => "Service unavailable",
             Self::UnsupportedMediaType => "Unsupported media type",
+            Self::UnprocessableEntity => "Unprocessable entity",
+            Self::UpgradeRequired => "Upgrade required",
             Self::InternalServerError => "Internal server error",
         }
     }
@@ -92,6 +108,10 @@ impl PublicHttpError {
             status: code.http_status(),
             code,
         }
+    }
+
+    pub(crate) const fn from_status_with_code(status: StatusCode, code: ErrorCode) -> Self {
+        Self { status, code }
     }
 
     /// Returns the stable transport status.

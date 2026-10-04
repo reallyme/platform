@@ -32,7 +32,7 @@ pub use health::{
 };
 pub use interceptors::{
     GrpcAuthenticationInterceptor, GrpcAuthenticationPolicy, GrpcAuthorizationInterceptor,
-    GrpcAuthorizationPolicy, GrpcCorrelationInterceptor,
+    GrpcAuthorizationPolicy, GrpcCorrelationInterceptor, GrpcSecurityInterceptor,
 };
 pub use message_size::{
     DEFAULT_GRPC_DECODING_MESSAGE_SIZE_BYTES, DEFAULT_GRPC_ENCODING_MESSAGE_SIZE_BYTES,
@@ -43,6 +43,6 @@ pub use metadata::{
     request_id_from_metadata, request_id_from_request, trace_id_from_metadata,
     trace_id_from_request,
 };
-pub use policy::{GrpcPolicy, grpc_policy_layer};
+pub(crate) use policy::{GrpcPolicy, grpc_policy_layer};
 pub use reflection::{GrpcReflectionMode, ReflectionServiceBuilder, reflection_builder};
 pub use status::{GrpcStatusCode, StaticGrpcStatus, ToGrpcStatus};

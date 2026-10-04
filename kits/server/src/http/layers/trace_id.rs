@@ -20,7 +20,7 @@ use crate::transport::TraceId;
 
 use super::super::ids::{X_TRACE_ID, trace_id_from_headers};
 use super::super::response::JsonErrorResponse;
-use super::listener::listener_name_for_request;
+use super::listener::{inbound_correlation_ids_trusted, listener_name_for_request};
 
 /// Layer that validates or replaces the trace ID.
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,9 +29,8 @@ pub struct TraceIdLayer;
 /// Creates middleware that validates or replaces the trace ID.
 ///
 /// Policy:
-/// - if a valid trace ID header is present, preserve it
-/// - if the header is missing, generate a new trace ID
-/// - if the header is malformed, replace it with a newly generated trace ID
+/// - preserve a valid inbound ID only on an internal listener
+/// - generate a fresh ID for public/private requests and malformed internal IDs
 ///
 /// Trace IDs are transport-correlation hints only. They must never be trusted
 /// for security decisions, authorization, tenancy, or identity.
@@ -66,7 +65,9 @@ where
     }
 
     fn call(&mut self, mut request: Request<Body>) -> Self::Future {
-        if let Some(header_value) = request.headers().get(X_TRACE_ID)
+        let trust_inbound = inbound_correlation_ids_trusted(&request);
+        if trust_inbound
+            && let Some(header_value) = request.headers().get(X_TRACE_ID)
             && TraceId::try_from(header_value).is_err()
         {
             let route_template = MetricRouteTemplateLabel::unknown();
@@ -78,7 +79,11 @@ where
             );
         }
 
-        let trace_id = trace_id_from_headers(request.headers()).unwrap_or_else(TraceId::generate);
+        let trace_id = if trust_inbound {
+            trace_id_from_headers(request.headers()).unwrap_or_else(TraceId::generate)
+        } else {
+            TraceId::generate()
+        };
         let header_value = match trace_id.to_header_value() {
             Ok(header_value) => header_value,
             Err(_) => {

@@ -42,7 +42,7 @@ impl ExampleService for ExampleConnectService {
         let _ = request;
         let deadline = ctx
             .deadline()
-            .and_then(|deadline| deadline.checked_duration_since(std::time::Instant::now()));
+            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
         let response = crate::app::hello(&self.context, HelloRequest, deadline)
             .map_err(map_example_app_error_to_connect_error)?;
 

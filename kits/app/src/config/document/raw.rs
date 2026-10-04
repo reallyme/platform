@@ -27,11 +27,13 @@ pub(super) struct RawAppJsoncConfigDocument<TCustom> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RawCorsConfig {
     pub(super) allowed_origins: Vec<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RawCookieConfig {
     #[serde(default)]
     pub(super) secure: Option<bool>,

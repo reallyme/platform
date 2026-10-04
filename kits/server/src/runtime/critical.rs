@@ -58,6 +58,12 @@ impl CriticalTaskReadinessTimeoutError {
 pub struct CriticalTaskReadinessTimeout(Duration);
 
 impl CriticalTaskReadinessTimeout {
+    pub(crate) const fn bound_listener() -> Self {
+        // The socket is already bound before the serving future is polled.
+        // This deadline only protects task scheduling and readiness signaling.
+        Self(Duration::from_secs(5))
+    }
+
     /// Creates a non-zero readiness timeout within the reviewed one-hour bound.
     pub fn new(value: Duration) -> Result<Self, CriticalTaskReadinessTimeoutError> {
         if value.is_zero() {

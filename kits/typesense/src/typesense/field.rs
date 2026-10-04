@@ -4,6 +4,7 @@
 //! Typed field identifiers used in search queries, filters, and sort clauses.
 
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU8;
 
 use crate::typesense::{TypesenseError, TypesenseRequestReason, error::TypesenseResult};
 
@@ -87,6 +88,34 @@ impl SearchFields {
     #[must_use]
     pub fn to_query_by_parameter(&self) -> &str {
         self.query_by_parameter.as_str()
+    }
+}
+
+/// Positive per-field weights aligned with a validated query field list.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SearchQueryWeights {
+    parameter: String,
+}
+
+impl SearchQueryWeights {
+    /// Creates weights in the same order as the query fields.
+    pub fn new(fields: &SearchFields, weights: Vec<NonZeroU8>) -> TypesenseResult<Self> {
+        if weights.len() != fields.fields().len() {
+            return Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::InvalidQueryWeights,
+            });
+        }
+        let parameter = weights
+            .iter()
+            .map(NonZeroU8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(Self { parameter })
+    }
+
+    /// Returns the validated Typesense query-weight parameter.
+    pub fn as_str(&self) -> &str {
+        self.parameter.as_str()
     }
 }
 

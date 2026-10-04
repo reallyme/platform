@@ -9,6 +9,98 @@ use super::fixtures::{
     unused_local_port, wait_for_child_output, wait_for_http_response,
 };
 
+#[cfg(unix)]
+#[test]
+fn second_process_signal_forces_a_stuck_drain_to_exit() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+
+    let executable = std::env::current_exe().expect("test executable should resolve");
+    let mut child = Command::new(executable)
+        .arg("--exact")
+        .arg("runtime::server::tests::shutdown::signal_escalation_subprocess_worker")
+        .arg("--nocapture")
+        .env_clear()
+        .env("REALLYME_TEST_SIGNAL_ESCALATION", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("signal regression worker should launch");
+    let stdout = child.stdout.take().expect("worker stdout should be piped");
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let _reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line.contains("server process ready") {
+                let _ = ready_sender.send(());
+                return;
+            }
+        }
+    });
+    if ready_receiver.recv_timeout(Duration::from_secs(5)).is_err() {
+        let _ = child.kill();
+        let output = child
+            .wait_with_output()
+            .expect("signal worker output should be readable");
+        panic!(
+            "signal regression worker did not reach readiness; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    send_sigterm(&mut child);
+    std::thread::sleep(Duration::from_millis(100));
+    send_sigterm(&mut child);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait().expect("worker status should be readable") {
+            Some(status) => break status,
+            None if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            None => {
+                let _ = child.kill();
+                panic!("second signal did not terminate the worker");
+            }
+        }
+    };
+    assert_eq!(status.code(), Some(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn signal_escalation_subprocess_worker() {
+    if std::env::var_os("REALLYME_TEST_SIGNAL_ESCALATION").is_none() {
+        return;
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("worker runtime should build")
+        .block_on(async {
+            let server_name = crate::startup::ServerName::new("signal-escalation")
+                .expect("valid fixture server name");
+            let runtime = crate::runtime::ServerRuntime::builder()
+                .server_name(server_name.clone())
+                .observability_config(super::fixtures::observability_config())
+                .build_info(crate::version::BuildInfo::new(
+                    server_name,
+                    env!("CARGO_PKG_VERSION"),
+                ))
+                .readiness(crate::health::Readiness::new())
+                .shutdown_timeout(
+                    crate::task::ShutdownTimeout::new(Duration::from_secs(1))
+                        .expect("valid fixture shutdown timeout"),
+                )
+                .build()
+                .expect("signal worker runtime should build");
+            runtime
+                .run()
+                .await
+                .expect("a second signal should exit first");
+        });
+}
+
 #[test]
 fn startup_banner_stdout_lock_is_not_held_across_runtime_lifetime() {
     let Some(port) = unused_local_port() else {

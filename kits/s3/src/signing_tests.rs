@@ -6,7 +6,7 @@ use time::macros::datetime;
 
 use crate::{EMPTY_SHA256_HEX, S3ObjectKey, S3SignedMethod, S3StorageConfig, sign_object_request};
 
-fn config() -> Option<S3StorageConfig> {
+fn config() -> S3StorageConfig {
     S3StorageConfig::new(
         String::from("https://objects.example.com"),
         String::from("eu-central-1"),
@@ -15,29 +15,22 @@ fn config() -> Option<S3StorageConfig> {
         SecretString::new(String::from("secret-key").into_boxed_str()),
         String::from("objects/v1"),
     )
-    .ok()
+    .expect("valid signing fixture")
 }
 
 #[test]
 fn put_if_absent_signature_commits_to_conditional_header() {
-    let Some(config) = config() else {
-        return;
-    };
-    let key = match S3ObjectKey::new(String::from("objects/v1/chunks/01.pb")) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
+    let config = config();
+    let key = S3ObjectKey::new(String::from("objects/v1/chunks/01.pb"))
+        .expect("valid signing key fixture");
     let signed = sign_object_request(
         &config,
         S3SignedMethod::PutIfAbsent,
         &key,
         b"ciphertext",
         datetime!(2026-05-14 10:11:12 UTC),
-    );
-    assert!(signed.is_ok());
-    let Ok(signed) = signed else {
-        return;
-    };
+    )
+    .expect("request signing should succeed");
     assert_eq!(
         signed.object_url().as_str(),
         "https://objects.example.com/archive/objects/v1/chunks/01.pb"
@@ -53,48 +46,34 @@ fn put_if_absent_signature_commits_to_conditional_header() {
 
 #[test]
 fn get_signature_uses_empty_payload_hash() {
-    let Some(config) = config() else {
-        return;
-    };
-    let key = match S3ObjectKey::new(String::from("objects/v1/chunks/01.pb")) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
+    let config = config();
+    let key = S3ObjectKey::new(String::from("objects/v1/chunks/01.pb"))
+        .expect("valid signing key fixture");
     let signed = sign_object_request(
         &config,
         S3SignedMethod::Get,
         &key,
         &[],
         datetime!(2026-05-14 10:11:12 UTC),
-    );
-    assert!(signed.is_ok());
-    let Ok(signed) = signed else {
-        return;
-    };
+    )
+    .expect("request signing should succeed");
     assert_eq!(signed.payload_hash(), EMPTY_SHA256_HEX);
     assert!(!signed.authorization().contains("if-none-match"));
 }
 
 #[test]
 fn delete_signature_has_only_read_delete_headers() {
-    let Some(config) = config() else {
-        return;
-    };
-    let key = match S3ObjectKey::new(String::from("objects/v1/chunks/01.pb")) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
+    let config = config();
+    let key = S3ObjectKey::new(String::from("objects/v1/chunks/01.pb"))
+        .expect("valid signing key fixture");
     let signed = sign_object_request(
         &config,
         S3SignedMethod::Delete,
         &key,
         &[],
         datetime!(2026-05-14 10:11:12 UTC),
-    );
-    assert!(signed.is_ok());
-    let Ok(signed) = signed else {
-        return;
-    };
+    )
+    .expect("request signing should succeed");
     assert_eq!(signed.method(), S3SignedMethod::Delete);
     assert_eq!(signed.payload_hash(), EMPTY_SHA256_HEX);
     assert!(
@@ -107,13 +86,9 @@ fn delete_signature_has_only_read_delete_headers() {
 
 #[test]
 fn body_is_rejected_for_non_upload_operations() {
-    let Some(config) = config() else {
-        return;
-    };
-    let key = match S3ObjectKey::new(String::from("objects/v1/chunks/01.pb")) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
+    let config = config();
+    let key = S3ObjectKey::new(String::from("objects/v1/chunks/01.pb"))
+        .expect("valid signing key fixture");
     for method in [
         S3SignedMethod::Get,
         S3SignedMethod::Head,

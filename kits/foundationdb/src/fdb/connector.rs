@@ -69,7 +69,16 @@ impl FoundationDbConnector {
     /// Database creation in the FoundationDB C API is lazy. Production startup
     /// should use [`Self::connect_and_check`] or call [`Self::health_check`]
     /// before accepting traffic.
-    pub fn connect(config: &FdbConfig) -> FdbResult<Self> {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure every connector and tenant handle is dropped
+    /// before normal process exit. In particular, a process that uses this
+    /// connector must not call `std::process::exit` while a handle is alive.
+    /// FoundationDB requires its network guard to stop before normal exit;
+    /// keeping the guard in an `Arc` cannot enforce that process-wide rule.
+    #[allow(unsafe_code)]
+    pub unsafe fn connect(config: &FdbConfig) -> FdbResult<Self> {
         CLIENT_INITIALIZED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| FdbError::Setup {
@@ -88,9 +97,8 @@ impl FoundationDbConnector {
             reason: FdbSetupErrorReason::ApiVersionUnsupported,
         })?;
 
-        // FoundationDB marks boot unsafe because the returned guard must be
-        // dropped before normal process exit. FdbConnectorInner owns that guard
-        // and Arc ownership keeps it alive until all connector clones are gone.
+        // The caller accepts the process-exit obligation above. Within that
+        // obligation, the inner owner destroys the database before the guard.
         #[allow(unsafe_code)]
         let network = catch_unwind(AssertUnwindSafe(|| unsafe { network_builder.boot() }))
             .map_err(|_| FdbError::Setup {
@@ -119,8 +127,15 @@ impl FoundationDbConnector {
     }
 
     /// Initializes the connector and proves client and cluster reachability.
-    pub async fn connect_and_check(config: &FdbConfig) -> FdbResult<Self> {
-        let connector = Self::connect(config)?;
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold the same process-exit and handle-drop contract
+    /// as [`Self::connect`].
+    #[allow(unsafe_code)]
+    pub async unsafe fn connect_and_check(config: &FdbConfig) -> FdbResult<Self> {
+        // SAFETY: the caller accepted the contract of this unsafe method.
+        let connector = unsafe { Self::connect(config) }?;
         connector.health_check().await?;
         Ok(connector)
     }

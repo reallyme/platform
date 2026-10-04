@@ -3,6 +3,8 @@
 
 //! Typesense connector construction.
 
+use std::sync::Arc;
+
 use reqwest::{
     Client,
     header::{HeaderMap, HeaderName, HeaderValue},
@@ -23,6 +25,11 @@ pub struct TypesenseConnector {
 impl TypesenseConnector {
     /// Builds a connector from validated configuration.
     pub fn connect(config: TypesenseConfig) -> Result<Self, ConnectorBuildError> {
+        config
+            .validate()
+            .map_err(|_| ConnectorBuildError::Invalid {
+                reason: ConnectorBuildErrorReason::InvalidRequestPolicy,
+            })?;
         // safety: `ExposeSecret` is intentionally used once here to materialize the API
         // key header value. Typesense requires this key on every request, so we keep
         // it in default headers as a documented exception to header secret retention.
@@ -37,6 +44,9 @@ impl TypesenseConnector {
         default_headers.insert(TYPESENSE_API_KEY_HEADER, api_key);
 
         let mut builder = Client::builder()
+            .tls_backend_preconfigured(tls_config()?)
+            // The API key must not transit a proxy inherited from process env.
+            .no_proxy()
             // Custom credential headers are not stripped by redirect handling.
             .redirect(reqwest::redirect::Policy::none())
             .default_headers(default_headers)
@@ -65,9 +75,9 @@ impl TypesenseConnector {
                 .http2_keep_alive_while_idle(true);
         }
 
-        if config.use_gzip() {
-            builder = builder.gzip(true);
-        }
+        // The reqwest gzip feature enables automatic decompression by
+        // default. Apply the caller's policy explicitly in both directions.
+        builder = builder.gzip(config.use_gzip());
 
         let http_client = builder.build().map_err(|_| ConnectorBuildError::Invalid {
             reason: ConnectorBuildErrorReason::HttpClientBuildFailed,
@@ -95,6 +105,23 @@ impl TypesenseConnector {
     }
 }
 
+pub(crate) fn tls_config() -> Result<rustls::ClientConfig, ConnectorBuildError> {
+    let mut roots = rustls::RootCertStore::empty();
+    let (accepted, _) =
+        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if accepted == 0 {
+        return Err(ConnectorBuildError::Invalid {
+            reason: ConnectorBuildErrorReason::HttpClientBuildFailed,
+        });
+    }
+    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
+        .map_err(|_| ConnectorBuildError::Invalid {
+            reason: ConnectorBuildErrorReason::HttpClientBuildFailed,
+        })
+}
+
 /// Connector construction failure.
 #[derive(Debug, Error)]
 pub enum ConnectorBuildError {
@@ -109,6 +136,8 @@ pub enum ConnectorBuildError {
 /// Stable connector construction failure reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectorBuildErrorReason {
+    /// A resource limit was invalid after configuration changes.
+    InvalidRequestPolicy,
     /// The API key could not be represented as a safe HTTP header.
     InvalidApiKeyHeader,
     /// The reqwest client builder failed.

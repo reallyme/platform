@@ -4,12 +4,14 @@
 use core::future::Future;
 use std::error::Error as StdError;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
+use futures_util::SinkExt;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, MissedTickBehavior, interval_at};
+use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout};
 use tracing::{debug, warn};
 
 use crate::http::JsonErrorResponse;
@@ -31,10 +33,16 @@ use super::metrics::{
 use super::shutdown::{WebSocketShutdownConfig, gracefully_close_websocket};
 
 static EMPTY_PING_PAYLOAD: Bytes = Bytes::new();
+const OUTBOUND_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONNECTION_AGE: Duration = Duration::from_secs(3_600);
 
+#[path = "connection/handle_application_message.rs"]
+mod message_handler;
 #[path = "connection/model.rs"]
 mod model;
 
+use message_handler::handle_application_message;
 use model::{ApplicationMessageOutcome, OutboundWebSocketEvent};
 pub use model::{
     ConnectionId, NoopWebSocketConnectionHooks, WebSocketApplicationMessage,
@@ -110,8 +118,9 @@ impl WebSocketConnectionRuntime {
 
     fn try_acquire_connection_permit(
         &self,
+        source_ip: Option<std::net::IpAddr>,
     ) -> Result<WebSocketConnectionPermit, WebSocketConnectionLimitError> {
-        self.connection_limiter.try_acquire()
+        self.connection_limiter.try_acquire_for_source(source_ip)
     }
 }
 
@@ -134,10 +143,13 @@ impl WebSocketConnectionHandle {
 
     /// Enqueues one outbound WebSocket message with async backpressure.
     pub async fn send_message(&self, message: WebSocketMessage) -> Result<(), WebSocketSendError> {
-        self.sender
-            .send(OutboundWebSocketEvent::Message(message))
-            .await
-            .map_err(|_| WebSocketSendError::new(WebSocketSendErrorReason::ConnectionClosed))
+        tokio::time::timeout(
+            OUTBOUND_ENQUEUE_TIMEOUT,
+            self.sender.send(OutboundWebSocketEvent::Message(message)),
+        )
+        .await
+        .map_err(|_| WebSocketSendError::new(WebSocketSendErrorReason::OutboundQueueFull))?
+        .map_err(|_| WebSocketSendError::new(WebSocketSendErrorReason::ConnectionClosed))
     }
 
     /// Attempts to enqueue one outbound WebSocket message without waiting.
@@ -157,10 +169,13 @@ impl WebSocketConnectionHandle {
 
     /// Requests graceful close of the connection.
     pub async fn close(&self, reason: WebSocketCloseReason) -> Result<(), WebSocketSendError> {
-        self.sender
-            .send(OutboundWebSocketEvent::Close(reason))
-            .await
-            .map_err(|_| WebSocketSendError::new(WebSocketSendErrorReason::ConnectionClosed))
+        tokio::time::timeout(
+            OUTBOUND_ENQUEUE_TIMEOUT,
+            self.sender.send(OutboundWebSocketEvent::Close(reason)),
+        )
+        .await
+        .map_err(|_| WebSocketSendError::new(WebSocketSendErrorReason::OutboundQueueFull))?
+        .map_err(|_| WebSocketSendError::new(WebSocketSendErrorReason::ConnectionClosed))
     }
 }
 
@@ -214,7 +229,7 @@ pub fn websocket_upgrade_response<Handler>(
 where
     Handler: WebSocketMessageHandler,
 {
-    let connection_permit = match runtime.try_acquire_connection_permit() {
+    let connection_permit = match runtime.try_acquire_connection_permit(context.source_ip()) {
         Ok(permit) => permit,
         Err(_) => {
             return JsonErrorResponse::service_unavailable().into_response();
@@ -238,7 +253,7 @@ where
 /// - heartbeat and idle timeout are enforced inside the same select loop
 /// - shutdown requests trigger an intentional close handshake
 /// - no message contents or tokens are logged
-pub async fn run_websocket_connection<Handler>(
+pub(crate) async fn run_websocket_connection<Handler>(
     mut socket: WebSocket,
     context: WebSocketConnectionContext,
     runtime: WebSocketConnectionRuntime,
@@ -264,6 +279,7 @@ where
     );
     heartbeat_ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_inbound_activity = Instant::now();
+    let maximum_age_at = Instant::now() + MAX_CONNECTION_AGE;
 
     record_websocket_connection_opened();
     hooks.on_open(context);
@@ -277,6 +293,8 @@ where
             last_inbound_activity + heartbeat.idle_timeout().as_duration(),
         );
         tokio::pin!(idle_sleep);
+        let maximum_age_sleep = tokio::time::sleep_until(maximum_age_at);
+        tokio::pin!(maximum_age_sleep);
 
         tokio::select! {
             shutdown_reason = shutdown.cancelled() => {
@@ -293,7 +311,10 @@ where
                 break WebSocketConnectionOutcome::ServerClosed(WebSocketCloseReason::ServerShutdown);
             }
             _ = heartbeat_ticks.tick() => {
-                if socket.send(Message::Ping(EMPTY_PING_PAYLOAD.clone())).await.is_err() {
+                if !matches!(
+                    timeout(SOCKET_WRITE_TIMEOUT, socket.send(Message::Ping(EMPTY_PING_PAYLOAD.clone()))).await,
+                    Ok(Ok(()))
+                ) {
                     record_websocket_connection_error(WebSocketConnectionErrorLabel::TransportError);
                     break WebSocketConnectionOutcome::TransportError;
                 }
@@ -307,10 +328,18 @@ where
                 ).await;
                 break WebSocketConnectionOutcome::ServerClosed(WebSocketCloseReason::IdleTimeout);
             }
+            _ = &mut maximum_age_sleep => {
+                gracefully_close_websocket(
+                    &mut socket,
+                    WebSocketCloseReason::GoingAway,
+                    shutdown_config,
+                ).await;
+                break WebSocketConnectionOutcome::ServerClosed(WebSocketCloseReason::GoingAway);
+            }
             maybe_outbound = receiver.recv() => {
                 match maybe_outbound {
                     Some(OutboundWebSocketEvent::Message(message)) => {
-                        if socket.send(message).await.is_err() {
+                        if !matches!(timeout(SOCKET_WRITE_TIMEOUT, socket.send(message)).await, Ok(Ok(()))) {
                             record_websocket_connection_error(WebSocketConnectionErrorLabel::TransportError);
                             break WebSocketConnectionOutcome::TransportError;
                         }
@@ -338,6 +367,8 @@ where
                             context,
                             WebSocketApplicationMessage::Text(text),
                             &outbound,
+                            &mut receiver,
+                            &mut socket,
                             &mut shutdown,
                         ).await {
                             ApplicationMessageOutcome::Continue => {}
@@ -353,6 +384,10 @@ where
                                     shutdown_config,
                                 ).await;
                                 break WebSocketConnectionOutcome::HandlerError;
+                            }
+                            ApplicationMessageOutcome::TransportError => {
+                                record_websocket_connection_error(WebSocketConnectionErrorLabel::TransportError);
+                                break WebSocketConnectionOutcome::TransportError;
                             }
                             ApplicationMessageOutcome::ShutdownRequested => {
                                 gracefully_close_websocket(
@@ -371,6 +406,8 @@ where
                             context,
                             WebSocketApplicationMessage::Binary(binary),
                             &outbound,
+                            &mut receiver,
+                            &mut socket,
                             &mut shutdown,
                         ).await {
                             ApplicationMessageOutcome::Continue => {}
@@ -387,6 +424,10 @@ where
                                 ).await;
                                 break WebSocketConnectionOutcome::HandlerError;
                             }
+                            ApplicationMessageOutcome::TransportError => {
+                                record_websocket_connection_error(WebSocketConnectionErrorLabel::TransportError);
+                                break WebSocketConnectionOutcome::TransportError;
+                            }
                             ApplicationMessageOutcome::ShutdownRequested => {
                                 gracefully_close_websocket(
                                     &mut socket,
@@ -400,11 +441,21 @@ where
                     Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
                         last_inbound_activity = Instant::now();
                     }
-                    Some(Ok(Message::Close(_))) | None => {
+                    Some(Ok(Message::Close(_))) => {
+                        // Tungstenite queues the mandatory close reply while
+                        // reading the peer frame. Flush that queued reply;
+                        // sending a second Close here can fail as AlreadyClosed.
+                        let _ = timeout(SOCKET_WRITE_TIMEOUT, socket.flush()).await;
                         break WebSocketConnectionOutcome::PeerClosed;
                     }
-                    Some(Err(_)) => {
+                    None => {
+                        break WebSocketConnectionOutcome::PeerClosed;
+                    }
+                    Some(Err(error)) => {
                         record_websocket_connection_error(WebSocketConnectionErrorLabel::TransportError);
+                        if let Some(reason) = websocket_protocol_close_reason(&error) {
+                            gracefully_close_websocket(&mut socket, reason, shutdown_config).await;
+                        }
                         break WebSocketConnectionOutcome::TransportError;
                     }
                 }
@@ -423,25 +474,17 @@ where
     outcome
 }
 
-async fn handle_application_message<Handler>(
-    handler: &mut Handler,
-    context: WebSocketConnectionContext,
-    message: WebSocketApplicationMessage,
-    outbound: &WebSocketConnectionHandle,
-    shutdown: &mut ShutdownToken,
-) -> ApplicationMessageOutcome
-where
-    Handler: WebSocketMessageHandler,
-{
-    tokio::select! {
-        result = handler.on_message(context, message, outbound) => {
-            match result {
-                Ok(WebSocketHandlerAction::Continue) => ApplicationMessageOutcome::Continue,
-                Ok(WebSocketHandlerAction::Close(reason)) => ApplicationMessageOutcome::Close(reason),
-                Err(_) => ApplicationMessageOutcome::HandlerError,
-            }
+fn websocket_protocol_close_reason(error: &axum::Error) -> Option<WebSocketCloseReason> {
+    use tungstenite::error::{CapacityError, Error};
+
+    let cause = error.source()?.downcast_ref::<Error>()?;
+    match cause {
+        Error::Capacity(CapacityError::MessageTooLong { .. }) => {
+            Some(WebSocketCloseReason::MessageTooLarge)
         }
-        _ = shutdown.cancelled() => ApplicationMessageOutcome::ShutdownRequested,
+        Error::Utf8(_) => Some(WebSocketCloseReason::InvalidPayload),
+        Error::Protocol(_) | Error::AttackAttempt => Some(WebSocketCloseReason::ProtocolError),
+        _ => None,
     }
 }
 

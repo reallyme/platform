@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::cookies::AppCookieConfig;
 use super::cors::AppCorsConfig;
 use super::downstream::AppDownstreamConfig;
-use super::error::{AppConfigDocumentError, AppConfigDocumentErrorReason};
+use super::error::{AppConfigDocumentError, AppConfigDocumentErrorReason, AppConfigDocumentField};
 use super::raw::RawAppJsoncConfigDocument;
 use super::url::AppBaseUrl;
 use crate::config::parse_jsonc_config;
@@ -82,15 +82,40 @@ impl<TCustom> TryFrom<RawAppJsoncConfigDocument<TCustom>> for AppJsoncConfigDocu
         if raw.reflection_enabled {
             return Err(AppConfigDocumentError::new(
                 AppConfigDocumentErrorReason::ReflectionNotSupported,
-            ));
+            )
+            .with_field(AppConfigDocumentField::ReflectionEnabled));
         }
 
         Ok(Self {
-            public_base_url: raw.public_base_url.map(AppBaseUrl::new).transpose()?,
-            cors: AppCorsConfig::try_from(raw.cors)?,
-            cookies: raw.cookies.map(AppCookieConfig::try_from).transpose()?,
+            public_base_url: raw
+                .public_base_url
+                .map(AppBaseUrl::new)
+                .transpose()
+                .map_err(|error| error.with_field(AppConfigDocumentField::PublicBaseUrl))?,
+            cors: AppCorsConfig::try_from(raw.cors)
+                .map_err(|error| error.with_field(AppConfigDocumentField::CorsAllowedOrigins))?,
+            cookies: raw
+                .cookies
+                .map(AppCookieConfig::try_from)
+                .transpose()
+                .map_err(|error| {
+                    let field = match error.reason() {
+                        AppConfigDocumentErrorReason::InvalidCookieDomain => {
+                            AppConfigDocumentField::CookiesDomain
+                        }
+                        AppConfigDocumentErrorReason::InvalidCookieSameSitePolicy => {
+                            AppConfigDocumentField::CookiesSameSitePolicy
+                        }
+                        AppConfigDocumentErrorReason::CookieSameSiteNoneRequiresSecure => {
+                            AppConfigDocumentField::CookiesSecure
+                        }
+                        _ => AppConfigDocumentField::Document,
+                    };
+                    error.with_field(field)
+                })?,
             reflection_enabled: raw.reflection_enabled,
-            downstream: AppDownstreamConfig::try_from(raw.downstream)?,
+            downstream: AppDownstreamConfig::try_from(raw.downstream)
+                .map_err(|error| error.with_field(AppConfigDocumentField::Downstream))?,
             custom: raw.custom,
         })
     }

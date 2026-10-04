@@ -21,3 +21,20 @@ fn disabled_hello_returns_typed_app_error() {
         Err(ExampleAppError::HelloDisabled),
     );
 }
+
+#[test]
+fn expired_deadline_fails_before_side_effects() {
+    let context = new_context(ExampleAppConfig::new(true), ExamplePorts::unconfigured());
+    assert_eq!(
+        hello(&context, HelloRequest, Some(std::time::Duration::ZERO)),
+        Err(ExampleAppError::DeadlineExceeded),
+    );
+    assert!(
+        hello(
+            &context,
+            HelloRequest,
+            Some(std::time::Duration::from_millis(1))
+        )
+        .is_ok()
+    );
+}

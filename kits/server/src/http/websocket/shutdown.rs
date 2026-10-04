@@ -106,11 +106,17 @@ pub async fn gracefully_close_websocket(
     reason: WebSocketCloseReason,
     shutdown: WebSocketShutdownConfig,
 ) {
-    let _ = socket
-        .send(Message::Close(Some(reason.to_close_frame())))
-        .await;
-
     let deadline = Instant::now() + shutdown.close_grace_period().as_duration();
+    if !matches!(
+        timeout_at(
+            deadline,
+            socket.send(Message::Close(Some(reason.to_close_frame())))
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        return;
+    }
     while let Ok(receive_result) = timeout_at(deadline, socket.recv()).await {
         match receive_result {
             Some(Ok(Message::Close(_))) | None => break,

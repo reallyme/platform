@@ -26,6 +26,13 @@ fn acl_tag_set_matches_required_subset() {
 }
 
 #[test]
+fn empty_required_acl_tag_set_never_grants_access() {
+    let announced = AclTagSet::parse(["prod"]).expect("valid announced tags");
+    let required = AclTagSet::parse([]).expect("empty selector can be represented");
+    assert!(!announced.contains_required(&required));
+}
+
+#[test]
 fn acl_tag_set_rejects_oversized_sets() {
     let values = [
         "tag00", "tag01", "tag02", "tag03", "tag04", "tag05", "tag06", "tag07", "tag08", "tag09",

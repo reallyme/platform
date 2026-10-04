@@ -1,0 +1,26 @@
+[
+  {
+    "enabled": true,
+    "transport": "http_hello",
+    "expected_status": 200,
+    "expected_code": null
+  },
+  {
+    "enabled": false,
+    "transport": "http_hello",
+    "expected_status": 403,
+    "expected_code": "forbidden"
+  },
+  {
+    "enabled": true,
+    "transport": "connect_hello",
+    "expected_status": 200,
+    "expected_code": null
+  },
+  {
+    "enabled": false,
+    "transport": "connect_hello",
+    "expected_status": 403,
+    "expected_code": "permission_denied"
+  }
+]

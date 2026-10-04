@@ -20,7 +20,7 @@ use crate::transport::RequestId;
 
 use super::super::ids::{X_REQUEST_ID, request_id_from_headers};
 use super::super::response::JsonErrorResponse;
-use super::listener::listener_name_for_request;
+use super::listener::{inbound_correlation_ids_trusted, listener_name_for_request};
 
 /// Layer that validates or replaces the request ID.
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,9 +29,8 @@ pub struct RequestIdLayer;
 /// Creates middleware that validates or replaces the request ID.
 ///
 /// Policy:
-/// - if a valid request ID header is present, preserve it
-/// - if the header is missing, generate a new request ID
-/// - if the header is malformed, replace it with a newly generated request ID
+/// - preserve a valid inbound ID only on an internal listener
+/// - generate a fresh ID for public/private requests and malformed internal IDs
 pub fn request_id_layer() -> RequestIdLayer {
     RequestIdLayer
 }
@@ -63,7 +62,9 @@ where
     }
 
     fn call(&mut self, mut request: Request<Body>) -> Self::Future {
-        if let Some(header_value) = request.headers().get(X_REQUEST_ID)
+        let trust_inbound = inbound_correlation_ids_trusted(&request);
+        if trust_inbound
+            && let Some(header_value) = request.headers().get(X_REQUEST_ID)
             && RequestId::try_from(header_value).is_err()
         {
             let route_template = MetricRouteTemplateLabel::unknown();
@@ -75,8 +76,11 @@ where
             );
         }
 
-        let request_id =
-            request_id_from_headers(request.headers()).unwrap_or_else(RequestId::generate);
+        let request_id = if trust_inbound {
+            request_id_from_headers(request.headers()).unwrap_or_else(RequestId::generate)
+        } else {
+            RequestId::generate()
+        };
         let header_value = match request_id.to_header_value() {
             Ok(header_value) => header_value,
             Err(_) => {

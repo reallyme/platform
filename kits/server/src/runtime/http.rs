@@ -4,14 +4,16 @@
 use axum::Router;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::net::TcpListener;
-use tracing::debug;
 
 use crate::config::HttpServerConfig;
 use crate::http::{
     HttpListenerName, HttpListenerVisibility, HttpRateLimitTierName, HttpRouteVisibilityPolicy,
 };
-use crate::task::{ShutdownToken, TaskExecutionError, TaskExecutionErrorKind};
+
+#[path = "http/serve.rs"]
+mod serve;
+
+pub(crate) use serve::serve_http;
 
 /// HTTP server input owned by server composition and run by [`crate::runtime::ServerRuntime`].
 pub struct HttpServerSpec {
@@ -45,6 +47,8 @@ pub struct HttpRateLimitTierPolicy {
 /// Low-cardinality reason a rate-limit tier policy was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpRateLimitTierPolicyErrorReason {
+    /// A bucket without refill permanently denies a source after its first burst.
+    ZeroRefillTokens,
     /// A token bucket with no burst capacity can never admit traffic.
     ZeroBurstTokens,
     /// Per-source limiting requires at least one retained source bucket.
@@ -78,6 +82,11 @@ impl HttpRateLimitTierPolicy {
         burst_tokens: u32,
         max_distinct_sources: usize,
     ) -> Result<Self, HttpRateLimitTierPolicyError> {
+        if refill_tokens_per_second == 0 {
+            return Err(HttpRateLimitTierPolicyError::new(
+                HttpRateLimitTierPolicyErrorReason::ZeroRefillTokens,
+            ));
+        }
         if burst_tokens == 0 {
             return Err(HttpRateLimitTierPolicyError::new(
                 HttpRateLimitTierPolicyErrorReason::ZeroBurstTokens,
@@ -211,25 +220,10 @@ impl HttpServerSpec {
     pub(crate) fn into_router(self) -> Router {
         self.app_router
     }
-}
 
-pub(crate) async fn serve_http(
-    listener: TcpListener,
-    router: Router,
-    listener_name: HttpListenerName,
-    mut shutdown: ShutdownToken,
-) -> Result<(), TaskExecutionError> {
-    let listener_name = listener_name.as_str().to_owned();
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        let reason = shutdown.cancelled().await;
-        debug!(listener_name, ?reason, "http_listener_draining");
-    })
-    .await
-    .map_err(|_| TaskExecutionError::new(TaskExecutionErrorKind::Internal))
+    pub(crate) fn router(&self) -> &Router {
+        &self.app_router
+    }
 }
 
 #[cfg(test)]

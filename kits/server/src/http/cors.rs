@@ -5,23 +5,34 @@ use axum::http::{HeaderValue, Method, header};
 use reallyme_app_kit::AppCorsConfig;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::config::{CorsConfig, HttpServerConfig};
+mod preflight;
+pub use preflight::PreflightCorsLayer;
+
+use crate::config::HttpServerConfig;
 
 use super::ids::{X_REQUEST_ID, X_TRACE_ID};
 
 /// Creates the shared CORS layer for a service listener.
-pub fn cors_layer(config: &HttpServerConfig) -> CorsLayer {
+pub fn cors_layer(config: &HttpServerConfig) -> Option<PreflightCorsLayer> {
     let layer = base_cors_layer();
 
-    match config.cors() {
-        CorsConfig::NoCors => layer,
-        CorsConfig::ExactOrigins(origins) => layer.allow_origin(AllowOrigin::list(
-            origins
-                .as_slice()
-                .iter()
-                .map(|origin| origin.as_header_value().clone()),
-        )),
-        CorsConfig::AnyForDevelopmentOnly => layer.allow_origin(AllowOrigin::any()),
+    if config.cors().is_disabled() {
+        None
+    } else if let Some(origins) = config.cors().exact_origins() {
+        Some(PreflightCorsLayer::new(
+            layer.allow_origin(AllowOrigin::list(
+                origins
+                    .as_slice()
+                    .iter()
+                    .map(|origin| origin.as_header_value().clone()),
+            )),
+        ))
+    } else if config.cors().allows_any_origin() {
+        Some(PreflightCorsLayer::new(
+            layer.allow_origin(AllowOrigin::any()),
+        ))
+    } else {
+        None
     }
 }
 
@@ -30,7 +41,7 @@ pub fn cors_layer(config: &HttpServerConfig) -> CorsLayer {
 /// Returns `None` when the app has not declared any allowed origins, so callers
 /// can skip layering entirely instead of attaching a no-op layer that would
 /// still emit preflight responses.
-pub fn app_cors_layer(config: &AppCorsConfig) -> Option<CorsLayer> {
+pub fn app_cors_layer(config: &AppCorsConfig) -> Option<PreflightCorsLayer> {
     if !config.is_enabled() {
         return None;
     }
@@ -45,7 +56,9 @@ pub fn app_cors_layer(config: &AppCorsConfig) -> Option<CorsLayer> {
         return None;
     }
 
-    Some(base_cors_layer().allow_origin(AllowOrigin::list(origins)))
+    Some(PreflightCorsLayer::new(
+        base_cors_layer().allow_origin(AllowOrigin::list(origins)),
+    ))
 }
 
 fn base_cors_layer() -> CorsLayer {

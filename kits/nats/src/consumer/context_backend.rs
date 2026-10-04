@@ -137,6 +137,15 @@ impl ContextConsumerBackend {
             )
             .await
             .map_err(|_| JetStreamError::ConsumerInitializationFailed)?;
+        // get_or_create may return a pre-existing durable with a different
+        // filter or delivery policy. Never silently consume the wrong stream.
+        let info = created
+            .get_info()
+            .await
+            .map_err(|_| JetStreamError::ConsumerInitializationFailed)?;
+        if !consumer_config_matches(config, &info.config) {
+            return Err(JetStreamError::ConsumerConfigurationMismatch);
+        }
 
         let mut consumers = self.consumers.write().await;
         if let Some(existing) = consumers.get(&cache_key) {
@@ -164,7 +173,10 @@ impl ContextConsumerBackend {
             .await
             .map_err(|_| JetStreamError::PullFailed)?;
 
-        let ack_timeout = config.ack_timeout();
+        // Broker ack_wait controls redelivery; a local ack RPC must instead
+        // use the shorter operation deadline so an unhealthy connection does
+        // not pin a handler for the entire processing window.
+        let ack_timeout = config.operation_timeout().min(config.ack_timeout());
         let stream = stream::unfold(
             (messages, ack_timeout),
             |(mut messages, ack_timeout)| async move {
@@ -176,15 +188,16 @@ impl ContextConsumerBackend {
                 let message = match message {
                     Ok(message) => message,
                     Err(_) => {
-                        let _ = counter!(
+                        counter!(
                             METRIC_NATS_CONSUMER_DELIVERY_FAILURE_TOTAL,
                             "result" => "error"
-                        );
+                        )
+                        .increment(1);
                         return Some((Err(JetStreamError::PullFailed), (messages, ack_timeout)));
                     }
                 };
 
-                let _ = counter!(METRIC_NATS_CONSUMER_DELIVERY_TOTAL, "result" => "ok");
+                counter!(METRIC_NATS_CONSUMER_DELIVERY_TOTAL, "result" => "ok").increment(1);
 
                 let subject = message.message.subject.as_str().to_owned();
                 let payload = message.message.payload.clone();
@@ -217,6 +230,22 @@ impl ContextConsumerBackend {
 
         Ok(Box::pin(stream))
     }
+}
+
+fn consumer_config_matches(
+    expected: &JetStreamConsumerConfig,
+    actual: &async_nats::jetstream::consumer::Config,
+) -> bool {
+    actual.durable_name.as_deref() == Some(expected.consumer_name())
+        && actual.filter_subject == expected.subject()
+        && actual.ack_policy == async_nats::jetstream::consumer::AckPolicy::Explicit
+        && actual.ack_wait == expected.ack_timeout()
+        && actual.max_deliver == expected.max_deliver()
+        && actual.replay_policy == expected.replay_policy()
+        && actual.deliver_policy == expected.deliver_policy()
+        && actual.inactive_threshold == expected.inactive_threshold()
+        && actual.num_replicas == expected.num_replicas()
+        && actual.max_ack_pending == expected.max_ack_pending()
 }
 
 impl JetStreamConsumerBackend for ContextConsumerBackend {
@@ -280,6 +309,7 @@ impl ContextDeliveryAcker {
             JetStreamAckDisposition::Ack => "ack",
             JetStreamAckDisposition::Nak => "nak",
             JetStreamAckDisposition::Term => "term",
+            JetStreamAckDisposition::Progress => "progress",
         };
         // Keep the per-call timeout as a second fence in front of broker-side ack handling.
         let result = match disposition {
@@ -318,6 +348,13 @@ impl ContextDeliveryAcker {
                 );
                 JetStreamError::AcknowledgmentFailed
             })?,
+            JetStreamAckDisposition::Progress => tokio::time::timeout(
+                self.ack_timeout,
+                self.message
+                    .ack_with(async_nats::jetstream::AckKind::Progress),
+            )
+            .await
+            .map_err(|_| JetStreamError::AcknowledgmentFailed)?,
         };
 
         result.map_err(|_| {

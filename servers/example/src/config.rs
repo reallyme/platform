@@ -9,8 +9,11 @@ use std::time::Duration;
 
 use reallyme_app_kit::{AppConfigProfile, parse_jsonc_config};
 use reallyme_server_kit::config::{
-    BindAddress, BodyLimitConfig, CorsConfig, HttpServerConfig, LogFormat, MetricsIdleTimeout,
-    ObservabilityConfig, RequestBodyLimitBytes, RequestTimeout, ServiceEnvironment, TimeoutConfig,
+    BindAddress, BodyLimitConfig, CorsConfig, ExternalOriginPolicyConfig, HostAuthority,
+    HostAuthorityPolicy, HttpSecurityConfig, HttpServerConfig, LogFormat, MetricsIdleTimeout,
+    ObservabilityConfig, OperationalRouteAccess, RequestBodyLimitBytes, RequestTimeout,
+    SecurityHeadersConfig, ServiceEnvironment, TimeoutConfig, TrustedProxyHeaderFamily,
+    TrustedProxyHeaders, TrustedProxyRange,
 };
 use reallyme_server_kit::task::ShutdownTimeout;
 use serde::Deserialize;
@@ -28,6 +31,29 @@ struct RawExampleServerConfig {
     request_body_limit_bytes: usize,
     metrics_idle_timeout_seconds: u64,
     shutdown_timeout_seconds: u64,
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
+    #[serde(default)]
+    trusted_proxy_ranges: Vec<String>,
+    external_origin_policy: Option<RawExternalOriginPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExternalOriginPolicy {
+    header_family: RawTrustedProxyHeaderFamily,
+    trusted_forwarded_host: bool,
+    trusted_forwarded_proto: bool,
+    require_https_external_scheme: bool,
+    strict_forwarded_header_consistency: bool,
+    strip_raw_proxy_headers: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RawTrustedProxyHeaderFamily {
+    Forwarded,
+    XForwarded,
 }
 
 pub(crate) struct ExampleServerConfig {
@@ -71,6 +97,70 @@ impl ExampleServerConfig {
         })?;
         let bind_address = BindAddress::new(raw.bind_address)
             .map_err(|_| ExampleServerError::new(ExampleServerErrorReason::BindAddressInvalid))?;
+        if !bind_address.ip_addr().is_loopback() && raw.allowed_hosts.is_empty() {
+            return Err(ExampleServerError::new(
+                ExampleServerErrorReason::AllowedHostsInvalid,
+            ));
+        }
+        let host_policy = if raw.allowed_hosts.is_empty() {
+            HostAuthorityPolicy::allow_any()
+        } else {
+            let hosts = raw
+                .allowed_hosts
+                .into_iter()
+                .map(HostAuthority::new)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| {
+                    ExampleServerError::new(ExampleServerErrorReason::AllowedHostsInvalid)
+                })?;
+            HostAuthorityPolicy::allow_list(hosts).map_err(|_| {
+                ExampleServerError::new(ExampleServerErrorReason::AllowedHostsInvalid)
+            })?
+        };
+        let proxy_ranges = raw
+            .trusted_proxy_ranges
+            .iter()
+            .map(|range| TrustedProxyRange::parse(range))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| {
+                ExampleServerError::new(ExampleServerErrorReason::TrustedProxyRangesInvalid)
+            })?;
+        let trusted_proxy_headers = if proxy_ranges.is_empty() {
+            TrustedProxyHeaders::ignore_all()
+        } else {
+            TrustedProxyHeaders::trust_configured_proxies(proxy_ranges).map_err(|_| {
+                ExampleServerError::new(ExampleServerErrorReason::TrustedProxyRangesInvalid)
+            })?
+        };
+        let external_origin_policy = match raw.external_origin_policy {
+            Some(policy) => {
+                if matches!(trusted_proxy_headers, TrustedProxyHeaders::IgnoreAll) {
+                    return Err(ExampleServerError::new(
+                        ExampleServerErrorReason::ExternalOriginPolicyInvalid,
+                    ));
+                }
+                let family = match policy.header_family {
+                    RawTrustedProxyHeaderFamily::Forwarded => TrustedProxyHeaderFamily::Forwarded,
+                    RawTrustedProxyHeaderFamily::XForwarded => TrustedProxyHeaderFamily::XForwarded,
+                };
+                ExternalOriginPolicyConfig::new(
+                    policy.trusted_forwarded_host,
+                    policy.trusted_forwarded_proto,
+                    policy.require_https_external_scheme,
+                    policy.strict_forwarded_header_consistency,
+                    policy.strip_raw_proxy_headers,
+                )
+                .with_header_family(family)
+            }
+            None => ExternalOriginPolicyConfig::secure_defaults(),
+        };
+        let security = HttpSecurityConfig::new(
+            SecurityHeadersConfig::secure_defaults(),
+            host_policy,
+            trusted_proxy_headers,
+            external_origin_policy,
+            OperationalRouteAccess::local_only(),
+        );
         let request_timeout = RequestTimeout::new(Duration::from_secs(raw.request_timeout_seconds))
             .map_err(|_| {
                 ExampleServerError::new(ExampleServerErrorReason::RequestTimeoutInvalid)
@@ -111,7 +201,8 @@ impl ExampleServerConfig {
                 CorsConfig::no_cors(),
                 TimeoutConfig::new(request_timeout),
                 BodyLimitConfig::new(request_body_limit),
-            ),
+            )
+            .with_security_config(security),
             observability,
             shutdown_timeout,
         })

@@ -6,6 +6,7 @@
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bb8::PooledConnection;
 use bb8_postgres::PostgresConnectionManager;
@@ -81,6 +82,7 @@ pub struct PostgresHealthReport {
 #[derive(Clone)]
 pub struct PostgresPool {
     inner: Arc<PostgresPoolInner>,
+    health_timeout: Duration,
 }
 
 impl PostgresPool {
@@ -100,6 +102,7 @@ impl PostgresPool {
         };
         Ok(Self {
             inner: Arc::new(inner),
+            health_timeout: config.connection_timeout(),
         })
     }
 
@@ -125,6 +128,12 @@ impl PostgresPool {
 
     /// Runs a readiness query and returns bounded operational pool state.
     pub async fn health_report(&self) -> PostgresResult<PostgresHealthReport> {
+        tokio::time::timeout(self.health_timeout, self.health_report_within_deadline())
+            .await
+            .map_err(|_| connection_error())?
+    }
+
+    async fn health_report_within_deadline(&self) -> PostgresResult<PostgresHealthReport> {
         let connection = self.get().await?;
         connection
             .query_one("SELECT 1", &[])
@@ -287,15 +296,19 @@ async fn build_pool<M>(config: &PostgresConfig, manager: M) -> PostgresResult<bb
 where
     M: bb8::ManageConnection,
 {
-    bb8::Pool::builder()
+    let build = bb8::Pool::builder()
         .max_size(config.max_pool_size())
         // Eagerly establish at least the configured floor so pool construction
         // is a real startup connectivity gate rather than a lazy allocation.
         .min_idle(config.min_pool_size())
         .connection_timeout(config.connection_timeout())
-        .build(manager)
+        .build(manager);
+    tokio::time::timeout(config.connection_timeout(), build)
         .await
-        .map_err(|_error| PostgresError::Setup {
+        .map_err(|_| PostgresError::Setup {
+            reason: PostgresSetupErrorReason::PoolUnavailable,
+        })?
+        .map_err(|_| PostgresError::Setup {
             reason: PostgresSetupErrorReason::PoolUnavailable,
         })
 }

@@ -11,6 +11,9 @@ use std::sync::OnceLock;
 
 const MIN_GEO_RADIUS_METERS: u32 = 1;
 const MAX_GEO_RADIUS_METERS: u32 = 10_000_000;
+const MAX_FILTER_DEPTH: u8 = 16;
+const MAX_FILTER_NODES: u16 = 64;
+const MAX_TEXT_FILTER_BYTES: usize = 256;
 
 /// Validated string literal for filter expressions.
 #[derive(Clone, PartialEq, Eq)]
@@ -22,6 +25,7 @@ impl TextFilterValue {
         let value = raw.into();
 
         if value.is_empty()
+            || value.len() > MAX_TEXT_FILTER_BYTES
             || value
                 .chars()
                 .any(|character| character == '`' || character.is_control())
@@ -41,6 +45,27 @@ impl TextFilterValue {
     }
 }
 
+/// Finite floating-point value allowed in a filter expression.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FiniteFilterFloat(f64);
+
+impl FiniteFilterFloat {
+    /// Rejects NaN and infinities before they reach the wire expression.
+    pub fn new(value: f64) -> TypesenseResult<Self> {
+        if !value.is_finite() {
+            return Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::InvalidFilterValue,
+            });
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the finite value.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
 /// Typed value for an exact-match filter clause.
 #[derive(Clone, PartialEq)]
 pub enum FilterValue {
@@ -51,7 +76,7 @@ pub enum FilterValue {
     /// 64-bit integer match.
     Int64(i64),
     /// 64-bit floating point match.
-    Float(f64),
+    Float(FiniteFilterFloat),
 }
 
 impl FilterValue {
@@ -71,7 +96,7 @@ impl FilterValue {
             }
             Self::Float(value) => {
                 output.push(':');
-                output.push_str(&value.to_string());
+                output.push_str(&value.get().to_string());
             }
         }
     }
@@ -120,6 +145,8 @@ enum RangeComparison {
 pub struct SearchFilter {
     expression: SearchFilterExpression,
     filter_by_parameter: OnceLock<String>,
+    depth: u8,
+    nodes: u16,
 }
 
 impl PartialEq for SearchFilter {
@@ -135,6 +162,8 @@ impl SearchFilter {
         Self {
             expression,
             filter_by_parameter: OnceLock::new(),
+            depth: 1,
+            nodes: 1,
         }
     }
 
@@ -153,7 +182,7 @@ impl SearchFilter {
                         output.push_str(if *value { "true" } else { "false" });
                     }
                     FilterValue::Int64(value) => output.push_str(&value.to_string()),
-                    FilterValue::Float(value) => output.push_str(&value.to_string()),
+                    FilterValue::Float(value) => output.push_str(&value.get().to_string()),
                 }
             }
             SearchFilterExpression::Range {
@@ -296,22 +325,50 @@ impl SearchFilter {
         }))
     }
 
-    /// Combines two filters with `&&`.
-    #[must_use]
-    pub fn and(self, other: Self) -> Self {
-        Self::new(SearchFilterExpression::And {
-            left: Box::new(self),
-            right: Box::new(other),
+    /// Combines two filters with `&&` under the depth and size bounds.
+    pub fn and(self, other: Self) -> TypesenseResult<Self> {
+        let (depth, nodes) = self.combined_bounds(&other)?;
+        Ok(Self {
+            expression: SearchFilterExpression::And {
+                left: Box::new(self),
+                right: Box::new(other),
+            },
+            filter_by_parameter: OnceLock::new(),
+            depth,
+            nodes,
         })
     }
 
-    /// Combines two filters with `||`.
-    #[must_use]
-    pub fn or(self, other: Self) -> Self {
-        Self::new(SearchFilterExpression::Or {
-            left: Box::new(self),
-            right: Box::new(other),
+    /// Combines two filters with `||` under the depth and size bounds.
+    pub fn or(self, other: Self) -> TypesenseResult<Self> {
+        let (depth, nodes) = self.combined_bounds(&other)?;
+        Ok(Self {
+            expression: SearchFilterExpression::Or {
+                left: Box::new(self),
+                right: Box::new(other),
+            },
+            filter_by_parameter: OnceLock::new(),
+            depth,
+            nodes,
         })
+    }
+
+    fn combined_bounds(&self, other: &Self) -> TypesenseResult<(u8, u16)> {
+        let depth = self.depth.max(other.depth).checked_add(1);
+        let nodes = self
+            .nodes
+            .checked_add(other.nodes)
+            .and_then(|total| total.checked_add(1));
+        match (depth, nodes) {
+            (Some(depth), Some(nodes))
+                if depth <= MAX_FILTER_DEPTH && nodes <= MAX_FILTER_NODES =>
+            {
+                Ok((depth, nodes))
+            }
+            _ => Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::InvalidFilterValue,
+            }),
+        }
     }
 }
 

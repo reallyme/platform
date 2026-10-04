@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,7 +11,61 @@ use crate::runtime::{
     AppName, RuntimeAppCleanupErrorReason, RuntimeCleanupHook, ServerRuntimeError,
 };
 use crate::startup::{ServerName, TaskName};
-use crate::task::{ShutdownTimeout, TaskExecutionError};
+use crate::task::{BackgroundTaskSet, ShutdownTimeout, TaskExecutionError};
+
+#[tokio::test]
+async fn failed_startup_drains_tasks_before_app_cleanup() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let cleanup_observed = Arc::new(AtomicBool::new(false));
+    let mut tasks = BackgroundTaskSet::new();
+    let task_stopped = Arc::clone(&stopped);
+    tasks
+        .spawn_fallible(
+            TaskName::new("startup-worker").expect("valid fixture task name"),
+            move |mut shutdown| async move {
+                let _reason = shutdown.cancelled().await;
+                task_stopped.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect("fixture task should register");
+    let cleanup_stopped = Arc::clone(&stopped);
+    let cleanup_seen = Arc::clone(&cleanup_observed);
+    let cleanup_hooks = vec![RuntimeAppCleanup {
+        app_name: AppName::new("api").expect("valid fixture app name"),
+        hook: RuntimeCleanupHook::new(
+            TaskName::new("startup-cleanup").expect("valid fixture hook name"),
+            move || async move {
+                cleanup_seen.store(true, Ordering::SeqCst);
+                if cleanup_stopped.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err(TaskExecutionError::new(
+                        crate::task::TaskExecutionErrorKind::Internal,
+                    ))
+                }
+            },
+        ),
+    }];
+    let timeout = ShutdownTimeout::new(Duration::from_secs(1)).expect("valid fixture timeout");
+    let server_name = ServerName::new("startup-failure").expect("valid fixture server name");
+    let error = super::super::startup_failure::finish_failed_startup(
+        ServerRuntimeError::StartupBannerWriteFailed,
+        &mut tasks,
+        cleanup_hooks,
+        timeout,
+        timeout,
+        &server_name,
+    )
+    .await;
+
+    assert!(matches!(
+        error,
+        ServerRuntimeError::StartupBannerWriteFailed
+    ));
+    assert!(stopped.load(Ordering::SeqCst));
+    assert!(cleanup_observed.load(Ordering::SeqCst));
+}
 
 #[tokio::test]
 async fn app_cleanup_hook_runs() {

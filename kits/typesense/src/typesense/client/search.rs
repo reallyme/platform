@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::typesense::{PageNumber, PageSize, SearchFields, SearchFilter, SearchQuery, SortBy};
+use crate::typesense::error::TypesenseResult;
+use crate::typesense::{
+    CollectionName, PageNumber, PageSize, SearchFields, SearchFilter, SearchQuery,
+    SearchQueryWeights, SortBy, TypesenseError, TypesenseRequestReason,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -109,29 +113,29 @@ impl<'a> SearchRequest<'a> {
 
     /// Sets per-field query weighting.
     #[must_use]
-    pub fn with_query_by_weights(mut self, query_by_weights: &'a str) -> Self {
-        self.query_by_weights = Some(query_by_weights);
+    pub fn with_query_by_weights(mut self, query_by_weights: &'a SearchQueryWeights) -> Self {
+        self.query_by_weights = Some(query_by_weights.as_str());
         self
     }
 
     /// Limits fields returned in the payload.
     #[must_use]
-    pub fn with_include_fields(mut self, include_fields: &'a str) -> Self {
-        self.include_fields = Some(include_fields);
+    pub fn with_include_fields(mut self, include_fields: &'a SearchFields) -> Self {
+        self.include_fields = Some(include_fields.to_query_by_parameter());
         self
     }
 
     /// Excludes fields from the payload.
     #[must_use]
-    pub fn with_exclude_fields(mut self, exclude_fields: &'a str) -> Self {
-        self.exclude_fields = Some(exclude_fields);
+    pub fn with_exclude_fields(mut self, exclude_fields: &'a SearchFields) -> Self {
+        self.exclude_fields = Some(exclude_fields.to_query_by_parameter());
         self
     }
 
     /// Explicitly sets highlighted fields.
     #[must_use]
-    pub fn with_highlight_fields(mut self, highlight_fields: &'a str) -> Self {
-        self.highlight_fields = Some(highlight_fields);
+    pub fn with_highlight_fields(mut self, highlight_fields: &'a SearchFields) -> Self {
+        self.highlight_fields = Some(highlight_fields.to_query_by_parameter());
         self
     }
 
@@ -185,26 +189,26 @@ impl<'a> MultiSearchRequestItem<'a> {
     /// Creates one merged query.
     #[must_use]
     pub fn new(
-        collection: &'a str,
-        q: &'a str,
-        query_by: &'a str,
-        filter_by: Option<Cow<'a, str>>,
-        sort_by: Option<&'a str>,
-        page: u32,
-        per_page: u8,
+        collection: &'a CollectionName,
+        q: &'a SearchQuery,
+        query_by: &'a SearchFields,
+        filter_by: Option<&'a SearchFilter>,
+        sort_by: Option<&'a SortBy>,
+        page: PageNumber,
+        per_page: PageSize,
     ) -> Self {
         Self {
-            collection,
-            q,
-            query_by,
-            filter_by,
-            sort_by,
+            collection: collection.as_str(),
+            q: q.as_str(),
+            query_by: query_by.to_query_by_parameter(),
+            filter_by: filter_by.map(|value| Cow::Borrowed(value.to_filter_by_parameter())),
+            sort_by: sort_by.map(SortBy::to_query_value),
             use_cache: true,
             cache_ttl: None,
             query_by_weights: None,
             prefix: true,
-            page,
-            per_page,
+            page: page.get(),
+            per_page: per_page.get(),
             include_fields: None,
             exclude_fields: None,
             highlight_fields: None,
@@ -215,9 +219,9 @@ impl<'a> MultiSearchRequestItem<'a> {
 
     /// Converts a standard request into a merge-search request item.
     #[must_use]
-    pub fn from_request(collection: &'a str, request: &'a SearchRequest<'a>) -> Self {
+    pub fn from_request(collection: &'a CollectionName, request: &'a SearchRequest<'a>) -> Self {
         Self {
-            collection,
+            collection: collection.as_str(),
             q: request.q,
             query_by: request.query_by,
             filter_by: request.filter_by.clone(),
@@ -244,10 +248,22 @@ pub struct MultiSearchRequest<'a> {
 }
 
 impl<'a> MultiSearchRequest<'a> {
+    /// Maximum number of searches in a single request.
+    pub const MAX_SEARCHES: usize = 16;
+
     /// Creates a multi-search payload.
-    #[must_use]
-    pub fn new(searches: Vec<MultiSearchRequestItem<'a>>) -> Self {
-        Self { searches }
+    pub fn new(searches: Vec<MultiSearchRequestItem<'a>>) -> TypesenseResult<Self> {
+        if searches.is_empty() {
+            return Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::EmptyMultiSearch,
+            });
+        }
+        if searches.len() > Self::MAX_SEARCHES {
+            return Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::TooManyMultiSearches,
+            });
+        }
+        Ok(Self { searches })
     }
 
     /// Returns the list of queries.
@@ -265,6 +281,42 @@ pub struct MultiSearchResponse {
     pub results: Vec<MultiSearchResult>,
 }
 
+impl MultiSearchResponse {
+    /// Rejects omitted or failed sub-searches even when the HTTP batch was 200.
+    pub fn validate(self, expected_searches: usize) -> TypesenseResult<Self> {
+        if self.results.len() != expected_searches {
+            return Err(TypesenseError::Transport {
+                reason: crate::typesense::TypesenseTransportReason::InvalidResponseBody,
+            });
+        }
+        for search in &self.results {
+            if search.error_present {
+                return Err(TypesenseError::Transport {
+                    reason: crate::typesense::TypesenseTransportReason::InvalidResponseBody,
+                });
+            }
+            if let Some(code) = search.code {
+                let status =
+                    reqwest::StatusCode::from_u16(code).map_err(|_| TypesenseError::Transport {
+                        reason: crate::typesense::TypesenseTransportReason::InvalidResponseBody,
+                    })?;
+                if !status.is_success() {
+                    return Err(crate::typesense::error::map_status(status));
+                }
+            }
+            if search.page == 0 {
+                // A successful search result has a one-based page. Empty
+                // objects and unclassified error bodies must not become an
+                // apparently valid empty search.
+                return Err(TypesenseError::Transport {
+                    reason: crate::typesense::TypesenseTransportReason::InvalidResponseBody,
+                });
+            }
+        }
+        Ok(self)
+    }
+}
+
 /// A request bucket returned from multi-search.
 #[derive(Deserialize)]
 pub struct MultiSearchResult {
@@ -280,6 +332,20 @@ pub struct MultiSearchResult {
     /// Per-search HTTP-style failure code returned by Typesense.
     #[serde(default)]
     pub code: Option<u16>,
+    #[serde(
+        rename = "error",
+        default,
+        deserialize_with = "error_field_was_present"
+    )]
+    error_present: bool,
+}
+
+fn error_field_was_present<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(true)
 }
 
 /// A search hit from multi-search.
@@ -322,4 +388,82 @@ pub struct SearchResults<T> {
 pub struct SearchResultHit<T> {
     /// Document payload.
     pub document: T,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MultiSearchRequest, MultiSearchRequestItem, MultiSearchResponse};
+    use crate::typesense::{
+        CollectionName, PageNumber, PageSize, SearchFieldName, SearchFields, SearchQuery,
+        TypesenseError, TypesenseRequestReason, TypesenseTransportReason, TypesenseUpstreamReason,
+    };
+
+    #[test]
+    fn multi_search_count_is_bounded_and_each_item_is_typed() {
+        let collection = CollectionName::parse("documents").expect("valid collection");
+        let query = SearchQuery::parse("example").expect("valid query");
+        let field = SearchFieldName::parse("title").expect("valid field");
+        let fields = SearchFields::new(vec![field]).expect("valid fields");
+        let page_size = PageSize::parse(5, 10).expect("valid page size");
+        assert!(matches!(
+            MultiSearchRequest::new(Vec::new()),
+            Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::EmptyMultiSearch
+            })
+        ));
+        let searches = (0..=MultiSearchRequest::MAX_SEARCHES)
+            .map(|_| {
+                MultiSearchRequestItem::new(
+                    &collection,
+                    &query,
+                    &fields,
+                    None,
+                    None,
+                    PageNumber::FIRST,
+                    page_size,
+                )
+            })
+            .collect();
+        assert!(matches!(
+            MultiSearchRequest::new(searches),
+            Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::TooManyMultiSearches
+            })
+        ));
+    }
+
+    #[test]
+    fn multi_search_rejects_failed_or_missing_subsearches() {
+        let failed: MultiSearchResponse =
+            serde_json::from_str(r#"{"results":[{"code":403,"hits":[]}]}"#)
+                .expect("valid wire response");
+        assert!(matches!(
+            failed.validate(1),
+            Err(TypesenseError::Upstream {
+                reason: TypesenseUpstreamReason::AuthorizationFailed,
+                ..
+            })
+        ));
+        let omitted: MultiSearchResponse =
+            serde_json::from_str(r#"{"results":[]}"#).expect("valid wire response");
+        assert!(matches!(
+            omitted.validate(1),
+            Err(TypesenseError::Transport {
+                reason: TypesenseTransportReason::InvalidResponseBody
+            })
+        ));
+        for body in [
+            r#"{"results":[{"error":"upstream rejected query"}]}"#,
+            r#"{"results":[{}]}"#,
+        ] {
+            let malformed: MultiSearchResponse =
+                serde_json::from_str(body).expect("wire response should decode");
+            assert!(matches!(
+                malformed.validate(1),
+                Err(TypesenseError::Transport {
+                    reason: TypesenseTransportReason::InvalidResponseBody
+                })
+            ));
+        }
+    }
 }

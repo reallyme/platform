@@ -26,6 +26,24 @@ fn publisher_config_rejects_missing_stream_when_enabled() {
 }
 
 #[test]
+fn publisher_config_rejects_unbounded_time_and_payload() {
+    for (timeout, payload_bytes) in [
+        (Duration::from_secs(61), 1),
+        (Duration::from_secs(1), 16 * 1024 * 1024 + 1),
+    ] {
+        let result = JetStreamPublisherConfig::new(
+            true,
+            "nats://127.0.0.1:4222",
+            "updates",
+            "updates.local",
+            timeout,
+            payload_bytes,
+        );
+        assert!(matches!(result, Err(JetStreamError::InvalidConfiguration)));
+    }
+}
+
+#[test]
 fn publisher_config_allows_empty_fields_when_disabled() {
     let result = JetStreamPublisherConfig::new(false, "", "", "", Duration::from_secs(1), 1);
 
@@ -242,6 +260,35 @@ fn validate_subject_rejects_publish_wildcards() {
 }
 
 #[test]
+fn names_and_subjects_reject_control_chars_and_empty_tokens() {
+    for name in ["bad.name", "bad*name", "bad>name", "bad\0name", " bad"] {
+        assert_eq!(
+            super::validation::validate_component(name, 255, true),
+            Err(JetStreamError::InvalidConfiguration),
+        );
+    }
+    for subject in [
+        "updates..created",
+        ".updates",
+        "updates.",
+        "updates\0created",
+    ] {
+        assert_eq!(
+            super::validation::validate_publish_subject(subject, 255, true),
+            Err(JetStreamError::InvalidConfiguration),
+        );
+        assert_eq!(
+            super::validation::validate_filter_subject(subject, 255, true),
+            Err(JetStreamError::InvalidConfiguration),
+        );
+    }
+    assert_eq!(
+        super::validation::validate_filter_subject("updates.>", 255, true),
+        Ok("updates.>".to_owned()),
+    );
+}
+
+#[test]
 fn validate_filter_subject_allows_wildcards() {
     let result = JetStreamConsumerConfig::new(JetStreamConsumerConfigInput {
         enabled: true,
@@ -273,6 +320,35 @@ fn derive_tls_policy_defaults_for_local_host() {
 fn derive_tls_policy_requires_tls_for_public_host() {
     let policy = JetStreamTlsPolicy::derive_from_url("nats://198.51.100.42:4222");
     assert_eq!(policy, Ok(JetStreamTlsPolicy::Required));
+}
+
+#[test]
+fn explicit_plaintext_policy_rejects_remote_hosts() {
+    for url in [
+        "nats://198.51.100.42:4222",
+        "nats://nats.internal:4222",
+        "nats://[::ffff:8.8.8.8]:4222",
+    ] {
+        assert_eq!(
+            super::validation::validate_nats_url(url, true, JetStreamTlsPolicy::Disabled),
+            Err(crate::error::JetStreamError::InvalidConfiguration),
+        );
+    }
+}
+
+#[test]
+fn derive_tls_policy_does_not_trust_hostname_heuristics_or_public_ipv6() {
+    for url in [
+        "nats://evil.local:4222",
+        "nats://nats:4222",
+        "nats://[2606:4700:4700::1111]:4222",
+        "nats://[::ffff:8.8.8.8]:4222",
+    ] {
+        assert_eq!(
+            JetStreamTlsPolicy::derive_from_url(url),
+            Ok(JetStreamTlsPolicy::Required),
+        );
+    }
 }
 
 #[test]

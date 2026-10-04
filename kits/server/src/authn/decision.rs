@@ -4,6 +4,7 @@
 use super::principal::{AuthenticatedPrincipal, Principal};
 
 /// Result of an authentication attempt.
+#[must_use = "authentication decisions must be enforced or explicitly discarded"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthenticationDecision {
     /// The credentials were accepted and an authenticated principal was

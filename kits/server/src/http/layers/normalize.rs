@@ -8,7 +8,7 @@ use std::task::{Context, Poll, ready};
 
 use axum::body::Body;
 use axum::extract::MatchedPath;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use pin_project_lite::pin_project;
 use tower::{Layer, Service};
@@ -69,6 +69,14 @@ where
         let route_template =
             MetricRouteTemplateLabel::from_matched_path(request.extensions().get::<MatchedPath>());
         let listener_name = listener_name_for_request(&request).clone();
+        let unsupported_websocket_version = request
+            .headers()
+            .get(header::UPGRADE)
+            .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+            && request
+                .headers()
+                .get(header::SEC_WEBSOCKET_VERSION)
+                .is_some_and(|value| value != "13");
         let response_future = self.inner.call(request);
 
         NormalizeHttpErrorResponsesFuture::new(
@@ -77,6 +85,7 @@ where
             method,
             route_template,
             listener_name,
+            unsupported_websocket_version,
         )
     }
 }
@@ -90,6 +99,7 @@ pin_project! {
         method: HttpMethodLabel,
         route_template: MetricRouteTemplateLabel,
         listener_name: HttpListenerName,
+        unsupported_websocket_version: bool,
     }
 }
 
@@ -100,6 +110,7 @@ impl<F> NormalizeHttpErrorResponsesFuture<F> {
         method: HttpMethodLabel,
         route_template: MetricRouteTemplateLabel,
         listener_name: HttpListenerName,
+        unsupported_websocket_version: bool,
     ) -> Self {
         Self {
             inner,
@@ -107,6 +118,7 @@ impl<F> NormalizeHttpErrorResponsesFuture<F> {
             method,
             route_template,
             listener_name,
+            unsupported_websocket_version,
         }
     }
 }
@@ -127,7 +139,7 @@ where
             response.status(),
         );
 
-        let response = match public_error_for_transport_response(&response) {
+        let mut response = match public_error_for_transport_response(&response) {
             Some(public_error_response) => {
                 let mut normalized_response = public_error_response
                     .with_optional_request_id(*this.request_id)
@@ -137,6 +149,15 @@ where
             }
             None => response,
         };
+
+        if *this.unsupported_websocket_version && response.status() == StatusCode::BAD_REQUEST {
+            // Axum rejects unsupported versions before the application handler.
+            // RFC 6455 requires the supported version in that rejection.
+            response.headers_mut().insert(
+                header::SEC_WEBSOCKET_VERSION,
+                HeaderValue::from_static("13"),
+            );
+        }
 
         Poll::Ready(Ok(response))
     }
@@ -158,18 +179,34 @@ fn record_audit_rejection_metric(
 }
 
 fn public_error_for_transport_response(response: &Response) -> Option<JsonErrorResponse> {
+    // Connect advertises supported request encodings in Accept-Post on a
+    // bodyless 415. Replacing that response with a platform envelope would
+    // discard the protocol signal and change the error seen by Connect clients.
+    if response.status() == StatusCode::UNSUPPORTED_MEDIA_TYPE
+        && response.headers().contains_key("accept-post")
+    {
+        return None;
+    }
     let error_code = match response.status() {
         StatusCode::BAD_REQUEST => ErrorCode::BadRequest,
         StatusCode::UNAUTHORIZED => ErrorCode::Unauthorized,
         StatusCode::FORBIDDEN => ErrorCode::Forbidden,
         StatusCode::NOT_FOUND => ErrorCode::NotFound,
         StatusCode::METHOD_NOT_ALLOWED => ErrorCode::MethodNotAllowed,
+        StatusCode::CONFLICT => ErrorCode::Conflict,
+        StatusCode::LENGTH_REQUIRED => ErrorCode::LengthRequired,
         StatusCode::PAYLOAD_TOO_LARGE => ErrorCode::PayloadTooLarge,
+        StatusCode::URI_TOO_LONG => ErrorCode::UriTooLong,
         StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE => ErrorCode::RequestHeaderFieldsTooLarge,
         StatusCode::UNSUPPORTED_MEDIA_TYPE => ErrorCode::UnsupportedMediaType,
+        StatusCode::UNPROCESSABLE_ENTITY => ErrorCode::UnprocessableEntity,
+        StatusCode::UPGRADE_REQUIRED => ErrorCode::UpgradeRequired,
         StatusCode::REQUEST_TIMEOUT => ErrorCode::RequestTimeout,
+        StatusCode::TOO_MANY_REQUESTS => ErrorCode::TooManyRequests,
         StatusCode::SERVICE_UNAVAILABLE => ErrorCode::ServiceUnavailable,
         StatusCode::INTERNAL_SERVER_ERROR => ErrorCode::InternalServerError,
+        status if status.is_client_error() => ErrorCode::BadRequest,
+        status if status.is_server_error() => ErrorCode::InternalServerError,
         _ => return None,
     };
 
@@ -178,7 +215,7 @@ fn public_error_for_transport_response(response: &Response) -> Option<JsonErrorR
     }
 
     Some(JsonErrorResponse::from_public_error(
-        PublicHttpError::from_code(error_code),
+        PublicHttpError::from_status_with_code(response.status(), error_code),
     ))
 }
 
@@ -192,5 +229,15 @@ fn response_has_json_content_type(response: &Response) -> bool {
 fn preserve_safe_protocol_headers(source: &Response, target: &mut Response) {
     if let Some(allow) = source.headers().get(header::ALLOW).cloned() {
         target.headers_mut().insert(header::ALLOW, allow);
+    }
+    if let Some(challenge) = source.headers().get(header::WWW_AUTHENTICATE).cloned() {
+        target
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, challenge);
+    }
+    if let Some(retry_after) = source.headers().get(header::RETRY_AFTER).cloned() {
+        target
+            .headers_mut()
+            .insert(header::RETRY_AFTER, retry_after);
     }
 }

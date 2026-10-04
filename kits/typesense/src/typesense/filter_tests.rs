@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{FilterValue, SearchFilter, TextFilterValue};
+use super::{FilterValue, FiniteFilterFloat, SearchFilter, TextFilterValue};
 use crate::typesense::{SearchFieldName, TypesenseError, TypesenseRequestReason, TypesenseResult};
 
 #[test]
@@ -42,11 +42,36 @@ fn builds_inequality_range_and_geo_filters() -> TypesenseResult<()> {
         2_500,
     )?;
 
-    let filter = excluded.and(recent).and(nearby);
+    let filter = excluded.and(recent)?.and(nearby)?;
     assert_eq!(
         filter.to_filter_by_parameter(),
         "((domain:!=`example.com`) && (published_at:>=1700000000)) && (location:(35.8989,14.5146,2.5 km))"
     );
+    Ok(())
+}
+
+#[test]
+fn rejects_non_finite_float_and_excessive_filter_depth() -> TypesenseResult<()> {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(matches!(
+            FiniteFilterFloat::new(value),
+            Err(TypesenseError::InvalidRequest {
+                reason: TypesenseRequestReason::InvalidFilterValue
+            })
+        ));
+    }
+    let field = SearchFieldName::parse("score")?;
+    let finite = FiniteFilterFloat::new(1.5)?;
+    let mut filter = SearchFilter::exact(field.clone(), FilterValue::Float(finite));
+    for _ in 1..16 {
+        filter = filter.and(SearchFilter::exact(field.clone(), FilterValue::Bool(true)))?;
+    }
+    assert!(matches!(
+        filter.and(SearchFilter::exact(field, FilterValue::Bool(true))),
+        Err(TypesenseError::InvalidRequest {
+            reason: TypesenseRequestReason::InvalidFilterValue
+        })
+    ));
     Ok(())
 }
 

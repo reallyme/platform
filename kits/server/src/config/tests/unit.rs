@@ -82,7 +82,7 @@ fn server_config_summaries_expose_inspectable_values() {
         http_summary.body_limit().request_body_limit().as_usize(),
         4096
     );
-    assert!(matches!(http_summary.cors(), CorsConfig::NoCors));
+    assert!(http_summary.cors().is_disabled());
     assert!(!http_summary.http3().enabled());
     assert_eq!(grpc_summary.bind_address().port().as_u16(), 8443);
 }
@@ -132,6 +132,7 @@ fn observability_startup_summary_exposes_inspectable_values() {
         idle_timeout,
     )
     .expect("valid observability config fixture");
+    assert!(!format!("{config:?}").contains("info,reallyme_server_kit=debug"));
 
     let summary = config.startup_summary();
 

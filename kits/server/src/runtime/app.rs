@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use axum::Router;
-use reallyme_app_kit::{AppCorsConfig, AppMetadata};
+use reallyme_app_kit::{AppCorsConfig, AppHealthContributor, AppMetadata};
 
 use crate::http::app_cors_layer;
 use crate::startup::StartupError;
-use crate::task::ShutdownToken;
 
 use super::background::RuntimeBackgroundTask;
 use super::cleanup::RuntimeCleanupHook;
 use super::critical::RuntimeCriticalTask;
 use super::error::{RuntimeAppCompositionErrorReason, ServerRuntimeError};
 use super::startup_check::RuntimeStartupCheck;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 const MAX_APP_HTTP_MOUNT_PATH_BYTES: usize = 128;
@@ -171,11 +171,11 @@ pub struct RuntimeApp {
     http_router: Router,
     http_cors: Option<AppCorsConfig>,
     dependencies: Vec<RuntimeAppDependency>,
-    websocket_shutdown_consumers: Vec<Arc<dyn Fn(ShutdownToken) + Send + Sync + 'static>>,
     startup_checks: Vec<RuntimeStartupCheck>,
     background_tasks: Vec<RuntimeBackgroundTask>,
     critical_tasks: Vec<RuntimeCriticalTask>,
     cleanup_hooks: Vec<RuntimeCleanupHook>,
+    health_contributor: Option<Arc<dyn AppHealthContributor>>,
 }
 
 impl RuntimeApp {
@@ -187,11 +187,11 @@ impl RuntimeApp {
             http_router,
             http_cors: None,
             dependencies: Vec::new(),
-            websocket_shutdown_consumers: Vec::new(),
             startup_checks: Vec::new(),
             background_tasks: Vec::new(),
             critical_tasks: Vec::new(),
             cleanup_hooks: Vec::new(),
+            health_contributor: None,
         }
     }
 
@@ -248,15 +248,6 @@ impl RuntimeApp {
         self
     }
 
-    /// Registers a callback receiving the process shutdown token.
-    pub fn with_websocket_shutdown_consumer(
-        mut self,
-        consumer: impl Fn(ShutdownToken) + Send + Sync + 'static,
-    ) -> Self {
-        self.websocket_shutdown_consumers.push(Arc::new(consumer));
-        self
-    }
-
     /// Adds an app-specific startup check that must pass before readiness.
     pub fn with_startup_check(mut self, value: RuntimeStartupCheck) -> Self {
         self.startup_checks.push(value);
@@ -281,16 +272,22 @@ impl RuntimeApp {
         self
     }
 
+    /// Registers an app health contribution sampled by the server runtime.
+    pub fn with_health_contributor(mut self, value: Arc<dyn AppHealthContributor>) -> Self {
+        self.health_contributor = Some(value);
+        self
+    }
+
     pub(crate) fn into_parts(self) -> RuntimeAppLocalParts {
         RuntimeAppLocalParts {
             http_mount: self.http_mount,
             http_router: self.http_router,
             http_cors: self.http_cors,
-            websocket_shutdown_consumers: self.websocket_shutdown_consumers,
             startup_checks: self.startup_checks,
             background_tasks: self.background_tasks,
             critical_tasks: self.critical_tasks,
             cleanup_hooks: self.cleanup_hooks,
+            health_contributor: self.health_contributor,
         }
     }
 }
@@ -299,23 +296,21 @@ pub(crate) struct RuntimeAppLocalParts {
     pub(crate) http_mount: AppHttpMountPath,
     pub(crate) http_router: Router,
     pub(crate) http_cors: Option<AppCorsConfig>,
-    pub(crate) websocket_shutdown_consumers:
-        Vec<Arc<dyn Fn(ShutdownToken) + Send + Sync + 'static>>,
     pub(crate) startup_checks: Vec<RuntimeStartupCheck>,
     pub(crate) background_tasks: Vec<RuntimeBackgroundTask>,
     pub(crate) critical_tasks: Vec<RuntimeCriticalTask>,
     pub(crate) cleanup_hooks: Vec<RuntimeCleanupHook>,
+    pub(crate) health_contributor: Option<Arc<dyn AppHealthContributor>>,
 }
 
 pub(crate) struct RuntimeAppParts {
     pub(crate) http_router: Router,
     pub(crate) ordered_app_names: Vec<AppName>,
-    pub(crate) websocket_shutdown_consumers:
-        Vec<Arc<dyn Fn(ShutdownToken) + Send + Sync + 'static>>,
     pub(crate) startup_checks: Vec<RuntimeStartupCheck>,
     pub(crate) background_tasks: Vec<RuntimeBackgroundTask>,
     pub(crate) critical_tasks: Vec<RuntimeCriticalTask>,
     pub(crate) cleanup_hooks: Vec<RuntimeAppCleanup>,
+    pub(crate) health_contributors: Vec<Arc<dyn AppHealthContributor>>,
 }
 
 pub(crate) struct RuntimeAppCleanup {
@@ -330,11 +325,11 @@ pub(crate) fn collect_apps(apps: Vec<RuntimeApp>) -> Result<RuntimeAppParts, Ser
 
     let mut http_router = Router::new();
     let mut ordered_app_names = Vec::with_capacity(apps.len());
-    let mut websocket_shutdown_consumers = Vec::new();
     let mut startup_checks = Vec::new();
     let mut background_tasks = Vec::new();
     let mut critical_tasks = Vec::new();
     let mut cleanup_hooks = Vec::new();
+    let mut health_contributors = Vec::new();
 
     for app in apps {
         let app_name = app.name.clone();
@@ -344,15 +339,22 @@ pub(crate) fn collect_apps(apps: Vec<RuntimeApp>) -> Result<RuntimeAppParts, Ser
             Some(layer) => parts.http_router.layer(layer),
             None => parts.http_router,
         };
-        http_router = if parts.http_mount.is_root() {
-            http_router.merge(app_router)
-        } else {
-            http_router.nest(parts.http_mount.as_str(), app_router)
-        };
+        http_router = catch_unwind(AssertUnwindSafe(|| {
+            if parts.http_mount.is_root() {
+                http_router.merge(app_router)
+            } else {
+                http_router.nest(parts.http_mount.as_str(), app_router)
+            }
+        }))
+        .map_err(|_| ServerRuntimeError::AppComposition {
+            reason: RuntimeAppCompositionErrorReason::RouteConflict,
+        })?;
         startup_checks.extend(parts.startup_checks);
-        websocket_shutdown_consumers.extend(parts.websocket_shutdown_consumers);
         background_tasks.extend(parts.background_tasks);
         critical_tasks.extend(parts.critical_tasks);
+        if let Some(contributor) = parts.health_contributor {
+            health_contributors.push(contributor);
+        }
         cleanup_hooks.extend(
             parts
                 .cleanup_hooks
@@ -367,11 +369,11 @@ pub(crate) fn collect_apps(apps: Vec<RuntimeApp>) -> Result<RuntimeAppParts, Ser
     Ok(RuntimeAppParts {
         http_router,
         ordered_app_names,
-        websocket_shutdown_consumers,
         startup_checks,
         background_tasks,
         critical_tasks,
         cleanup_hooks,
+        health_contributors,
     })
 }
 

@@ -3,6 +3,10 @@
 
 use serde::de::DeserializeOwned;
 use thiserror::Error;
+use zeroize::Zeroizing;
+
+mod unique_keys;
+use unique_keys::validate_unique_object_keys;
 
 /// JSONC app config parse error.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -50,7 +54,9 @@ where
         return Err(AppConfigParseError::new(AppConfigParseErrorReason::TooLong));
     }
 
-    let stripped = strip_jsonc_comments(value)?;
+    let stripped = Zeroizing::new(strip_jsonc_comments(value)?);
+    validate_unique_object_keys(stripped.as_str())
+        .map_err(|_| AppConfigParseError::new(AppConfigParseErrorReason::InvalidJson))?;
     serde_json::from_str(stripped.as_str())
         .map_err(|_| AppConfigParseError::new(AppConfigParseErrorReason::InvalidJson))
 }

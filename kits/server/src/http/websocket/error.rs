@@ -93,6 +93,10 @@ pub enum WebSocketCloseReason {
     MessageTooLarge,
     /// The message violated the expected transport policy.
     InvalidMessage,
+    /// The peer violated the WebSocket framing protocol.
+    ProtocolError,
+    /// The peer sent invalid UTF-8 text data.
+    InvalidPayload,
     /// The endpoint rejected the connection due to a generic policy issue.
     PolicyViolation,
     /// An internal transport failure occurred.
@@ -106,6 +110,8 @@ impl WebSocketCloseReason {
             Self::NormalClosure => 1000,
             Self::GoingAway | Self::ServerShutdown | Self::IdleTimeout => 1001,
             Self::InvalidMessage | Self::PolicyViolation => 1008,
+            Self::ProtocolError => 1002,
+            Self::InvalidPayload => 1007,
             Self::MessageTooLarge => 1009,
             Self::InternalError => 1011,
         }
@@ -120,6 +126,8 @@ impl WebSocketCloseReason {
             Self::IdleTimeout => "idle timeout",
             Self::MessageTooLarge => "message too large",
             Self::InvalidMessage => "invalid message",
+            Self::ProtocolError => "protocol error",
+            Self::InvalidPayload => "invalid payload",
             Self::PolicyViolation => "policy violation",
             Self::InternalError => "internal error",
         }
@@ -148,6 +156,8 @@ pub enum WebSocketSendErrorReason {
 pub enum WebSocketConnectionLimitErrorReason {
     /// The configured active-connection capacity has been reached.
     TooManyActiveConnections,
+    /// Admission state could not be read safely.
+    Internal,
 }
 
 /// Typed failure returned when WebSocket overload protection rejects a connection.

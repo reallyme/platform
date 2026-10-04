@@ -196,12 +196,15 @@ impl JetStreamConsumerBackend for FakeJetStreamConsumerBackend {
         futures_util::stream::BoxStream<'static, Result<JetStreamDelivery, JetStreamError>>,
         JetStreamError,
     > {
-        let mut deliveries: Vec<JetStreamDelivery> = Vec::with_capacity(max_messages);
         let mut queued = self
             .state
             .queued
             .lock()
             .map_err(|_| JetStreamError::SyncPrimitivePoisoned)?;
+        // The caller's requested maximum can be arbitrarily large. Reserve
+        // only for deliveries that actually exist in this fake queue.
+        let mut deliveries: Vec<JetStreamDelivery> =
+            Vec::with_capacity(queued.len().min(max_messages));
 
         for _ in 0..max_messages {
             let Some(delivery) = queued.pop_front() else {

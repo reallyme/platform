@@ -64,7 +64,7 @@ impl AclTagSet {
 
     /// Returns true when every required tag is present in this announced set.
     pub fn contains_required(&self, required: &AclTagSet) -> bool {
-        required.tags.iter().all(|tag| self.tags.contains(tag))
+        !required.tags.is_empty() && required.tags.iter().all(|tag| self.tags.contains(tag))
     }
 
     /// Returns the normalized tags in deterministic order.

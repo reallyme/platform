@@ -15,6 +15,8 @@
 //! SigV4 signing, and bounded object uploads. App-specific serialization,
 //! object naming policy, and port contracts live outside this crate.
 
+#[cfg(any(feature = "native-client", feature = "worker-client"))]
+mod bounded_body;
 #[cfg(feature = "native-client")]
 mod client;
 mod config;

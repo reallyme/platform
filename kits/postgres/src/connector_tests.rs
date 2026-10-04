@@ -12,7 +12,7 @@ use tokio_postgres::config::SslMode;
 fn config(transport_security: PostgresTransportSecurity) -> PostgresConfig {
     PostgresConfig::new(PostgresConfigInput {
         connection_uri: SecretString::from(
-            "postgres://audit:credential@postgres.internal/audit?sslmode=prefer",
+            "postgres://audit:credential@localhost/audit?sslmode=prefer",
         ),
         transport_security,
         ..PostgresConfigInput::default()
@@ -34,6 +34,34 @@ fn configured_client_forces_disabled_tls_only_for_development() {
     let client = configured_client(&value).expect("valid fixture should configure");
 
     assert_eq!(client.get_ssl_mode(), SslMode::Disable);
+}
+
+#[tokio::test]
+async fn pool_build_is_bounded_when_tcp_accepts_but_postgres_never_replies() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local listener fixture");
+    let port = listener.local_addr().expect("local address").port();
+    let config = PostgresConfig::new(PostgresConfigInput {
+        connection_uri: SecretString::from(format!("postgres://127.0.0.1:{port}/app")),
+        connection_timeout_millis: 100,
+        transport_security: PostgresTransportSecurity::AllowPlaintextForDevelopment,
+        ..PostgresConfigInput::default()
+    })
+    .expect("valid local config");
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        super::PostgresPool::connect(&config),
+    )
+    .await
+    .expect("outer test deadline");
+    assert!(matches!(
+        result,
+        Err(PostgresError::Setup {
+            reason: PostgresSetupErrorReason::PoolUnavailable,
+        })
+    ));
 }
 
 #[test]

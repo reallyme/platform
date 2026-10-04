@@ -45,6 +45,15 @@ pub enum ExampleServerErrorReason {
     /// The configured bind address violates server-kit network policy.
     #[error("the HTTP bind address is invalid")]
     BindAddressInvalid,
+    /// A non-loopback listener has no validated ingress host allowlist.
+    #[error("the allowed HTTP hosts are invalid")]
+    AllowedHostsInvalid,
+    /// A configured trusted proxy range is invalid.
+    #[error("the trusted proxy ranges are invalid")]
+    TrustedProxyRangesInvalid,
+    /// External origin forwarding was configured without trusted ingress peers.
+    #[error("the external origin policy is invalid")]
+    ExternalOriginPolicyInvalid,
     /// The configured request timeout violates server-kit policy.
     #[error("the HTTP request timeout is invalid")]
     RequestTimeoutInvalid,

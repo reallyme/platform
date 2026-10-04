@@ -24,17 +24,20 @@ const MAX_NATS_URL_BYTES: usize = 2_048;
 const MAX_STREAM_NAME_BYTES: usize = 255;
 const MAX_CONSUMER_NAME_BYTES: usize = 255;
 const MAX_SUBJECT_BYTES: usize = 255;
-const LOCAL_SUBJECT_SUFFIX: &str = ".local";
+const MAX_PUBLISH_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_PUBLISH_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONSUMER_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_CONSUMER_ACK_WAIT: Duration = Duration::from_secs(3_600);
 
 /// TLS policy used to validate NATS connection URLs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum JetStreamTlsPolicy {
     /// Allow insecure connections for local development and explicit test environments.
     Disabled,
-    /// Prefer TLS but allow cleartext transports if explicitly configured.
-    #[default]
+    /// Legacy spelling. Connections still require TLS to prevent downgrade.
     Optional,
     /// Reject non-TLS transport URLs.
+    #[default]
     Required,
 }
 
@@ -230,7 +233,11 @@ impl JetStreamPublisherConfig {
             return Ok(());
         }
 
-        if self.publish_timeout.is_zero() || self.max_payload_bytes == 0 {
+        if self.publish_timeout.is_zero()
+            || self.publish_timeout > MAX_PUBLISH_TIMEOUT
+            || self.max_payload_bytes == 0
+            || self.max_payload_bytes > MAX_PUBLISH_PAYLOAD_BYTES
+        {
             return Err(JetStreamError::InvalidConfiguration);
         }
 
@@ -441,7 +448,9 @@ impl JetStreamConsumerConfig {
         }
 
         if self.operation_timeout.is_zero()
+            || self.operation_timeout > MAX_CONSUMER_OPERATION_TIMEOUT
             || self.ack_timeout.is_zero()
+            || self.ack_timeout > MAX_CONSUMER_ACK_WAIT
             || self.inactive_threshold.is_zero()
             || self.max_deliver <= 0
             || self.max_ack_pending == 0

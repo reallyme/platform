@@ -73,7 +73,9 @@ pub fn install_prometheus_recorder(
 ) -> Result<MetricsExporter, ObservabilityError> {
     let handle = PrometheusBuilder::new()
         .idle_timeout(
-            MetricKindMask::ALL,
+            // Readiness, phase and startup gauges change only at transitions.
+            // Evicting them would make healthy instances disappear from alerts.
+            MetricKindMask::COUNTER | MetricKindMask::HISTOGRAM,
             Some(config.metrics_idle_timeout().as_duration()),
         )
         .install_recorder()

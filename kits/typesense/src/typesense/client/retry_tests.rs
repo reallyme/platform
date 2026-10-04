@@ -17,7 +17,11 @@ fn server_retry_after_and_jitter_cannot_exceed_local_policy() {
     .with_retry_max_delay(Duration::from_secs(2))
     .with_retry_initial_delay(Duration::from_secs(2))
     .with_retry_jitter_percent(100);
-    let client = TypesenseClient::new(reqwest::Client::new(), config);
+    let http_client = reqwest::Client::builder()
+        .tls_backend_preconfigured(crate::typesense::connector::tls_config().expect("test TLS"))
+        .build()
+        .expect("test HTTP client");
+    let client = TypesenseClient::new(http_client, config);
     let first = client.calculate_backoff_delay(32, None);
     assert!((0..32).any(|_| client.calculate_backoff_delay(32, None) != first));
     for attempt in [0, 1, 32, 255] {

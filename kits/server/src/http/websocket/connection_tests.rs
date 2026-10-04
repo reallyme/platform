@@ -18,7 +18,7 @@ use super::{
     WebSocketApplicationMessage, WebSocketConnectionContext, WebSocketConnectionHandle,
     WebSocketConnectionLimiter, WebSocketConnectionRuntime, WebSocketHandlerAction,
     WebSocketMessageHandler, configure_websocket_upgrade, handle_application_message,
-    websocket_upgrade_response,
+    websocket_protocol_close_reason, websocket_upgrade_response,
 };
 use crate::config::{ConcurrencyLimitConfigField, RuntimeConcurrencyLimit};
 use crate::http::WebSocketUpgrade;
@@ -87,16 +87,10 @@ impl WebSocketMessageHandler for PendingHandler {
     }
 }
 
-async fn bind_websocket_test_listener() -> Option<tokio::net::TcpListener> {
-    match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
-        Ok(listener) => Some(listener),
-        // WebSocket upgrade tests require axum-test's real HTTP transport. CI
-        // must provide socket access so this test exercises the full upgrade
-        // path; this branch keeps restricted local sandboxes from failing
-        // before the app code is reached.
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
-        Err(error) => panic!("websocket test listener preflight should bind: {error}"),
-    }
+async fn bind_websocket_test_listener() -> tokio::net::TcpListener {
+    tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("websocket test listener should bind")
 }
 
 #[derive(Clone)]
@@ -124,6 +118,32 @@ fn connection_id_generation_is_unique() {
     let second = ConnectionId::generate();
 
     assert_ne!(first, second);
+}
+
+#[test]
+fn websocket_decoder_errors_map_to_protocol_close_codes() {
+    use tungstenite::error::{CapacityError, Error, ProtocolError};
+
+    let oversized = axum::Error::new(Error::Capacity(CapacityError::MessageTooLong {
+        size: 65,
+        max_size: 64,
+    }));
+    assert_eq!(
+        websocket_protocol_close_reason(&oversized).map(|reason| reason.code()),
+        Some(1009)
+    );
+
+    let invalid_utf8 = axum::Error::new(Error::Utf8("invalid utf8".to_owned()));
+    assert_eq!(
+        websocket_protocol_close_reason(&invalid_utf8).map(|reason| reason.code()),
+        Some(1007)
+    );
+
+    let unmasked = axum::Error::new(Error::Protocol(ProtocolError::UnmaskedFrameFromClient));
+    assert_eq!(
+        websocket_protocol_close_reason(&unmasked).map(|reason| reason.code()),
+        Some(1002)
+    );
 }
 
 #[test]
@@ -196,13 +216,48 @@ fn websocket_connection_limiter_enforces_active_connection_capacity() {
     assert!(limiter.try_acquire().is_ok());
 }
 
+#[test]
+fn websocket_connection_limiter_preserves_capacity_for_other_sources() {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    let limiter = WebSocketConnectionLimiter::new(
+        RuntimeConcurrencyLimit::new(128, ConcurrencyLimitConfigField::WebSocketConnections)
+            .expect("fixture should be valid"),
+    );
+    let first_source = Some(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 2, 0, 0, 0, 1)));
+    let mut permits = Vec::new();
+    for suffix in 1..=64 {
+        let source = Some(IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0xdb8, 1, 2, 0, 0, 0, suffix,
+        )));
+        permits.push(
+            limiter
+                .try_acquire_for_source(source)
+                .expect("source should fit within its per-network budget"),
+        );
+    }
+    assert!(matches!(
+        limiter.try_acquire_for_source(first_source),
+        Err(error) if error.reason() == WebSocketConnectionLimitErrorReason::TooManyActiveConnections
+    ));
+    assert!(
+        limiter
+            .try_acquire_for_source(Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))))
+            .is_ok()
+    );
+
+    drop(permits);
+    assert!(limiter.try_acquire_for_source(first_source).is_ok());
+}
+
 #[tokio::test]
 async fn application_handler_wait_is_shutdown_cancellable() {
     let controller = ShutdownController::new();
     let mut shutdown = controller.token();
     let context = WebSocketConnectionContext::new(None, None);
-    let (outbound, _receiver) = make_outbound_channel(context.connection_id(), 1);
+    let (outbound, mut receiver) = make_outbound_channel(context.connection_id(), 1);
     let mut handler = PendingHandler;
+    let mut socket = futures_util::sink::drain();
 
     assert!(controller.begin_shutdown(crate::shutdown::ShutdownReason::Sigterm));
 
@@ -211,11 +266,68 @@ async fn application_handler_wait_is_shutdown_cancellable() {
         context,
         WebSocketApplicationMessage::Text("hello".into()),
         &outbound,
+        &mut receiver,
+        &mut socket,
         &mut shutdown,
     )
     .await;
 
     assert_eq!(result, ApplicationMessageOutcome::ShutdownRequested);
+}
+
+struct ThreeRepliesHandler;
+
+impl WebSocketMessageHandler for ThreeRepliesHandler {
+    type Error = WebSocketSendError;
+    type HandleFuture<'a> = std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<WebSocketHandlerAction, Self::Error>>
+                + Send
+                + 'a,
+        >,
+    >;
+
+    fn on_message<'a>(
+        &'a mut self,
+        _context: WebSocketConnectionContext,
+        _message: WebSocketApplicationMessage,
+        outbound: &'a WebSocketConnectionHandle,
+    ) -> Self::HandleFuture<'a> {
+        Box::pin(async move {
+            for _ in 0..3 {
+                outbound
+                    .send_message(super::WebSocketMessage::Text("reply".into()))
+                    .await?;
+            }
+            Ok(WebSocketHandlerAction::Continue)
+        })
+    }
+}
+
+#[tokio::test]
+async fn handler_can_enqueue_more_replies_than_outbound_capacity() {
+    let controller = ShutdownController::new();
+    let mut shutdown = controller.token();
+    let context = WebSocketConnectionContext::new(None, None);
+    let (outbound, mut receiver) = make_outbound_channel(context.connection_id(), 1);
+    let mut handler = ThreeRepliesHandler;
+    let mut socket = futures_util::sink::drain();
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        handle_application_message(
+            &mut handler,
+            context,
+            WebSocketApplicationMessage::Text("request".into()),
+            &outbound,
+            &mut receiver,
+            &mut socket,
+            &mut shutdown,
+        ),
+    )
+    .await
+    .expect("handler should not wait on its own queue");
+    assert_eq!(outcome, ApplicationMessageOutcome::Continue);
 }
 
 #[tokio::test]
@@ -244,9 +356,7 @@ async fn websocket_route_can_echo_without_protocol_assumptions() {
                 ),
             ),
         });
-    let Some(listener) = bind_websocket_test_listener().await else {
-        return;
-    };
+    let listener = bind_websocket_test_listener().await;
     let address = listener
         .local_addr()
         .expect("websocket test listener should expose a local address");
@@ -282,6 +392,17 @@ async fn websocket_route_can_echo_without_protocol_assumptions() {
         "hello"
     );
 
+    websocket
+        .send(Message::Close(None))
+        .await
+        .expect("websocket test client should initiate close");
+    let close_reply = tokio::time::timeout(Duration::from_secs(2), websocket.next())
+        .await
+        .expect("websocket close reply should arrive before timeout")
+        .expect("websocket should send a close reply")
+        .expect("websocket close reply should be a valid frame");
+    assert!(matches!(close_reply, Message::Close(_)));
+
     shutdown_sender
         .send(())
         .expect("websocket test server shutdown receiver should be alive");
@@ -315,17 +436,17 @@ fn websocket_runtime_connection_limit_is_shared_between_runtime_instances() {
     );
 
     let first_permit = first
-        .try_acquire_connection_permit()
+        .try_acquire_connection_permit(None)
         .expect("first runtime should acquire the sole permit while limit is one");
     assert!(
-        second.try_acquire_connection_permit().is_err(),
+        second.try_acquire_connection_permit(None).is_err(),
         "second runtime should enforce shared limiter state and be capped",
     );
 
     drop(first_permit);
 
     assert!(
-        second.try_acquire_connection_permit().is_ok(),
+        second.try_acquire_connection_permit(None).is_ok(),
         "permit should become available after first runtime releases it",
     );
 }

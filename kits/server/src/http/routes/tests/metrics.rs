@@ -130,6 +130,7 @@ fn metrics_route_renders_prometheus_payload_in_subprocess() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_one_subprocess_test_passed(&output);
 }
 
 #[test]
@@ -150,6 +151,7 @@ fn standard_layers_emit_http_metrics_in_subprocess() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_one_subprocess_test_passed(&output);
 }
 
 #[test]
@@ -172,5 +174,14 @@ fn standard_layers_emit_http_metrics_when_request_completion_logs_are_disabled()
         "http routes subprocess failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+    assert_one_subprocess_test_passed(&output);
+}
+
+fn assert_one_subprocess_test_passed(output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("running 1 test") && stdout.contains("1 passed;"),
+        "metrics subprocess did not execute exactly one test: {stdout}"
     );
 }

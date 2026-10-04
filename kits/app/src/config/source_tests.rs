@@ -24,6 +24,19 @@ fn rejects_config_source_with_whitespace() {
 }
 
 #[test]
+fn deserialization_preserves_source_name_validation() {
+    for invalid in ["", "local config.jsonc"] {
+        let value = serde_json::json!({"format": "jsonc", "name": invalid});
+        assert!(serde_json::from_value::<AppConfigSource>(value).is_err());
+    }
+
+    let valid = serde_json::json!({"format": "jsonc", "name": "local.jsonc"});
+    let source: AppConfigSource =
+        serde_json::from_value(valid).expect("valid source should deserialize");
+    assert_eq!(source.name(), "local.jsonc");
+}
+
+#[test]
 fn profile_file_names_are_stable() {
     assert_eq!(AppConfigProfile::Local.jsonc_file_name(), "local.jsonc");
     assert_eq!(AppConfigProfile::Staging.jsonc_file_name(), "staging.jsonc");

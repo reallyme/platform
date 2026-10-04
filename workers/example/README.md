@@ -3,7 +3,7 @@
 The example Worker is a complete Cloudflare host for Platform's reference
 application.
 
-It compiles one application, embeds one validated configuration profile, and
+It compiles one application, validates its runtime configuration binding, and
 adapts Cloudflare requests to the same host-neutral behavior used by the
 reference native server. The application owns the `Hello` use-case. This crate
 owns edge execution.
@@ -20,9 +20,11 @@ cd workers/example
 pnpm install --frozen-lockfile
 ```
 
-From the Worker directory, start Wrangler:
+From the Worker directory, provide the local profile through a runtime binding
+and start Wrangler:
 
 ```console
+printf "EXAMPLE_APP_CONFIG_JSONC='%s'\n" "$(jq -c . ../../apps/example/config/local.jsonc)" > .dev.vars
 pnpm dev
 ```
 
@@ -32,8 +34,6 @@ Call the application and the Worker-owned operational endpoints:
 curl http://127.0.0.1:8787/hello
 curl http://127.0.0.1:8787/healthz
 curl http://127.0.0.1:8787/readyz
-curl http://127.0.0.1:8787/version
-curl http://127.0.0.1:8787/metrics
 buf curl \
   --schema ../../apps/example/contract/proto \
   --protocol connect \
@@ -41,9 +41,10 @@ buf curl \
   http://127.0.0.1:8787/reallyme.example.v1.ExampleService/Hello
 ```
 
-The Worker embeds `apps/example/config/local.jsonc`. A production Worker should
-select its own reviewed configuration source and use bindings or secrets for
-values that must not be compiled into the artifact.
+Set the `EXAMPLE_APP_CONFIG_JSONC` Worker binding to a reviewed JSONC document
+before starting the Worker. The local command requires `jq`. Deployments must
+provide the binding in their environment;
+the Worker rejects requests when it is absent or invalid.
 
 ## Composition
 
@@ -56,9 +57,9 @@ The host boundary is deliberately small:
 - `wrangler.jsonc` defines the Cloudflare build and runtime configuration.
 
 The host exposes `GET /hello` and the generated Connect RPC path for
-`ExampleService.Hello`. Both call the same application use-case. Health,
-readiness, version, and metrics compatibility endpoints describe this Worker
-host and therefore remain outside the application core.
+`ExampleService.Hello`. Both call the same application use-case. Health and
+readiness endpoints describe this Worker host and remain outside the
+application core. Metrics are available through Workers observability.
 
 ## Deploy
 
@@ -98,7 +99,7 @@ pnpm worker:check
 - Keep product behavior in the application, not this host.
 - Keep `worker` and Cloudflare runtime types out of application core.
 - Do not import `reallyme-server-kit`; Cloudflare owns the edge lifecycle.
-- Validate embedded config before constructing application context.
+- Validate the runtime config binding before constructing application context.
 - Return typed success bodies and stable public error envelopes.
 - Apply Cloudflare-specific headers, bindings, and routing policy here.
 - Keep HSTS in Cloudflare zone or origin policy so local plaintext development

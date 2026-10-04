@@ -12,7 +12,7 @@ use crate::version::BuildInfo;
 #[tokio::test]
 async fn version_route_returns_safe_build_info() {
     let server_name = ServerName::new("reallyme-api").expect("valid server name");
-    let build_info = BuildInfo::new(server_name);
+    let build_info = BuildInfo::new(server_name, env!("CARGO_PKG_VERSION"));
     let app = Router::new().route(VERSION_PATH, version_route(build_info.clone()));
     let server = TestServer::new(app);
 

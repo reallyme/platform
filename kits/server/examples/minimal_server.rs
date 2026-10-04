@@ -37,7 +37,7 @@ fn main() -> Result<(), ExampleServiceError> {
 
 async fn run() -> Result<(), ExampleServiceError> {
     let server_name = ServerName::new("reallyme-example-service")?;
-    let build_info = BuildInfo::new(server_name.clone());
+    let build_info = BuildInfo::new(server_name.clone(), env!("CARGO_PKG_VERSION"));
     let observability = observability_config()?;
 
     init_tracing(server_name.clone(), &observability)?;

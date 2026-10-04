@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{SearchFieldName, SearchFields};
+use super::{SearchFieldName, SearchFields, SearchQueryWeights};
 use crate::typesense::{TypesenseError, TypesenseRequestReason, TypesenseResult};
+use std::num::NonZeroU8;
 
 #[test]
 fn accepts_safe_field_name() {
@@ -47,6 +48,26 @@ fn rejects_query_field_list_above_bound() -> TypesenseResult<()> {
         fields,
         Err(TypesenseError::InvalidRequest {
             reason: TypesenseRequestReason::TooManyQueryFields
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn query_weights_require_one_positive_weight_per_field() -> TypesenseResult<()> {
+    let fields = SearchFields::new(vec![
+        SearchFieldName::parse("name")?,
+        SearchFieldName::parse("description")?,
+    ])?;
+    let first = NonZeroU8::new(3).expect("positive test weight");
+    let second = NonZeroU8::new(1).expect("positive test weight");
+    let weights = SearchQueryWeights::new(&fields, vec![first, second])?;
+    assert_eq!(weights.as_str(), "3,1");
+
+    assert!(matches!(
+        SearchQueryWeights::new(&fields, vec![first]),
+        Err(TypesenseError::InvalidRequest {
+            reason: TypesenseRequestReason::InvalidQueryWeights
         })
     ));
     Ok(())

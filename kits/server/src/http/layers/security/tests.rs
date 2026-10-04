@@ -221,6 +221,21 @@ async fn host_authority_missing_is_rejected_with_allowlist_policy() {
 }
 
 #[tokio::test]
+async fn http_listener_rejects_native_grpc_content_type() {
+    let config = HttpSecurityConfig::secure_defaults();
+    let mut service = security_layer(&config).layer(EchoHeadersService);
+    let request = Request::builder()
+        .uri("/reallyme.example.v1.ExampleService/Hello")
+        .header("host", "localhost")
+        .header("content-type", "application/grpc+proto")
+        .body(Body::empty())
+        .expect("test request should build");
+
+    let response = service.call(request).await.expect("infallible service");
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
 async fn untrusted_proxy_headers_are_stripped_before_handlers() {
     let config = HttpSecurityConfig::secure_defaults();
     let mut service = security_layer(&config).layer(EchoHeadersService);
@@ -251,7 +266,7 @@ async fn trusted_proxy_ranges_allow_normalized_forwarded_metadata_without_raw_he
             "forwarded",
             "for=203.0.113.7;host=api.reallyme.net:443;proto=https",
         )
-        .header("x-forwarded-for", "198.51.100.9, 198.51.100.1")
+        .header("x-forwarded-for", "203.0.113.7, 10.1.2.4")
         .header("x-forwarded-host", "api.reallyme.net")
         .header("x-forwarded-port", "443")
         .header("x-forwarded-proto", "https")
@@ -265,7 +280,7 @@ async fn trusted_proxy_ranges_allow_normalized_forwarded_metadata_without_raw_he
 }
 
 #[tokio::test]
-async fn trusted_proxy_prefers_forwarded_over_x_forwarded_when_not_strict() {
+async fn trusted_proxy_ignores_unselected_forwarded_family() {
     let config = trusted_proxy_metadata_config(vec![
         HostAuthority::new("api.reallyme.net").expect("valid host"),
     ]);
@@ -286,7 +301,80 @@ async fn trusted_proxy_prefers_forwarded_over_x_forwarded_when_not_strict() {
 
     let response = service.call(request).await.expect("infallible service");
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn client_forwarded_proto_cannot_override_proxy_x_forwarded_proto() {
+    let config = trusted_proxy_metadata_config(vec![
+        HostAuthority::new("api.reallyme.net").expect("valid host"),
+    ]);
+    let mut service = security_layer(&config).layer(EchoHeadersService);
+    let trusted = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 1, 2, 3), 40_000));
+    let mut request = Request::builder()
+        .uri("/app")
+        .header("host", "internal-lb.local")
+        .header(
+            "forwarded",
+            "for=198.51.100.7;host=evil.example;proto=https",
+        )
+        .header("x-forwarded-host", "api.reallyme.net")
+        .header("x-forwarded-proto", "http")
+        .body(Body::empty())
+        .expect("test request should build");
+    request.extensions_mut().insert(ConnectInfo(trusted));
+
+    let response = service.call(request).await.expect("infallible service");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn client_headers_outside_selected_proxy_family_cannot_override_identity_or_origin() {
+    let config = trusted_proxy_metadata_config(vec![
+        HostAuthority::new("api.reallyme.net:443").expect("valid host"),
+    ]);
+    let trusted = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 1, 2, 3), 40_000));
+
+    for (header_name, header_value) in [
+        ("forwarded", "for=198.51.100.8;host=evil.example;proto=http"),
+        ("x-real-ip", "198.51.100.8"),
+    ] {
+        let mut service = security_layer(&config).layer(ForwardedMetadataService);
+        let mut request = Request::builder()
+            .uri("/app")
+            .header("host", "internal-lb.local")
+            .header("x-forwarded-for", "203.0.113.7, 10.1.2.4")
+            .header("x-forwarded-host", "api.reallyme.net")
+            .header("x-forwarded-port", "443")
+            .header("x-forwarded-proto", "https")
+            .header(header_name, header_value)
+            .body(Body::empty())
+            .expect("test request should build");
+        request.extensions_mut().insert(ConnectInfo(trusted));
+
+        let response = service.call(request).await.expect("infallible service");
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{header_name}");
+    }
+}
+
+#[tokio::test]
+async fn duplicate_host_headers_are_rejected_before_allowlist_check() {
+    let config = secure_config_with_host_policy(
+        HostAuthorityPolicy::allow_list(vec![
+            HostAuthority::new("api.reallyme.net").expect("valid host"),
+        ])
+        .expect("non-empty allowlist"),
+    );
+    let mut service = security_layer(&config).layer(EchoHeadersService);
+    let request = Request::builder()
+        .uri("/app")
+        .header("host", "api.reallyme.net")
+        .header("host", "evil.example")
+        .body(Body::empty())
+        .expect("test request should build");
+
+    let response = service.call(request).await.expect("infallible service");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

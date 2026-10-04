@@ -11,7 +11,7 @@ mod error;
 mod health;
 mod hello;
 
-pub use config::{ExampleAppConfig, ExampleConfigError};
+pub use config::ExampleAppConfig;
 pub use config_document::{
     ExampleAppConfigDocument, ExampleCustomConfig, example_app_config_document,
     parse_example_app_config_document,

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
@@ -12,10 +13,13 @@ use super::super::apply_standard_router_layers;
 use super::fixtures::{
     custom_correlation_headers_route, echo_request_id, echo_trace_id, test_http_config,
 };
-use crate::http::{RequestId, TestServer, TraceId, X_REQUEST_ID, X_TRACE_ID};
+use crate::http::{
+    HttpListenerName, HttpListenerVisibility, RequestId, TestServer, TraceId, X_REQUEST_ID,
+    X_TRACE_ID, listener_identity_layer,
+};
 
 #[tokio::test]
-async fn request_id_is_propagated_when_valid() {
+async fn public_request_id_is_regenerated_even_when_input_is_valid() {
     let config = test_http_config(Duration::from_secs(1), 1024);
     let request_id = RequestId::generate();
     let request_id_header = request_id
@@ -38,14 +42,16 @@ async fn request_id_is_propagated_when_valid() {
         .await;
 
     response.assert_status_ok();
-    response.assert_header(X_REQUEST_ID, request_id.into_uuid().to_string());
-    response.assert_json(&json!({
-        "request_id": request_id.into_uuid().to_string()
-    }));
+    let response_id = response
+        .headers()
+        .get(X_REQUEST_ID)
+        .expect("response request ID should be present");
+    assert_ne!(response_id, request_id_header);
+    response.assert_json(&json!({ "request_id": response_id.to_str().expect("ASCII UUID") }));
 }
 
 #[tokio::test]
-async fn trace_id_is_propagated_when_valid() {
+async fn public_trace_id_is_regenerated_even_when_input_is_valid() {
     let config = test_http_config(Duration::from_secs(1), 1024);
     let trace_id = TraceId::generate();
     let trace_id_header = trace_id
@@ -68,10 +74,34 @@ async fn trace_id_is_propagated_when_valid() {
         .await;
 
     response.assert_status_ok();
-    response.assert_header(X_TRACE_ID, trace_id.into_uuid().to_string());
-    response.assert_json(&json!({
-        "trace_id": trace_id.into_uuid().to_string()
-    }));
+    let response_id = response
+        .headers()
+        .get(X_TRACE_ID)
+        .expect("response trace ID should be present");
+    assert_ne!(response_id, trace_id_header);
+    response.assert_json(&json!({ "trace_id": response_id.to_str().expect("ASCII UUID") }));
+}
+
+#[tokio::test]
+async fn internal_listener_preserves_valid_inbound_request_id() {
+    let config = test_http_config(Duration::from_secs(1), 1024);
+    let request_id = RequestId::generate();
+    let app = apply_standard_router_layers(
+        Router::new().route("/echo-request-id", get(echo_request_id)),
+        &config,
+    )
+    .layer(listener_identity_layer(
+        HttpListenerName::new("internal").expect("valid listener name"),
+        HttpListenerVisibility::Internal,
+        SocketAddr::from(([127, 0, 0, 1], 8080)),
+    ));
+    let response = TestServer::new(app)
+        .get("/echo-request-id")
+        .add_header(X_REQUEST_ID, request_id.into_uuid().to_string())
+        .await;
+
+    response.assert_status_ok();
+    response.assert_header(X_REQUEST_ID, request_id.into_uuid().to_string());
 }
 
 #[tokio::test]

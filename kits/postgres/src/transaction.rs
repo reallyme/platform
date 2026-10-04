@@ -80,14 +80,18 @@ pub async fn begin_transaction<'connection, 'pool>(
         .map_err(|error| PostgresError::from_query_error(&error))
 }
 
-/// Begins a serializable migration transaction and obtains its app lock.
+/// Begins a migration transaction and obtains its app lock.
+///
+/// Read committed gives each statement a fresh snapshot after a concurrent
+/// migrator releases the advisory lock. Serializable would take its snapshot
+/// at the lock statement and could fail a waiting migrator with a stale view.
 pub async fn begin_migration_transaction<'connection, 'pool>(
     connection: &'connection mut PostgresPooledConnection<'pool>,
     lock_id: PostgresMigrationLockId,
 ) -> PostgresResult<Transaction<'connection>> {
     let transaction = begin_transaction(
         connection,
-        PostgresTransactionPolicy::new(PostgresIsolationLevel::Serializable, false),
+        PostgresTransactionPolicy::new(PostgresIsolationLevel::ReadCommitted, false),
     )
     .await?;
     transaction

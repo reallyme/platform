@@ -17,20 +17,24 @@ use tonic::codegen::http::header::CONTENT_LENGTH;
 use tonic::codegen::http::{Request, Response, StatusCode};
 use tower::{Layer, Service};
 
-use crate::authn::Principal;
+use crate::config::TrustedProxyHeaders;
 use crate::grpc::{GRPC_TIMEOUT_METADATA_KEY, GrpcTimeout};
 use crate::http::ForwardedClientIp;
+use crate::http::client_ip_from_x_forwarded_for;
 use crate::observability::{
     HttpMethodLabel, HttpRateLimitOutcome, HttpRejectionReason, MetricRouteTemplateLabel,
     TransportLabel, record_http_rate_limit_decision_for_route_template_with_transport,
     record_http_request_rejected_for_route_template_with_transport,
 };
+use crate::runtime::connection_guard::BoundedTcpConnectInfo;
 use crate::runtime::{
     GrpcMethodPolicy, RateLimitDecision, RateLimitRegistry, RateLimitSourceIdentity,
 };
 
 const GRPC_CONTENT_TYPE: &str = "application/grpc";
 const GRPC_STATUS_RESOURCE_EXHAUSTED: &str = "8";
+const GRPC_STATUS_INVALID_ARGUMENT: &str = "3";
+const GRPC_STATUS_OUT_OF_RANGE: &str = "11";
 const GRPC_STATUS_INTERNAL: &str = "13";
 const UNKNOWN_GRPC_METHOD_ROUTE: &str = "/__unknown_grpc_method";
 
@@ -42,11 +46,12 @@ pub struct GrpcPolicy {
     deadline_required: bool,
     method_policies: Arc<Vec<GrpcMethodPolicy>>,
     rate_limit_registry: Arc<RateLimitRegistry>,
+    trusted_proxy_headers: TrustedProxyHeaders,
 }
 
 impl GrpcPolicy {
     /// Creates a gRPC policy from validated server composition.
-    pub fn new(
+    pub(crate) fn new(
         listener_name: Arc<str>,
         max_timeout: Option<GrpcTimeout>,
         deadline_required: bool,
@@ -59,7 +64,14 @@ impl GrpcPolicy {
             deadline_required,
             method_policies: Arc::new(method_policies),
             rate_limit_registry,
+            trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
         }
+    }
+
+    /// Selects the ingress ranges permitted to supply X-Forwarded-For.
+    pub fn with_trusted_proxy_headers(mut self, headers: TrustedProxyHeaders) -> Self {
+        self.trusted_proxy_headers = headers;
+        self
     }
 }
 
@@ -70,7 +82,7 @@ impl GrpcPolicy {
 ///   (`max_decoding_message_bytes`) configured on the server/service.
 /// - `max_request_message_bytes` here is an early/advisory guard based on
 ///   `Content-Length` and is not full streaming byte accounting.
-pub fn grpc_policy_layer(policy: GrpcPolicy) -> GrpcPolicyLayer {
+pub(crate) fn grpc_policy_layer(policy: GrpcPolicy) -> GrpcPolicyLayer {
     GrpcPolicyLayer { policy }
 }
 
@@ -109,7 +121,14 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: Request<TonicBody>) -> Self::Future {
+    fn call(&mut self, mut request: Request<TonicBody>) -> Self::Future {
+        if let Some(connection) = request.extensions().get::<BoundedTcpConnectInfo>() {
+            connection.mark_first_request_seen();
+            // Preserve tonic's public TCP connection extension for app-owned
+            // interceptors and handlers after replacing the IO Connected type.
+            let tcp = connection.tcp_connect_info();
+            request.extensions_mut().insert(tcp);
+        }
         let method_path = request.uri().path();
         let matching_policy = self
             .policy
@@ -123,23 +142,32 @@ where
             });
         let listener_name = SharedString::from_shared(Arc::clone(&self.policy.listener_name));
 
-        if self.policy.deadline_required
-            && request.headers().get(GRPC_TIMEOUT_METADATA_KEY).is_none()
-        {
-            return GrpcPolicyResponseFuture::ready(grpc_resource_exhausted_response(
-                "deadline_required",
-            ));
-        }
+        let timeout = match request.headers().get(GRPC_TIMEOUT_METADATA_KEY) {
+            Some(value) => match value.to_str().ok().and_then(parse_grpc_timeout_header) {
+                Some(timeout) => Some(timeout),
+                None => {
+                    return GrpcPolicyResponseFuture::ready(grpc_status_response(
+                        GRPC_STATUS_INVALID_ARGUMENT,
+                        "invalid_deadline",
+                    ));
+                }
+            },
+            None if self.policy.deadline_required => {
+                return GrpcPolicyResponseFuture::ready(grpc_status_response(
+                    GRPC_STATUS_INVALID_ARGUMENT,
+                    "deadline_required",
+                ));
+            }
+            None => None,
+        };
 
-        if let Some(max_timeout) = self.policy.max_timeout
-            && let Some(timeout) = request
-                .headers()
-                .get(GRPC_TIMEOUT_METADATA_KEY)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_grpc_timeout_header)
-            && timeout > max_timeout
+        if self
+            .policy
+            .max_timeout
+            .is_some_and(|maximum| timeout.is_some_and(|value| value > maximum))
         {
-            return GrpcPolicyResponseFuture::ready(grpc_resource_exhausted_response(
+            return GrpcPolicyResponseFuture::ready(grpc_status_response(
+                GRPC_STATUS_OUT_OF_RANGE,
                 "deadline_exceeds_max",
             ));
         }
@@ -161,7 +189,8 @@ where
         }
 
         if let Some(rate_limit_tier) = matching_policy.and_then(GrpcMethodPolicy::rate_limit_tier) {
-            let source_identity = request_source_identity(&request);
+            let source_identity =
+                request_source_identity(&request, &self.policy.trusted_proxy_headers);
             let decision = self
                 .policy
                 .rate_limit_registry
@@ -298,16 +327,20 @@ fn request_exceeds_body_limit(request: &Request<TonicBody>, max_bytes: usize) ->
     content_length > max_bytes
 }
 
-fn request_source_identity(request: &Request<TonicBody>) -> RateLimitSourceIdentity<'_> {
-    if let Some(Principal::Authenticated(principal)) = request.extensions().get::<Principal>() {
-        return RateLimitSourceIdentity::Principal(principal.principal_id().as_str());
-    }
-
-    if let Some(forwarded_ip) = request_source_forwarded_ip(request) {
-        return RateLimitSourceIdentity::ForwardedIp(forwarded_ip);
-    }
-
+fn request_source_identity(
+    request: &Request<TonicBody>,
+    trusted_proxy_headers: &TrustedProxyHeaders,
+) -> RateLimitSourceIdentity {
+    // Interceptors that authenticate a service run inside this transport
+    // policy layer. A principal is therefore unavailable at this boundary.
     if let Some(peer_ip) = request_peer_ip(request) {
+        if trusted_proxy_headers.trusts_peer(Some(peer_ip))
+            && let Some(forwarded_ip) = request_source_forwarded_ip(request).or_else(|| {
+                client_ip_from_x_forwarded_for(request.headers(), trusted_proxy_headers)
+            })
+        {
+            return RateLimitSourceIdentity::ForwardedIp(forwarded_ip);
+        }
         return RateLimitSourceIdentity::PeerIp(peer_ip);
     }
 
@@ -324,8 +357,22 @@ fn request_source_forwarded_ip(request: &Request<TonicBody>) -> Option<IpAddr> {
 fn request_peer_ip(request: &Request<TonicBody>) -> Option<IpAddr> {
     request
         .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|connect_info| connect_info.0.ip())
+        .get::<BoundedTcpConnectInfo>()
+        .and_then(BoundedTcpConnectInfo::remote_addr)
+        .map(|address| address.ip())
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<ConnectInfo<std::net::SocketAddr>>()
+                .map(|connect_info| connect_info.0.ip())
+        })
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<tonic::transport::server::TcpConnectInfo>()
+                .and_then(|connect_info| connect_info.remote_addr())
+                .map(|address| address.ip())
+        })
 }
 
 fn parse_grpc_timeout_header(value: &str) -> Option<GrpcTimeout> {
@@ -333,6 +380,9 @@ fn parse_grpc_timeout_header(value: &str) -> Option<GrpcTimeout> {
         return None;
     }
     let (digits, unit) = value.split_at(value.len() - 1);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     let amount = digits.parse::<u64>().ok()?;
     let duration = match unit {
         "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),

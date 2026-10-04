@@ -11,11 +11,12 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::fdb::tenant_name::FoundationDbTenantName;
 use foundationdb::{
-    Database, TransactError, TransactOption, Transaction,
+    Database, TransactError, Transaction,
     tenant::{FdbTenant, TenantManagement},
 };
 
 use crate::fdb::error::{FdbError, FdbResult, TenantErrorReason};
+use crate::fdb::transaction::TenantTransactionPolicy;
 
 mod metadata;
 mod transact;
@@ -44,9 +45,6 @@ const METRIC_FDB_TRANSACTION_COMMIT_LATENCY_SECONDS: &str =
 const METRIC_FDB_TENANT_OPEN_FAILURES_TOTAL: &str = "reallyme_fdb_tenant_open_failures_total";
 #[cfg(feature = "metrics")]
 const METRIC_LABEL_OPERATION_CLASS: &str = "operation_class";
-#[cfg(feature = "metrics")]
-const METRIC_LABEL_TENANT: &str = "tenant";
-
 #[derive(Clone, Copy)]
 enum TenantTransactionOperationClass {
     Read,
@@ -111,9 +109,8 @@ impl TenantHandle {
     /// - FoundationDB may call the closure repeatedly after `trx.on_error`; any
     ///   mutable state passed in `data` must therefore be designed to survive
     ///   replay and must not assume single-shot execution.
-    /// - Callers choose `is_idempotent` via `idempotent_read_option` and
-    ///   `mutation_option`; non-idempotent writes must avoid implicitly retrying a
-    ///   `maybe_committed` commit.
+    /// - Callers choose a bounded read or write policy; non-idempotent writes
+    ///   must avoid implicitly retrying a `maybe_committed` commit.
     /// - Cancellation of the caller future remains propagated into the FoundationDB
     ///   transaction.
     ///
@@ -123,7 +120,7 @@ impl TenantHandle {
         &'trx self,
         data: D,
         f: F,
-        options: TransactOption,
+        policy: TenantTransactionPolicy,
     ) -> Result<T, E>
     where
         F: for<'a> FnMut(
@@ -135,16 +132,15 @@ impl TenantHandle {
         D: Send + 'trx,
         F: Send + 'trx,
     {
-        let operation_class = if options.is_idempotent {
-            TenantTransactionOperationClass::Read
-        } else {
-            TenantTransactionOperationClass::Write
+        let operation_class = match policy {
+            TenantTransactionPolicy::Read(_) => TenantTransactionOperationClass::Read,
+            TenantTransactionPolicy::Write(_) => TenantTransactionOperationClass::Write,
         };
 
         tenant_handle_transact(
             &self.inner,
             TenantTransactFnMutData::new(f, data),
-            options,
+            policy.to_transact_option(),
             operation_class,
             self.tenant,
         )
@@ -159,7 +155,7 @@ impl TenantHandle {
         &'trx self,
         data: Arc<D>,
         f: F,
-        options: TransactOption,
+        policy: TenantTransactionPolicy,
     ) -> Result<T, E>
     where
         F: for<'a> FnMut(
@@ -171,16 +167,15 @@ impl TenantHandle {
         D: Send + Sync + 'trx,
         F: Send + 'trx,
     {
-        let operation_class = if options.is_idempotent {
-            TenantTransactionOperationClass::Read
-        } else {
-            TenantTransactionOperationClass::Write
+        let operation_class = match policy {
+            TenantTransactionPolicy::Read(_) => TenantTransactionOperationClass::Read,
+            TenantTransactionPolicy::Write(_) => TenantTransactionOperationClass::Write,
         };
 
         tenant_handle_transact(
             &self.inner,
             TenantTransactArcData::new(f, data),
-            options,
+            policy.to_transact_option(),
             operation_class,
             self.tenant,
         )

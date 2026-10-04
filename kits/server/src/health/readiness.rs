@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use serde::Serialize;
 use tokio::sync::watch;
 
@@ -24,16 +21,27 @@ pub enum ReadinessState {
 /// process should receive new traffic. The underlying atomic is private so the
 /// crate can evolve the representation without leaking concurrency details.
 ///
-/// This type intentionally uses `Ordering::SeqCst` for readability and
-/// conservatism. Readiness changes are not expected to be hot enough to justify
-/// more subtle memory ordering semantics at this stage of the platform.
-///
 /// Future dependency readiness checks can be layered on top of this controller
 /// without changing the stable transport response model exposed by this module.
 #[derive(Debug, Clone)]
 pub struct Readiness {
-    is_ready: Arc<AtomicBool>,
-    state_sender: watch::Sender<ReadinessState>,
+    state_sender: watch::Sender<ReadinessSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadinessSnapshot {
+    process_ready: bool,
+    apps_ready: bool,
+}
+
+impl ReadinessSnapshot {
+    fn effective_state(self) -> ReadinessState {
+        if self.process_ready && self.apps_ready {
+            ReadinessState::Ready
+        } else {
+            ReadinessState::NotReady
+        }
+    }
 }
 
 impl Default for Readiness {
@@ -45,18 +53,36 @@ impl Default for Readiness {
 impl Readiness {
     /// Creates a readiness controller in the `not ready` state.
     pub fn new() -> Self {
-        let (state_sender, _state_receiver) = watch::channel(ReadinessState::NotReady);
-        Self {
-            is_ready: Arc::new(AtomicBool::new(false)),
-            state_sender,
-        }
+        let (state_sender, _state_receiver) = watch::channel(ReadinessSnapshot {
+            process_ready: false,
+            apps_ready: true,
+        });
+        Self { state_sender }
     }
 
     /// Sets the readiness state explicitly.
     pub fn set_state(&self, state: ReadinessState) {
-        self.is_ready
-            .store(matches!(state, ReadinessState::Ready), Ordering::SeqCst);
-        let _ = self.state_sender.send(state);
+        // Keep process and app gates in one watch value so concurrent updates
+        // cannot overwrite one another or publish an impossible ready state.
+        self.state_sender.send_if_modified(|snapshot| {
+            let ready = state == ReadinessState::Ready;
+            if snapshot.process_ready == ready {
+                return false;
+            }
+            snapshot.process_ready = ready;
+            true
+        });
+    }
+
+    /// Updates the aggregate app-health gate used by both HTTP and gRPC probes.
+    pub(crate) fn set_app_health(&self, ready: bool) {
+        self.state_sender.send_if_modified(|snapshot| {
+            if snapshot.apps_ready == ready {
+                return false;
+            }
+            snapshot.apps_ready = ready;
+            true
+        });
     }
 
     /// Sets the readiness state explicitly by boolean value.
@@ -80,11 +106,7 @@ impl Readiness {
 
     /// Returns the current typed readiness state.
     pub fn state(&self) -> ReadinessState {
-        if self.is_ready.load(Ordering::SeqCst) {
-            ReadinessState::Ready
-        } else {
-            ReadinessState::NotReady
-        }
+        self.state_sender.borrow().effective_state()
     }
 
     /// Returns whether the service is ready to receive traffic.
@@ -102,13 +124,13 @@ impl Readiness {
 
 /// Read-only readiness transition watcher.
 pub struct ReadinessWatcher {
-    receiver: watch::Receiver<ReadinessState>,
+    receiver: watch::Receiver<ReadinessSnapshot>,
 }
 
 impl ReadinessWatcher {
     /// Returns the latest observed readiness state.
     pub fn current(&self) -> ReadinessState {
-        *self.receiver.borrow()
+        self.receiver.borrow().effective_state()
     }
 
     /// Waits for the next readiness state change.

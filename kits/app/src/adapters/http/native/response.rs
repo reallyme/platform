@@ -97,24 +97,10 @@ pub(super) async fn read_response(
     };
 
     let mut body = Zeroizing::new(Vec::new());
-    // Reserve the full caller-approved bound before copying any response byte.
-    // Growing a sensitive Vec incrementally could leave an old allocation
-    // unerased after reallocation; one bounded allocation avoids that remanence.
-    body.try_reserve_exact(maximum_body_bytes).map_err(|_| {
-        HttpsTransportError::dispatched(HttpsTransportErrorReason::ResponseAllocationFailed)
-    })?;
     while let Some(chunk) = response.chunk().await.map_err(|_| {
         HttpsTransportError::dispatched(HttpsTransportErrorReason::ResponseReadFailed)
     })? {
-        let new_length = body.len().checked_add(chunk.len()).ok_or_else(|| {
-            HttpsTransportError::dispatched(HttpsTransportErrorReason::ResponseLimitExceeded)
-        })?;
-        if new_length > maximum_body_bytes {
-            return Err(HttpsTransportError::dispatched(
-                HttpsTransportErrorReason::ResponseLimitExceeded,
-            ));
-        }
-        body.extend_from_slice(&chunk);
+        append_sensitive_chunk(&mut body, &chunk, maximum_body_bytes)?;
     }
 
     Ok(BoundedHttpsResponse {
@@ -123,6 +109,36 @@ pub(super) async fn read_response(
         captured_header,
         body: std::mem::take(&mut *body),
     })
+}
+
+fn append_sensitive_chunk(
+    body: &mut Zeroizing<Vec<u8>>,
+    chunk: &[u8],
+    maximum_body_bytes: usize,
+) -> Result<(), HttpsTransportError> {
+    let new_length = body.len().checked_add(chunk.len()).ok_or_else(|| {
+        HttpsTransportError::dispatched(HttpsTransportErrorReason::ResponseLimitExceeded)
+    })?;
+    if new_length > maximum_body_bytes {
+        return Err(HttpsTransportError::dispatched(
+            HttpsTransportErrorReason::ResponseLimitExceeded,
+        ));
+    }
+    if body.capacity() < new_length {
+        let doubled = body.capacity().checked_mul(2).unwrap_or(maximum_body_bytes);
+        let capacity = doubled.min(maximum_body_bytes).max(new_length);
+        let mut replacement = Zeroizing::new(Vec::new());
+        replacement.try_reserve_exact(capacity).map_err(|_| {
+            HttpsTransportError::dispatched(HttpsTransportErrorReason::ResponseAllocationFailed)
+        })?;
+        replacement.extend_from_slice(body.as_slice());
+        // Replacing drops and zeroizes the old allocation before the next
+        // chunk can be read; Vec's implicit growth would free it uncleared.
+        let old = std::mem::replace(body, replacement);
+        drop(old);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn copy_header(

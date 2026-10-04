@@ -5,6 +5,7 @@
 //!
 //! Invocations:
 //! - `ensure <tenant-name>`
+//! - `repair <tenant-name>`
 //! - `delete <tenant-name>`
 //! - `exists <tenant-name>`
 
@@ -17,7 +18,7 @@ use reallyme_foundationdb_kit::FoundationDbTenantName;
 use reallyme_foundationdb_kit::{FdbConfig, FdbContext, fdb::tenant::admin};
 use thiserror::Error;
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|delete|exists> <tenant>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists> <tenant>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 enum AdminToolError {
@@ -31,6 +32,8 @@ enum AdminToolError {
     ConnectFailed,
     #[error("tenant ensure operation failed")]
     EnsureFailed,
+    #[error("tenant metadata repair operation failed")]
+    RepairFailed,
     #[error("tenant delete operation failed")]
     DeleteFailed,
     #[error("tenant exists operation failed")]
@@ -49,13 +52,20 @@ async fn run() -> Result<(), AdminToolError> {
     let tenant = parse_tenant(tenant)?;
 
     let config = FdbConfig::from_env().map_err(|_| AdminToolError::InvalidConfig)?;
-    let context = FdbContext::connect(&config).map_err(|_| AdminToolError::ConnectFailed)?;
+    // SAFETY: the one-shot CLI returns through main after all tenant handles
+    // and this connector are dropped; it never calls process::exit.
+    #[allow(unsafe_code)]
+    let context =
+        unsafe { FdbContext::connect(&config) }.map_err(|_| AdminToolError::ConnectFailed)?;
     let database = context.database_for_admin();
 
     match command.as_str() {
         "ensure" => admin::ensure_tenant(database, tenant)
             .await
             .map_err(|_| AdminToolError::EnsureFailed),
+        "repair" => admin::repair_tenant_metadata(database, tenant)
+            .await
+            .map_err(|_| AdminToolError::RepairFailed),
         "delete" => admin::delete_tenant(database, tenant)
             .await
             .map_err(|_| AdminToolError::DeleteFailed),

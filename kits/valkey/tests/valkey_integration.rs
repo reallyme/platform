@@ -177,11 +177,11 @@ async fn cache_lease_and_counter_commands_are_atomic() {
         .expect("generic typed command should succeed");
 
     let mut pipeline = valkey_pipeline();
-    pipeline
-        .cmd("GET")
-        .arg(namespaced_key.as_slice())
-        .cmd("PTTL")
-        .arg(namespaced_key.as_slice());
+    let mut get = valkey_command("GET");
+    get.arg(namespaced_key.as_slice());
+    let mut ttl = valkey_command("PTTL");
+    ttl.arg(namespaced_key.as_slice());
+    pipeline.add_command(get).add_command(ttl);
     let (generic_value, generic_ttl): (Vec<u8>, i64) = connector
         .query_pipeline(&pipeline)
         .await

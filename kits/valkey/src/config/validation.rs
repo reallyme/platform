@@ -60,7 +60,7 @@ pub(super) fn validate_key_prefix(value: &str) -> ValkeyResult<()> {
     }
     if !value
         .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err(config_error(
             ValkeyConfigField::KeyPrefix,

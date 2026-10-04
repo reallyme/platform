@@ -5,14 +5,14 @@ use buffa::Message as _;
 use reallyme_example_contract::generated::proto::reallyme::example::v1::HelloResponse;
 use worker::{Response, ResponseBuilder, Result};
 
-use crate::error::{METHOD_NOT_ALLOWED_MESSAGE, WorkerPublicErrorCode};
-use crate::model::{WorkerErrorBody, WorkerErrorEnvelope, WorkerHelloResponse};
+use crate::error::{METHOD_NOT_ALLOWED_MESSAGE, WorkerConnectErrorCode, WorkerPublicErrorCode};
+use crate::model::{
+    WorkerConnectErrorBody, WorkerErrorBody, WorkerErrorEnvelope, WorkerHelloResponse,
+};
 
 const CACHE_CONTROL_NO_STORE: &str = "no-store";
 const CONTENT_SECURITY_POLICY_API: &str =
     "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
-const METRICS_BODY: &str = "# Worker metrics are exported by Cloudflare Workers observability.\n";
-const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkerRouteResponse {
@@ -39,18 +39,30 @@ impl WorkerRouteResponse {
     }
 }
 
-pub(crate) fn metrics_response() -> Result<Response> {
-    Ok(ResponseBuilder::new()
-        .with_header("content-type", METRICS_CONTENT_TYPE)?
-        .fixed(METRICS_BODY.as_bytes().to_vec()))
-}
-
-pub(crate) fn method_not_allowed_response() -> Result<Response> {
-    stable_error_response(
+pub(crate) fn method_not_allowed_response(allow: &'static str) -> Result<Response> {
+    let mut response = stable_error_response(
         WorkerPublicErrorCode::MethodNotAllowed,
         METHOD_NOT_ALLOWED_MESSAGE,
         405,
-    )
+    )?;
+    response.headers_mut().set("allow", allow)?;
+    Ok(response)
+}
+
+pub(crate) fn connect_error_response(
+    code: WorkerConnectErrorCode,
+    message: &'static str,
+    status: u16,
+) -> Result<Response> {
+    Response::from_json(&WorkerConnectErrorBody { code, message })
+        .map(|response| response.with_status(status))
+}
+
+pub(crate) fn connect_unsupported_media_type_response() -> Result<Response> {
+    Ok(ResponseBuilder::new()
+        .with_header("accept-post", "application/proto")?
+        .with_status(415)
+        .empty())
 }
 
 pub(crate) fn stable_error_response(

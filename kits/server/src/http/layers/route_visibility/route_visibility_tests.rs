@@ -15,10 +15,10 @@ use crate::authn::{AuthenticatedPrincipal, Principal, PrincipalId, PrincipalKind
 use crate::http::{
     HttpListenerIdentity, HttpListenerName, HttpListenerVisibility, HttpRateLimitTierName,
     HttpRoutePrefix, HttpRouteVisibility, HttpRouteVisibilityPolicy, HttpRouteVisibilityRule,
-    RequestBodyLimitBytes,
 };
 
 use super::route_visibility_layer;
+use crate::runtime::HttpRateLimitTierPolicy;
 
 fn request_with_principal(uri: &'static str, principal_id: &'static str) -> Request<Body> {
     let mut request = Request::builder()
@@ -69,6 +69,51 @@ async fn public_listener_rejects_private_only_route_before_handler_runs() {
         .call(
             Request::builder()
                 .uri("/internal/status")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("route visibility response should be infallible");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!handler_executed.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn public_listener_rejects_private_child_of_wildcard_route() {
+    let handler_executed = Arc::new(AtomicBool::new(false));
+    let policy = HttpRouteVisibilityPolicy::allow_by_default(vec![HttpRouteVisibilityRule::new(
+        HttpRoutePrefix::new("/files/private").expect("valid route prefix"),
+        HttpRouteVisibility::PrivateOnly,
+    )])
+    .expect("unique route rule");
+    let app = Router::new()
+        .route(
+            "/files/{*path}",
+            get(
+                |State(handler_executed): State<Arc<AtomicBool>>| async move {
+                    handler_executed.store(true, Ordering::SeqCst);
+                    StatusCode::OK
+                },
+            ),
+        )
+        .with_state(handler_executed.clone());
+    let mut service = route_visibility_layer(
+        HttpListenerName::new("public").expect("valid listener name"),
+        HttpListenerVisibility::Public,
+        None,
+        Arc::new(Vec::new()),
+        &policy,
+    )
+    .layer(app);
+
+    let response = service
+        .ready()
+        .await
+        .expect("service should become ready")
+        .call(
+            Request::builder()
+                .uri("/files/private/key.pem")
                 .body(Body::empty())
                 .expect("valid request"),
         )
@@ -241,48 +286,6 @@ async fn listener_identity_is_runtime_assigned_not_header_inferred() {
 }
 
 #[tokio::test]
-async fn route_visibility_rejects_request_exceeding_route_body_limit() {
-    let policy = HttpRouteVisibilityPolicy::allow_by_default(vec![
-        HttpRouteVisibilityRule::exact(
-            HttpRoutePrefix::new("/handles/handle-availability/check").expect("valid route prefix"),
-            HttpRouteVisibility::PublicOnly,
-        )
-        .with_request_body_limit(Some(
-            RequestBodyLimitBytes::new(1024).expect("valid route body limit"),
-        )),
-    ])
-    .expect("unique route rule");
-    let app = Router::new().route(
-        "/handles/handle-availability/check",
-        get(|| async { StatusCode::OK }),
-    );
-    let mut service = route_visibility_layer(
-        HttpListenerName::new("public").expect("valid listener name"),
-        HttpListenerVisibility::Public,
-        None,
-        Arc::new(Vec::new()),
-        &policy,
-    )
-    .layer(app);
-
-    let response = service
-        .ready()
-        .await
-        .expect("service should become ready")
-        .call(
-            Request::builder()
-                .uri("/handles/handle-availability/check")
-                .header("content-length", "2048")
-                .body(Body::empty())
-                .expect("valid request"),
-        )
-        .await
-        .expect("route visibility response should be infallible");
-
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-}
-
-#[tokio::test]
 async fn route_visibility_rate_limiter_rejects_when_bucket_exhausts() {
     let policy = HttpRouteVisibilityPolicy::allow_by_default(vec![
         HttpRouteVisibilityRule::exact(
@@ -300,7 +303,7 @@ async fn route_visibility_rate_limiter_rejects_when_bucket_exhausts() {
     );
     let policies = Arc::new(vec![(
         HttpRateLimitTierName::new("handle-check-public").expect("valid tier"),
-        crate::runtime::HttpRateLimitTierPolicy::new(0, 1, 100)
+        crate::runtime::HttpRateLimitTierPolicy::new(1, 1, 100)
             .expect("valid rate-limit tier policy"),
     )]);
     let mut service = route_visibility_layer(
@@ -355,7 +358,7 @@ async fn route_visibility_shared_rate_limit_scope_reuses_one_bucket_across_sourc
     );
     let policies = Arc::new(vec![(
         HttpRateLimitTierName::new("handle-check-public").expect("valid tier"),
-        crate::runtime::HttpRateLimitTierPolicy::new(0, 1, 100)
+        crate::runtime::HttpRateLimitTierPolicy::new(1, 1, 100)
             .expect("valid rate-limit tier policy")
             .with_scope(crate::runtime::HttpRateLimitScope::Shared),
     )]);
@@ -647,7 +650,10 @@ async fn route_visibility_layer_applies_listener_rate_limit_tier_when_rule_has_n
         HttpListenerName::new("public-ingress").expect("valid listener name"),
         HttpListenerVisibility::Public,
         Some(HttpRateLimitTierName::new("listener").expect("valid tier")),
-        Arc::new(Vec::new()),
+        Arc::new(vec![(
+            HttpRateLimitTierName::new("listener").expect("valid tier"),
+            HttpRateLimitTierPolicy::new(1, 1, 10).expect("valid policy"),
+        )]),
         &policy,
     )
     .layer(app);
@@ -666,6 +672,46 @@ async fn route_visibility_layer_applies_listener_rate_limit_tier_when_rule_has_n
         .expect("route visibility response should be infallible");
 
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn operational_health_routes_do_not_consume_listener_rate_limit() {
+    let policy = HttpRouteVisibilityPolicy::allow_all();
+    let app = Router::new()
+        .route("/readyz", get(|| async { StatusCode::OK }))
+        .route("/public", get(|| async { StatusCode::OK }));
+    let mut service = route_visibility_layer(
+        HttpListenerName::new("public-ingress").expect("valid listener name"),
+        HttpListenerVisibility::Public,
+        Some(HttpRateLimitTierName::new("listener").expect("valid tier")),
+        Arc::new(vec![(
+            HttpRateLimitTierName::new("listener").expect("valid tier"),
+            HttpRateLimitTierPolicy::new(1, 1, 10).expect("valid policy"),
+        )]),
+        &policy,
+    )
+    .layer(app);
+
+    for (path, expected) in [
+        ("/public", StatusCode::OK),
+        ("/public", StatusCode::TOO_MANY_REQUESTS),
+        ("/readyz", StatusCode::OK),
+        ("/readyz", StatusCode::OK),
+    ] {
+        let response = service
+            .ready()
+            .await
+            .expect("service should become ready")
+            .call(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("route visibility response should be infallible");
+        assert_eq!(response.status(), expected);
+    }
 }
 
 #[tokio::test]
@@ -698,7 +744,16 @@ async fn route_visibility_layer_prefers_route_rate_limit_tier_over_listener_defa
         HttpListenerName::new("admin").expect("valid listener name"),
         HttpListenerVisibility::Private,
         Some(HttpRateLimitTierName::new("listener").expect("valid tier")),
-        Arc::new(Vec::new()),
+        Arc::new(vec![
+            (
+                HttpRateLimitTierName::new("listener").expect("valid tier"),
+                HttpRateLimitTierPolicy::new(1, 1, 10).expect("valid policy"),
+            ),
+            (
+                HttpRateLimitTierName::new("route").expect("valid tier"),
+                HttpRateLimitTierPolicy::new(1, 1, 10).expect("valid policy"),
+            ),
+        ]),
         &policy,
     )
     .layer(app);

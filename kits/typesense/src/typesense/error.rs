@@ -72,6 +72,8 @@ pub enum TypesenseRequestReason {
     EmptyQueryFields,
     /// A search request named too many query fields.
     TooManyQueryFields,
+    /// Query field weights did not match the validated query fields.
+    InvalidQueryWeights,
     /// A search, sort, or filter field name was invalid.
     InvalidSearchFieldName,
     /// A page size of zero was requested.
@@ -80,8 +82,6 @@ pub enum TypesenseRequestReason {
     PageSizeTooLarge,
     /// A collection schema did not contain any fields.
     EmptyCollectionFields,
-    /// An existing collection field cannot satisfy the requested schema.
-    IncompatibleCollectionSchema,
     /// A vector field used an unsupported kind or dimension count.
     InvalidVectorDimensions,
     /// A sort clause did not contain any sort orders.
@@ -96,14 +96,14 @@ pub enum TypesenseRequestReason {
     InvalidDocumentId,
     /// A filter value could not be represented safely.
     InvalidFilterValue,
+    /// A multi-search request did not contain any searches.
+    EmptyMultiSearch,
+    /// A multi-search request exceeded the bounded search count.
+    TooManyMultiSearches,
     /// An import batch did not contain any documents.
     EmptyImportBatch,
     /// An import batch exceeded the supported document count.
     ImportBatchTooLarge,
-    /// A backfill batch size of zero was requested.
-    EmptyBackfillBatchSize,
-    /// A backfill batch size exceeded the supported maximum.
-    BackfillBatchTooLarge,
 }
 
 /// Stable reason for upstream HTTP status failures.

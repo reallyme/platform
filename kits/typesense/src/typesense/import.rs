@@ -120,6 +120,17 @@ pub struct ImportResult {
     pub lines: Vec<ImportLine>,
 }
 
+impl ImportResult {
+    pub(crate) fn validate_expected_count(self, expected: usize) -> TypesenseResult<Self> {
+        if self.lines.len() != expected {
+            return Err(TypesenseError::Transport {
+                reason: TypesenseTransportReason::InvalidResponseBody,
+            });
+        }
+        Ok(self)
+    }
+}
+
 /// Parses the newline-delimited Typesense import response body.
 pub fn parse_import_response_jsonl(body: &str) -> TypesenseResult<ImportResult> {
     let mut lines = Vec::new();

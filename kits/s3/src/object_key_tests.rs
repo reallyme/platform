@@ -18,3 +18,10 @@ fn object_key_accepts_expected_segments() {
 fn object_key_rejects_parent_segments() {
     assert!(S3ObjectKey::new(String::from("../unsafe")).is_err());
 }
+
+#[test]
+fn object_key_rejects_noncanonical_padding() {
+    for value in ["/object", "object/", " object", "object "] {
+        assert!(S3ObjectKey::new(value.to_owned()).is_err());
+    }
+}

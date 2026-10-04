@@ -9,8 +9,8 @@ mod source;
 mod validate;
 
 pub use document::{
-    AppBaseUrl, AppConfigDocumentError, AppConfigDocumentErrorReason, AppCookieConfig,
-    AppCookieDomain, AppCookieSameSitePolicy, AppCorsConfig, AppDownstreamBaseUrl,
+    AppBaseUrl, AppConfigDocumentError, AppConfigDocumentErrorReason, AppConfigDocumentField,
+    AppCookieConfig, AppCookieDomain, AppCookieSameSitePolicy, AppCorsConfig, AppDownstreamBaseUrl,
     AppDownstreamConfig, AppDownstreamEndpointConfig, AppJsoncConfigDocument,
     AppServiceEndpointResolutionError, AppServiceEndpointResolutionErrorReason,
     AppServiceEndpointResolver, AppServiceEndpointScheme, AppServiceEndpointSelection,

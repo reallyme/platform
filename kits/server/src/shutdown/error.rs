@@ -15,6 +15,9 @@ pub enum ShutdownError {
         /// The listener that failed to install.
         kind: ShutdownSignalKind,
     },
+    /// The process signal watcher stopped before reporting a shutdown reason.
+    #[error("shutdown signal channel closed")]
+    SignalChannelClosed,
     /// The configured shutdown timeout is invalid.
     #[error("invalid shutdown timeout")]
     InvalidTimeout {
@@ -66,6 +69,12 @@ pub enum ShutdownError {
 pub enum ShutdownSignalKind {
     /// `CTRL+C` listener registration.
     CtrlC,
+    /// Windows `CTRL+BREAK` listener registration.
+    CtrlBreak,
+    /// Windows console-close listener registration.
+    CtrlClose,
+    /// Windows shutdown listener registration.
+    CtrlShutdown,
     /// `SIGTERM` listener registration.
     Sigterm,
 }
@@ -75,6 +84,8 @@ pub enum ShutdownSignalKind {
 pub enum ShutdownValidationErrorReason {
     /// The value must be greater than zero.
     MustBeGreaterThanZero,
+    /// The value exceeds the maximum supported graceful shutdown window.
+    TooLarge,
 }
 
 /// Typed join failures for spawned background tasks.

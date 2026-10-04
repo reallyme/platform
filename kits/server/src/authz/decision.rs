@@ -17,12 +17,37 @@ pub enum AuthorizationDenyReason {
 }
 
 /// Authorization outcome.
+#[must_use = "authorization decisions must be enforced or explicitly discarded"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationDecision {
     /// The action is permitted.
     Allow,
     /// The action is denied for the provided reason.
     Deny(AuthorizationDenyReason),
+}
+
+/// Typed result of enforcing a denied authorization decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("authorization denied")]
+pub struct AuthorizationDenied {
+    reason: AuthorizationDenyReason,
+}
+
+impl AuthorizationDenied {
+    /// Returns the safe, low-cardinality denial reason.
+    pub const fn reason(self) -> AuthorizationDenyReason {
+        self.reason
+    }
+}
+
+impl AuthorizationDecision {
+    /// Enforces the decision at an authorization boundary.
+    pub const fn require_allow(self) -> Result<(), AuthorizationDenied> {
+        match self {
+            Self::Allow => Ok(()),
+            Self::Deny(reason) => Err(AuthorizationDenied { reason }),
+        }
+    }
 }
 
 #[cfg(test)]

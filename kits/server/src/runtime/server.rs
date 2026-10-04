@@ -12,30 +12,31 @@ use crate::observability::log_grpc_listener_started;
 use crate::observability::{
     RuntimeAppFailureOutcome, init_tracing, install_prometheus_recorder, log_http_listener_started,
     log_no_runtime_apps_enabled, log_observability_startup_summary, log_runtime_app_enabled,
-    log_runtime_app_startup_order, log_runtime_phase_transition,
-    log_runtime_startup_check_completed, log_runtime_startup_check_failed,
-    log_runtime_startup_check_started, log_service_ready, log_service_starting,
-    log_shutdown_completed, log_shutdown_requested, observability_startup_summary,
-    record_readiness_state, record_runtime_app_startup_failure, record_runtime_phase,
+    log_runtime_app_startup_order, log_runtime_startup_check_completed,
+    log_runtime_startup_check_failed, log_runtime_startup_check_started, log_service_ready,
+    log_service_starting, log_shutdown_completed, log_shutdown_requested,
+    observability_startup_summary, record_readiness_state, record_runtime_app_startup_failure,
     record_startup_info,
 };
-use crate::shutdown::{
-    ShutdownError, ShutdownMode, ShutdownPolicy, ShutdownReason, shutdown_signal,
-};
+use crate::shutdown::{ShutdownError, ShutdownMode, ShutdownPolicy, ShutdownReason};
 use crate::startup::{DeploymentRegion, ServerName, StartupBanner, TaskName, write_startup_banner};
 use crate::task::{BackgroundTaskSet, ShutdownTimeout};
 use crate::version::BuildInfo;
 
 use super::app::RuntimeAppParts;
+use super::app_health::run_app_health_monitor;
 use super::background::RuntimeBackgroundTask;
 use super::cleanup::run_cleanup_hooks;
-use super::critical::{CriticalTaskStartError, RuntimeCriticalTask, start_critical_tasks};
+use super::critical::{
+    CriticalTaskReadinessTimeout, CriticalTaskStartError, RuntimeCriticalTask, start_critical_tasks,
+};
 use super::error::ServerRuntimeError;
 #[cfg(feature = "tonic-grpc")]
 use super::grpc::{GrpcServePolicy, GrpcServerSpec, serve_health_grpc};
 use super::http::{HttpServerSpec, serve_http};
 use super::phase::{ServerRuntimePhase, ServerRuntimePhaseReporter};
 use super::rate_limit::{RateLimitRegistry, run_rate_limit_registry_sweep_task};
+use super::readiness_drain::ReadinessDrainDelay;
 use super::startup_check::RuntimeStartupCheck;
 use super::termination::{
     CriticalTerminationContext, RuntimeTermination, terminate_for_critical_task,
@@ -44,11 +45,19 @@ use super::termination::{
 
 #[path = "server/composition.rs"]
 mod composition;
+#[path = "server/phase.rs"]
+mod phase;
+#[path = "server/signals.rs"]
+mod signals;
+#[path = "server/startup_failure.rs"]
+mod startup_failure;
 
 pub use composition::ServerRuntimeBuilder;
 #[cfg(feature = "tonic-grpc")]
 use composition::bind_grpc_listener;
 use composition::{bind_http_listener, build_runtime_http_router};
+use phase::{publish_runtime_phase, transition_runtime_phase};
+use startup_failure::finish_failed_startup;
 
 /// Reusable runtime for a ReallyMe server process.
 pub struct ServerRuntime {
@@ -58,6 +67,7 @@ pub struct ServerRuntime {
     build_info: BuildInfo,
     readiness: Readiness,
     shutdown_timeout: ShutdownTimeout,
+    readiness_drain_delay: ReadinessDrainDelay,
     cleanup_timeout: ShutdownTimeout,
     fast_shutdown_timeout: ShutdownTimeout,
     shutdown_policy: ShutdownPolicy,
@@ -80,7 +90,7 @@ impl ServerRuntime {
 
     /// Runs the server process until an operating-system shutdown signal is received.
     pub async fn run(self) -> Result<(), ServerRuntimeError> {
-        self.run_until_shutdown(shutdown_signal()).await
+        signals::run_with_os_signals(self).await
     }
 
     async fn run_until_shutdown<F>(
@@ -112,6 +122,7 @@ impl ServerRuntime {
             build_info,
             readiness,
             shutdown_timeout,
+            readiness_drain_delay,
             cleanup_timeout,
             fast_shutdown_timeout,
             shutdown_policy,
@@ -119,12 +130,16 @@ impl ServerRuntime {
             http_servers,
             #[cfg(feature = "tonic-grpc")]
             grpc_servers,
-            app_parts,
+            mut app_parts,
             startup_checks,
             background_tasks,
             critical_tasks,
             phase_reporter,
         } = self;
+
+        // A caller may reuse a readiness handle that was previously marked
+        // ready. Startup always begins closed until every runtime gate passes.
+        readiness.mark_not_ready();
 
         {
             // Keep the stdout lock scoped to the banner write only. Holding it
@@ -168,7 +183,7 @@ impl ServerRuntime {
             background_tasks.extend(app_parts.background_tasks);
             background_tasks
         };
-        let critical_tasks = {
+        let mut critical_tasks = {
             let mut critical_tasks = critical_tasks;
             critical_tasks.extend(app_parts.critical_tasks);
             critical_tasks
@@ -179,10 +194,6 @@ impl ServerRuntime {
         publish_runtime_phase(&server_name, ServerRuntimePhase::Initializing);
 
         let mut tasks = BackgroundTaskSet::new();
-        let process_shutdown_token = tasks.shutdown_token();
-        for websocket_shutdown_consumer in app_parts.websocket_shutdown_consumers {
-            websocket_shutdown_consumer(process_shutdown_token.clone());
-        }
 
         for startup_check in startup_checks {
             let check_name = startup_check.name();
@@ -192,7 +203,15 @@ impl ServerRuntime {
                 Err(kind) => {
                     record_runtime_app_startup_failure(RuntimeAppFailureOutcome::Failed);
                     log_runtime_startup_check_failed(&server_name, &check_name, kind);
-                    return Err(ServerRuntimeError::StartupCheck { check_name, kind });
+                    return Err(finish_failed_startup(
+                        ServerRuntimeError::StartupCheck { check_name, kind },
+                        &mut tasks,
+                        std::mem::take(&mut app_parts.cleanup_hooks),
+                        shutdown_timeout,
+                        cleanup_timeout,
+                        &server_name,
+                    )
+                    .await);
                 }
             }
         }
@@ -203,127 +222,179 @@ impl ServerRuntime {
             ServerRuntimePhase::BindingListeners,
         );
 
-        for http_server in http_servers {
-            let listener = bind_http_listener(&http_server).await?;
-            log_http_listener_started(&server_name, http_server.config().bind_address());
-            let task_name = TaskName::new(format!("http-{}", http_server.name().as_str()))?;
-            let listener_name = http_server.name().clone();
-            let rate_limit_policies = http_server.rate_limit_policies();
-            let rate_limit_registry =
-                Arc::new(RateLimitRegistry::new(Arc::clone(&rate_limit_policies)));
-            let listener_name_for_sweep = listener_name.clone();
-            let router = build_runtime_http_router(
-                http_server,
-                observability_config.request_logging(),
-                readiness.clone(),
-                build_info.clone(),
-                metrics.clone(),
-                rate_limit_registry.clone(),
-                app_parts.http_router.clone(),
-            );
-
-            tasks
-                .spawn_fallible(task_name, move |shutdown| {
-                    serve_http(listener, router, listener_name, shutdown)
-                })
-                .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
-
-            let sweep_task_name = TaskName::new(format!(
-                "http-rate-limit-sweep-{}",
-                listener_name_for_sweep.as_str()
-            ))?;
-            let sweep_listener_name = listener_name_for_sweep.clone();
-            tasks
-                .spawn_fallible(sweep_task_name, move |shutdown| {
-                    run_rate_limit_registry_sweep_task(
-                        rate_limit_registry,
-                        sweep_listener_name.clone_shared(),
-                        shutdown,
-                    )
-                })
-                .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
-        }
-
-        #[cfg(feature = "tonic-grpc")]
-        {
-            for grpc_server in grpc_servers {
-                let listener = bind_grpc_listener(&grpc_server).await?;
-                let task_name = grpc_server.task_name();
-                log_grpc_listener_started(
-                    &server_name,
-                    &task_name,
-                    grpc_server.config().bind_address(),
-                );
-                let concurrency_limit = grpc_server.config().concurrency_limit();
-                let max_concurrent_streams = grpc_server.max_concurrent_streams();
-                let deadline_required = grpc_server.deadline_required();
-                let max_timeout = grpc_server.max_timeout();
-                let max_header_list_size_bytes = grpc_server.max_header_list_size_bytes();
-                let method_policies = grpc_server.method_policies();
-                let rate_limit_policies = grpc_server.rate_limit_policies();
+        let startup_result = async {
+            for http_server in http_servers {
+                let listener = bind_http_listener(&http_server).await?;
+                log_http_listener_started(&server_name, http_server.config().bind_address());
+                let task_name = TaskName::new(format!("http-{}", http_server.name().as_str()))?;
+                let listener_name = http_server.name().clone();
+                let header_limits = http_server.config().security().header_limits();
+                let rate_limit_policies = http_server.rate_limit_policies();
                 let rate_limit_registry =
-                    Arc::new(RateLimitRegistry::new(rate_limit_policies.clone()));
-                let rate_limit_registry_for_policy = Arc::clone(&rate_limit_registry);
-                let routes = grpc_server.into_routes();
-                let readiness = readiness.clone();
-                let listener_name = std::sync::Arc::<str>::from(task_name.as_str());
-                let sweep_listener_name = Arc::clone(&listener_name);
+                    Arc::new(RateLimitRegistry::new(Arc::clone(&rate_limit_policies)));
+                let listener_name_for_sweep = listener_name.clone();
+                let router = build_runtime_http_router(
+                    http_server,
+                    observability_config.request_logging(),
+                    readiness.clone(),
+                    build_info.clone(),
+                    metrics.clone(),
+                    rate_limit_registry.clone(),
+                    app_parts.http_router.clone(),
+                );
 
-                tasks
-                    .spawn_fallible(task_name, move |shutdown| {
-                        serve_health_grpc(
-                            listener,
-                            routes,
-                            readiness,
-                            GrpcServePolicy {
-                                listener_name,
-                                max_concurrent_streams,
-                                deadline_required,
-                                max_timeout,
-                                max_header_list_size_bytes,
-                                method_policies,
-                                rate_limit_registry: rate_limit_registry_for_policy,
-                            },
-                            concurrency_limit,
-                            shutdown,
-                        )
-                    })
-                    .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
+                critical_tasks.push(RuntimeCriticalTask::new(
+                    task_name,
+                    CriticalTaskReadinessTimeout::bound_listener(),
+                    move |shutdown, ready| async move {
+                        ready.mark_ready().map_err(|_| {
+                            crate::task::TaskExecutionError::new(
+                                crate::task::TaskExecutionErrorKind::Internal,
+                            )
+                        })?;
+                        serve_http(listener, router, listener_name, header_limits, shutdown).await
+                    },
+                ));
 
-                let sweep_task_name =
-                    TaskName::new(format!("grpc-rate-limit-sweep-{}", sweep_listener_name))?;
+                let sweep_task_name = TaskName::new(format!(
+                    "http-rate-limit-sweep-{}",
+                    listener_name_for_sweep.as_str()
+                ))?;
+                let sweep_listener_name = listener_name_for_sweep.clone();
                 tasks
                     .spawn_fallible(sweep_task_name, move |shutdown| {
                         run_rate_limit_registry_sweep_task(
                             rate_limit_registry,
-                            sweep_listener_name,
+                            sweep_listener_name.clone_shared(),
                             shutdown,
                         )
                     })
                     .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
             }
+
+            #[cfg(feature = "tonic-grpc")]
+            {
+                for grpc_server in grpc_servers {
+                    let listener = bind_grpc_listener(&grpc_server).await?;
+                    let task_name = grpc_server.task_name();
+                    log_grpc_listener_started(
+                        &server_name,
+                        &task_name,
+                        grpc_server.config().bind_address(),
+                    );
+                    let concurrency_limit = grpc_server.config().concurrency_limit();
+                    let max_concurrent_streams = grpc_server.max_concurrent_streams();
+                    let deadline_required = grpc_server.deadline_required();
+                    let max_timeout = grpc_server.max_timeout();
+                    let max_header_list_size_bytes = grpc_server.max_header_list_size_bytes();
+                    let method_policies = grpc_server.method_policies();
+                    let rate_limit_policies = grpc_server.rate_limit_policies();
+                    let trusted_proxy_headers = grpc_server.trusted_proxy_headers();
+                    let rate_limit_registry =
+                        Arc::new(RateLimitRegistry::new(rate_limit_policies.clone()));
+                    let rate_limit_registry_for_policy = Arc::clone(&rate_limit_registry);
+                    let (routes, service_names) = grpc_server.into_routes();
+                    let readiness = readiness.clone();
+                    let listener_name = std::sync::Arc::<str>::from(task_name.as_str());
+                    let sweep_listener_name = Arc::clone(&listener_name);
+
+                    critical_tasks.push(RuntimeCriticalTask::new(
+                        task_name,
+                        CriticalTaskReadinessTimeout::bound_listener(),
+                        move |shutdown, ready| async move {
+                            ready.mark_ready().map_err(|_| {
+                                crate::task::TaskExecutionError::new(
+                                    crate::task::TaskExecutionErrorKind::Internal,
+                                )
+                            })?;
+                            serve_health_grpc(
+                                listener,
+                                routes,
+                                service_names,
+                                readiness,
+                                GrpcServePolicy {
+                                    listener_name,
+                                    max_concurrent_streams,
+                                    deadline_required,
+                                    max_timeout,
+                                    max_header_list_size_bytes,
+                                    method_policies,
+                                    rate_limit_registry: rate_limit_registry_for_policy,
+                                    trusted_proxy_headers,
+                                },
+                                concurrency_limit,
+                                shutdown,
+                            )
+                            .await
+                        },
+                    ));
+
+                    let sweep_task_name =
+                        TaskName::new(format!("grpc-rate-limit-sweep-{}", sweep_listener_name))?;
+                    tasks
+                        .spawn_fallible(sweep_task_name, move |shutdown| {
+                            run_rate_limit_registry_sweep_task(
+                                rate_limit_registry,
+                                sweep_listener_name,
+                                shutdown,
+                            )
+                        })
+                        .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
+                }
+            }
+
+            transition_runtime_phase(
+                &phase_reporter,
+                &server_name,
+                ServerRuntimePhase::StartingBackgroundTasks,
+            );
+
+            for background_task in background_tasks {
+                let task_name = background_task.task_name();
+                let task = background_task.into_task();
+
+                tasks
+                    .spawn_fallible(task_name, task)
+                    .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
+            }
+            if !app_parts.health_contributors.is_empty() {
+                let contributors = std::mem::take(&mut app_parts.health_contributors);
+                let monitor_readiness = readiness.clone();
+                let task_name = TaskName::new("app-health-monitor")?;
+                tasks
+                    .spawn_fallible(task_name, move |shutdown| {
+                        run_app_health_monitor(contributors, monitor_readiness, shutdown)
+                    })
+                    .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
+            }
+            Ok::<(), ServerRuntimeError>(())
         }
-
-        transition_runtime_phase(
-            &phase_reporter,
-            &server_name,
-            ServerRuntimePhase::StartingBackgroundTasks,
-        );
-
-        for background_task in background_tasks {
-            let task_name = background_task.task_name();
-            let task = background_task.into_task();
-
-            tasks
-                .spawn_fallible(task_name, task)
-                .map_err(|source| ServerRuntimeError::TaskRegistration { source })?;
+        .await;
+        if let Err(error) = startup_result {
+            return Err(finish_failed_startup(
+                error,
+                &mut tasks,
+                std::mem::take(&mut app_parts.cleanup_hooks),
+                shutdown_timeout,
+                cleanup_timeout,
+                &server_name,
+            )
+            .await);
         }
 
         let mut critical_task_monitor =
             match start_critical_tasks(critical_tasks, &mut tasks, &server_name).await {
                 Ok(monitor) => monitor,
                 Err(CriticalTaskStartError::Registration(source)) => {
-                    return Err(ServerRuntimeError::TaskRegistration { source });
+                    return Err(finish_failed_startup(
+                        ServerRuntimeError::TaskRegistration { source },
+                        &mut tasks,
+                        std::mem::take(&mut app_parts.cleanup_hooks),
+                        shutdown_timeout,
+                        cleanup_timeout,
+                        &server_name,
+                    )
+                    .await);
                 }
                 Err(CriticalTaskStartError::Failure(failure)) => {
                     return Err(terminate_for_critical_task(
@@ -335,6 +406,7 @@ impl ServerRuntime {
                             tasks: &mut tasks,
                             cleanup_hooks: app_parts.cleanup_hooks,
                             shutdown_timeout,
+                            readiness_drain_delay,
                             cleanup_timeout,
                         },
                     )
@@ -362,6 +434,7 @@ impl ServerRuntime {
                         tasks: &mut tasks,
                         cleanup_hooks: app_parts.cleanup_hooks,
                         shutdown_timeout,
+                        readiness_drain_delay,
                         cleanup_timeout,
                     },
                 )
@@ -378,12 +451,17 @@ impl ServerRuntime {
         log_shutdown_requested(&server_name, reason);
         transition_runtime_phase(&phase_reporter, &server_name, ServerRuntimePhase::Draining);
 
-        tasks
+        tokio::time::sleep(readiness_drain_delay.as_duration()).await;
+
+        let drain_error = tasks
             .shutdown(reason, active_shutdown_timeout)
             .await
-            .map_err(|source| ServerRuntimeError::Shutdown { source })?;
+            .err()
+            .map(|source| ServerRuntimeError::Shutdown { source });
 
-        run_cleanup_hooks(
+        // Cleanup owns app resources that may need release even when an
+        // in-flight request or managed task exceeded its drain deadline.
+        let cleanup_result = run_cleanup_hooks(
             app_parts.cleanup_hooks,
             match shutdown_mode {
                 ShutdownMode::Graceful => cleanup_timeout,
@@ -391,7 +469,7 @@ impl ServerRuntime {
             },
             &server_name,
         )
-        .await?;
+        .await;
         transition_runtime_phase(
             &phase_reporter,
             &server_name,
@@ -400,22 +478,20 @@ impl ServerRuntime {
         log_shutdown_completed(&server_name, reason);
         transition_runtime_phase(&phase_reporter, &server_name, ServerRuntimePhase::Stopped);
 
-        Ok(())
+        if let Some(error) = drain_error {
+            if cleanup_result.is_err() {
+                crate::observability::log_error(
+                    crate::observability::ErrorKind::Internal,
+                    "app cleanup also failed after task drain error",
+                    None,
+                    None,
+                );
+            }
+            Err(error)
+        } else {
+            cleanup_result
+        }
     }
-}
-
-fn transition_runtime_phase(
-    phase_reporter: &ServerRuntimePhaseReporter,
-    server_name: &ServerName,
-    phase: ServerRuntimePhase,
-) {
-    phase_reporter.transition(phase);
-    publish_runtime_phase(server_name, phase);
-}
-
-fn publish_runtime_phase(server_name: &ServerName, phase: ServerRuntimePhase) {
-    log_runtime_phase_transition(server_name, phase);
-    record_runtime_phase(phase);
 }
 
 #[cfg(test)]

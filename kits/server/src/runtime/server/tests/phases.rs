@@ -71,7 +71,7 @@ async fn runtime_phase_order_worker() {
     let runtime = ServerRuntime::builder()
         .server_name(server_name.clone())
         .observability_config(observability_config())
-        .build_info(BuildInfo::new(server_name))
+        .build_info(BuildInfo::new(server_name, env!("CARGO_PKG_VERSION")))
         .readiness(readiness.clone())
         .shutdown_timeout(
             ShutdownTimeout::new(Duration::from_secs(1)).expect("valid fixture shutdown timeout"),
@@ -172,7 +172,7 @@ async fn failed_bind_phase_worker() {
     let runtime = ServerRuntime::builder()
         .server_name(server_name.clone())
         .observability_config(observability_config())
-        .build_info(BuildInfo::new(server_name))
+        .build_info(BuildInfo::new(server_name, env!("CARGO_PKG_VERSION")))
         .readiness(Readiness::new())
         .shutdown_timeout(
             ShutdownTimeout::new(Duration::from_secs(1)).expect("valid fixture shutdown timeout"),

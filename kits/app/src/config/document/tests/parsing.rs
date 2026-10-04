@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::AppConfigDocumentErrorReason;
+use super::super::{AppConfigDocumentErrorReason, AppConfigDocumentField};
 use crate::{AppConfigParseErrorReason, AppJsoncConfigDocument, NoAppCustomConfig};
 
 #[test]
@@ -54,6 +54,36 @@ fn rejects_unknown_top_level_timeout_field_for_no_custom_config() {
             reason: AppConfigParseErrorReason::InvalidJson,
         }),
     );
+}
+
+#[test]
+fn rejects_unknown_nested_cookie_and_cors_fields() {
+    for document in [
+        r#"{"cors":{"allowed_origins":[],"allow_any":true},"reflection_enabled":false,"downstream":{}}"#,
+        r#"{"cors":{"allowed_origins":[]},"cookies":{"same_site":"strict"},"reflection_enabled":false,"downstream":{}}"#,
+    ] {
+        let result = AppJsoncConfigDocument::<NoAppCustomConfig>::from_jsonc_str(document);
+        assert_eq!(
+            result.map_err(|error| error.reason()),
+            Err(AppConfigDocumentErrorReason::Parse {
+                reason: AppConfigParseErrorReason::InvalidJson,
+            }),
+        );
+    }
+}
+
+#[test]
+fn rejects_single_label_cookie_domains_except_localhost() {
+    for domain in ["com", "internal", "123"] {
+        let document = format!(
+            r#"{{"cors":{{"allowed_origins":[]}},"cookies":{{"domain":"{domain}"}},"reflection_enabled":false,"downstream":{{}}}}"#
+        );
+        let result = AppJsoncConfigDocument::<NoAppCustomConfig>::from_jsonc_str(&document);
+        assert_eq!(
+            result.map_err(|error| error.reason()),
+            Err(AppConfigDocumentErrorReason::InvalidCookieDomain),
+        );
+    }
 }
 
 #[test]
@@ -155,6 +185,34 @@ fn rejects_same_site_none_without_secure() {
         result.map_err(|error| error.reason()),
         Err(AppConfigDocumentErrorReason::CookieSameSiteNoneRequiresSecure),
     );
+}
+
+#[test]
+fn validation_errors_identify_safe_field_paths() {
+    for (document, field) in [
+        (
+            r#"{"public_base_url":"http://public.example","cors":{"allowed_origins":[]},"reflection_enabled":false,"downstream":{}}"#,
+            AppConfigDocumentField::PublicBaseUrl,
+        ),
+        (
+            r#"{"cors":{"allowed_origins":[]},"cookies":{"domain":"com"},"reflection_enabled":false,"downstream":{}}"#,
+            AppConfigDocumentField::CookiesDomain,
+        ),
+        (
+            r#"{"cors":{"allowed_origins":[]},"reflection_enabled":true,"downstream":{}}"#,
+            AppConfigDocumentField::ReflectionEnabled,
+        ),
+        (
+            r#"{"cors":{"allowed_origins":[]},"reflection_enabled":false,"downstream":{"bad:name":{"base_url":"http://127.0.0.1:7001"}}}"#,
+            AppConfigDocumentField::Downstream,
+        ),
+    ] {
+        let error = AppJsoncConfigDocument::<NoAppCustomConfig>::from_jsonc_str(document)
+            .expect_err("invalid field must be rejected");
+        assert_eq!(error.field(), field);
+        assert!(error.to_string().contains(&format!("{field:?}")));
+        assert!(!error.to_string().contains("public.example"));
+    }
 }
 
 #[test]

@@ -7,10 +7,10 @@ use crate::{HttpsDispatchOutcome, HttpsTransportErrorReason};
 #[test]
 fn accepts_authority_only_https_origins_and_exact_relative_targets() {
     let origin = HttpsOrigin::try_from("https://service.example:8443/").expect("valid origin");
-    let absolute_path = origin.resolve("/wallet_rp/a%2Fb").expect("valid target");
+    let absolute_path = origin.resolve("/wallet_rp/a-b").expect("valid target");
     assert_eq!(
         absolute_path.as_str(),
-        "https://service.example:8443/wallet_rp/a%2Fb"
+        "https://service.example:8443/wallet_rp/a-b"
     );
 
     let relative_path = origin.resolve("wrp/value").expect("valid target");
@@ -52,6 +52,10 @@ fn rejects_targets_that_can_escape_or_be_normalized() {
         "/wallet/../secret",
         "/wallet/%2e%2e/secret",
         "/wallet/.%2E/secret",
+        "/x/..;/y",
+        "/a/%00b",
+        "/wallet/a%2Fb",
+        "/wallet/a%5Cb",
         "/wallet/%",
         "/wallet/%2",
         "/wallet/%zz",

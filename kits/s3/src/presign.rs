@@ -15,6 +15,8 @@ use crate::{S3ObjectKey, S3StorageConfig, S3StorageError, S3StorageErrorReason};
 
 const PRESIGNED_SIGNED_HEADERS: &str = "host";
 const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
+const MAX_PRESIGNED_QUERY_STATIC_BYTES: usize = 160;
+const MAX_CANONICAL_PRESIGNED_STATIC_BYTES: usize = 64;
 
 /// Maximum expiry accepted by AWS Signature Version 4 presigned requests.
 pub const MAX_S3_PRESIGN_TTL_SECONDS: u32 = 604_800;
@@ -84,17 +86,22 @@ pub fn presign_get_object(
     credential.push('/');
     credential.push_str(scope.as_str());
 
-    let encoded_credential = percent_encode(credential.as_bytes());
+    let encoded_credential = percent_encode(credential.as_bytes())?;
+    let encoded_token = config
+        .session_token()
+        .map(|token| percent_encode(token.expose_secret().as_bytes()))
+        .transpose()?;
     let canonical_query = canonical_query(
         encoded_credential.as_str(),
         amz_date.as_str(),
         expires_seconds,
-    );
+        encoded_token.as_deref().map(String::as_str),
+    )?;
     let canonical_request = canonical_presigned_request(
         canonical_path.as_str(),
         canonical_query.as_str(),
         host.as_str(),
-    );
+    )?;
     let signing_key = derive_signing_key(
         config.secret_access_key().expose_secret(),
         short_date.as_str(),
@@ -123,8 +130,19 @@ pub fn presign_get_object(
     Ok(S3PresignedGet { url: output })
 }
 
-fn canonical_query(credential: &str, amz_date: &str, expires_seconds: u32) -> Zeroizing<String> {
-    let mut value = Zeroizing::new(String::new());
+fn canonical_query(
+    credential: &str,
+    amz_date: &str,
+    expires_seconds: u32,
+    session_token: Option<&str>,
+) -> Result<Zeroizing<String>, S3StorageError> {
+    let capacity = credential
+        .len()
+        .checked_add(amz_date.len())
+        .and_then(|length| length.checked_add(session_token.map_or(0, str::len)))
+        .and_then(|length| length.checked_add(MAX_PRESIGNED_QUERY_STATIC_BYTES))
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut value = Zeroizing::new(String::with_capacity(capacity));
     value.push_str("X-Amz-Algorithm=");
     value.push_str(AWS_ALGORITHM);
     value.push_str("&X-Amz-Credential=");
@@ -133,13 +151,28 @@ fn canonical_query(credential: &str, amz_date: &str, expires_seconds: u32) -> Ze
     value.push_str(amz_date);
     value.push_str("&X-Amz-Expires=");
     value.push_str(expires_seconds.to_string().as_str());
+    if let Some(token) = session_token {
+        value.push_str("&X-Amz-Security-Token=");
+        value.push_str(token);
+    }
     value.push_str("&X-Amz-SignedHeaders=");
     value.push_str(PRESIGNED_SIGNED_HEADERS);
-    value
+    Ok(value)
 }
 
-fn canonical_presigned_request(path: &str, query: &str, host: &str) -> Zeroizing<String> {
-    let mut value = Zeroizing::new(String::from("GET\n"));
+fn canonical_presigned_request(
+    path: &str,
+    query: &str,
+    host: &str,
+) -> Result<Zeroizing<String>, S3StorageError> {
+    let capacity = path
+        .len()
+        .checked_add(query.len())
+        .and_then(|length| length.checked_add(host.len()))
+        .and_then(|length| length.checked_add(MAX_CANONICAL_PRESIGNED_STATIC_BYTES))
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut value = Zeroizing::new(String::with_capacity(capacity));
+    value.push_str("GET\n");
     value.push_str(path);
     value.push('\n');
     value.push_str(query);
@@ -147,12 +180,16 @@ fn canonical_presigned_request(path: &str, query: &str, host: &str) -> Zeroizing
     value.push_str(host);
     value.push_str("\n\nhost\n");
     value.push_str(UNSIGNED_PAYLOAD);
-    value
+    Ok(value)
 }
 
-fn percent_encode(bytes: &[u8]) -> Zeroizing<String> {
+fn percent_encode(bytes: &[u8]) -> Result<Zeroizing<String>, S3StorageError> {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut value = Zeroizing::new(String::new());
+    let maximum_encoded_bytes = bytes
+        .len()
+        .checked_mul(3)
+        .ok_or_else(|| S3StorageError::new(S3StorageErrorReason::InvalidRequest))?;
+    let mut value = Zeroizing::new(String::with_capacity(maximum_encoded_bytes));
     for byte in bytes {
         if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'.' | b'_' | b'~') {
             value.push(char::from(*byte));
@@ -162,7 +199,7 @@ fn percent_encode(bytes: &[u8]) -> Zeroizing<String> {
             value.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
     }
-    value
+    Ok(value)
 }
 
 #[cfg(test)]

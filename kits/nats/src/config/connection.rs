@@ -28,16 +28,10 @@ pub async fn connect_with_credentials(
     credentials: &JetStreamCredentials,
 ) -> Result<async_nats::Client, JetStreamError> {
     let trimmed = validate_nats_url(nats_url, true, tls_policy)?;
-
-    match credentials {
-        JetStreamCredentials::None => async_nats::connect(trimmed.as_str())
-            .await
-            .map_err(|_| JetStreamError::ConnectFailed),
+    let options = match credentials {
+        JetStreamCredentials::None => ConnectOptions::new(),
         JetStreamCredentials::Token(token) => {
-            { ConnectOptions::with_token(token.expose_secret().to_owned()) }
-                .connect(trimmed.as_str())
-                .await
-                .map_err(|_| JetStreamError::ConnectFailed)
+            ConnectOptions::with_token(token.expose_secret().to_owned())
         }
         JetStreamCredentials::Jwt { jwt, nkey_seed } => {
             let key_pair = Arc::new(
@@ -48,23 +42,45 @@ pub async fn connect_with_credentials(
                 let key_pair = Arc::clone(&key_pair);
                 async move { key_pair.sign(&nonce).map_err(async_nats::AuthError::new) }
             })
-            .connect(trimmed.as_str())
-            .await
-            .map_err(|_| JetStreamError::ConnectFailed)
         }
         JetStreamCredentials::NKey(seed) => {
-            { ConnectOptions::with_nkey(seed.expose_secret().to_owned()) }
-                .connect(trimmed.as_str())
-                .await
-                .map_err(|_| JetStreamError::ConnectFailed)
+            ConnectOptions::with_nkey(seed.expose_secret().to_owned())
         }
         JetStreamCredentials::CredentialsFile(path) => ConnectOptions::with_credentials_file(path)
             .await
-            .map_err(|_| JetStreamError::ConnectFailed)?
-            .connect(trimmed.as_str())
-            .await
-            .map_err(|_| JetStreamError::ConnectFailed),
-    }
+            .map_err(|_| JetStreamError::ConnectFailed)?,
+    };
+
+    // async-nats otherwise calls rustls' process-default builder, which can
+    // panic when a binary links more than one crypto provider.
+    let tls = nats_tls_config()?;
+    options
+        .tls_client_config(tls)
+        .require_tls(matches!(
+            tls_policy,
+            JetStreamTlsPolicy::Required | JetStreamTlsPolicy::Optional
+        ))
+        .connect(trimmed.as_str())
+        .await
+        .map_err(|_| JetStreamError::ConnectFailed)
+}
+
+fn nats_tls_config() -> Result<rustls::ClientConfig, JetStreamError> {
+    let native = rustls_native_certs::load_native_certs();
+    let mut roots = rustls::RootCertStore::empty();
+    // A loopback plaintext connection needs no trust anchors. For TLS,
+    // rustls fails closed at handshake if no usable roots were installed.
+    let _ = roots.add_parsable_certificates(native.certs);
+    build_nats_tls_config(roots)
+}
+
+fn build_nats_tls_config(
+    roots: rustls::RootCertStore,
+) -> Result<rustls::ClientConfig, JetStreamError> {
+    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
+        .map_err(|_| JetStreamError::ConnectFailed)
 }
 
 /// Connects a core NATS client for JetStream use with explicit credentials.
@@ -88,4 +104,14 @@ pub fn create_context(
         .timeout(operation_timeout)
         .ack_timeout(ack_timeout)
         .build(client)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn explicit_ring_provider_builds_with_reqwest_kit_in_graph() {
+        let _ = std::any::type_name::<reallyme_typesense_kit::TypesenseConnector>();
+        let result = super::build_nats_tls_config(rustls::RootCertStore::empty());
+        assert!(result.is_ok());
+    }
 }

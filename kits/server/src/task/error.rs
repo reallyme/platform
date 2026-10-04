@@ -16,6 +16,8 @@ pub enum TaskExecutionErrorKind {
     InvalidConfiguration,
     /// The task failed for an internal reason that should be investigated.
     Internal,
+    /// A bounded operation did not complete before its deadline.
+    TimedOut,
 }
 
 impl TaskExecutionErrorKind {
@@ -25,6 +27,7 @@ impl TaskExecutionErrorKind {
             Self::DependencyUnavailable => "dependency_unavailable",
             Self::InvalidConfiguration => "invalid_configuration",
             Self::Internal => "internal",
+            Self::TimedOut => "timed_out",
         }
     }
 }

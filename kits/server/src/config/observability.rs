@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -291,7 +292,7 @@ impl FromStr for LogFormat {
 /// tracing filter remains available to tracing initialization, but summary
 /// types expose only whether it was configured so arbitrary deployment-provided
 /// directives are not echoed into logs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ObservabilityConfig {
     service_environment: ServiceEnvironment,
     log_format: LogFormat,
@@ -299,6 +300,23 @@ pub struct ObservabilityConfig {
     tracing_filter_directives: String,
     metrics_idle_timeout: MetricsIdleTimeout,
     request_logging: HttpRequestLoggingConfig,
+}
+
+impl fmt::Debug for ObservabilityConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ObservabilityConfig")
+            .field("service_environment", &self.service_environment)
+            .field("log_format", &self.log_format)
+            .field("emit_span_events", &self.emit_span_events)
+            .field(
+                "tracing_filter_configured",
+                &!self.tracing_filter_directives.is_empty(),
+            )
+            .field("metrics_idle_timeout", &self.metrics_idle_timeout)
+            .field("request_logging", &self.request_logging)
+            .finish()
+    }
 }
 
 impl ObservabilityConfig {

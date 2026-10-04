@@ -10,8 +10,10 @@
 //! handlers, startup dependencies, and app-specific background tasks.
 
 mod app;
+mod app_health;
 mod background;
 mod cleanup;
+pub(crate) mod connection_guard;
 mod critical;
 mod error;
 #[cfg(feature = "tonic-grpc")]
@@ -19,6 +21,7 @@ mod grpc;
 mod http;
 mod phase;
 pub(crate) mod rate_limit;
+mod readiness_drain;
 mod server;
 mod startup_check;
 mod termination;
@@ -39,7 +42,9 @@ pub use error::{
     ServerRuntimeRequiredField, ServerRuntimeTransport,
 };
 #[cfg(feature = "tonic-grpc")]
-pub use grpc::{GrpcMethodPolicy, GrpcServerSpec};
+pub use grpc::{
+    GrpcAppRoutes, GrpcAppRoutesError, GrpcAppRoutesErrorReason, GrpcMethodPolicy, GrpcServerSpec,
+};
 pub use http::{
     HttpRateLimitScope, HttpRateLimitTierPolicy, HttpRateLimitTierPolicyError,
     HttpRateLimitTierPolicyErrorReason, HttpServerSpec,
@@ -49,5 +54,11 @@ pub use phase::{
     ServerRuntimePhaseWatcher,
 };
 pub(crate) use rate_limit::{RateLimitDecision, RateLimitRegistry, RateLimitSourceIdentity};
+pub use readiness_drain::{
+    ReadinessDrainDelay, ReadinessDrainDelayError, ReadinessDrainDelayErrorReason,
+};
 pub use server::{ServerRuntime, ServerRuntimeBuilder};
-pub use startup_check::RuntimeStartupCheck;
+pub use startup_check::{
+    RuntimeStartupCheck, StartupCheckTimeout, StartupCheckTimeoutError,
+    StartupCheckTimeoutErrorReason,
+};

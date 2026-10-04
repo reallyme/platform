@@ -13,7 +13,7 @@
 //!
 //! This crate owns validated subject handling, JetStream connection,
 //! configuration, publishing, consumption, acknowledgment,
-//! deterministic dedupe/message-id helpers, and test-fake mechanics.
+//! deterministic dedupe/message-id helpers, and optional test fakes.
 //! Apps remain responsible for their payload definitions and business logic.
 
 /// Configuration and typed connection helpers.
@@ -27,4 +27,5 @@ pub mod message_id;
 /// Publisher backends and ack helpers.
 pub mod publisher;
 /// Test fakes and in-memory fixtures for local verification.
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;

@@ -1,11 +1,21 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{MAX_RESPONSE_BYTES, decode_json, read_body};
+use super::{MAX_RESPONSE_BYTES, append_sensitive_chunk, decode_json, read_body};
 use bytes::Bytes;
 use futures_util::stream;
 use reqwest::{Body, Response};
 use serde_json::Value;
+use zeroize::Zeroizing;
+
+#[test]
+fn bounded_body_growth_keeps_small_responses_small() {
+    let mut body = Zeroizing::new(Vec::new());
+    append_sensitive_chunk(&mut body, b"ab").expect("first chunk");
+    append_sensitive_chunk(&mut body, b"cdef").expect("second chunk");
+    assert_eq!(body.as_slice(), b"abcdef");
+    assert!(body.capacity() < MAX_RESPONSE_BYTES);
+}
 
 fn response(chunks: Vec<Vec<u8>>) -> Response {
     let body = Body::wrap_stream(stream::iter(

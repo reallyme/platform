@@ -87,6 +87,13 @@ pub(crate) fn listener_name_for_request(request: &Request<Body>) -> &HttpListene
     }
 }
 
+pub(crate) fn inbound_correlation_ids_trusted(request: &Request<Body>) -> bool {
+    request
+        .extensions()
+        .get::<HttpListenerIdentity>()
+        .is_some_and(|identity| matches!(identity.visibility(), HttpListenerVisibility::Internal))
+}
+
 #[cfg(test)]
 #[path = "listener_tests.rs"]
 mod tests;

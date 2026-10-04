@@ -11,6 +11,7 @@ use crate::config::{ConfigError, ConfigValidationErrorReason};
 /// Trusted external-origin normalization posture for proxy-fronted deployments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExternalOriginPolicyConfig {
+    header_family: TrustedProxyHeaderFamily,
     trusted_forwarded_host: bool,
     trusted_forwarded_proto: bool,
     require_https_external_scheme: bool,
@@ -23,6 +24,7 @@ impl ExternalOriginPolicyConfig {
     pub const fn secure_defaults() -> Self {
         Self {
             trusted_forwarded_host: false,
+            header_family: TrustedProxyHeaderFamily::XForwarded,
             trusted_forwarded_proto: false,
             require_https_external_scheme: false,
             strict_forwarded_header_consistency: false,
@@ -40,11 +42,23 @@ impl ExternalOriginPolicyConfig {
     ) -> Self {
         Self {
             trusted_forwarded_host,
+            header_family: TrustedProxyHeaderFamily::XForwarded,
             trusted_forwarded_proto,
             require_https_external_scheme,
             strict_forwarded_header_consistency,
             strip_raw_proxy_headers,
         }
+    }
+
+    /// Selects the only header family accepted from configured proxy peers.
+    pub const fn with_header_family(mut self, header_family: TrustedProxyHeaderFamily) -> Self {
+        self.header_family = header_family;
+        self
+    }
+
+    /// Returns the trusted header family for this listener.
+    pub const fn header_family(self) -> TrustedProxyHeaderFamily {
+        self.header_family
     }
 
     /// Returns whether trusted peers may override the external host authority.
@@ -71,6 +85,15 @@ impl ExternalOriginPolicyConfig {
     pub const fn strip_raw_proxy_headers(self) -> bool {
         self.strip_raw_proxy_headers
     }
+}
+
+/// Header family that an ingress must overwrite before forwarding requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedProxyHeaderFamily {
+    /// Standardized `Forwarded` header.
+    Forwarded,
+    /// `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and port.
+    XForwarded,
 }
 
 /// Backward-compatible alias for trusted proxy metadata normalization posture.
@@ -166,7 +189,24 @@ impl TrustedProxyRange {
             IpAddr::V6(_) => 128,
         };
 
-        if prefix_len > max_prefix_len {
+        if prefix_len == 0 || prefix_len > max_prefix_len {
+            return Err(invalid_host_authority(
+                ConfigValidationErrorReason::InvalidNetworkRange,
+            ));
+        }
+
+        // A catch-all range would let any direct peer assert proxy metadata.
+        // Requiring a canonical network address also catches accidental host
+        // entries that otherwise broaden trust silently.
+        let is_canonical = match network {
+            IpAddr::V4(address) => {
+                u32::from(address) & prefix_mask_u32(prefix_len) == u32::from(address)
+            }
+            IpAddr::V6(address) => {
+                u128::from(address) & prefix_mask_u128(prefix_len) == u128::from(address)
+            }
+        };
+        if !is_canonical {
             return Err(invalid_host_authority(
                 ConfigValidationErrorReason::InvalidNetworkRange,
             ));
@@ -180,6 +220,10 @@ impl TrustedProxyRange {
 
     /// Returns whether the supplied peer IP is within this trusted range.
     pub fn contains(self, peer_ip: IpAddr) -> bool {
+        let peer_ip = match peer_ip {
+            IpAddr::V6(address) => address.to_ipv4_mapped().map_or(peer_ip, IpAddr::V4),
+            _ => peer_ip,
+        };
         match (self.network, peer_ip) {
             (IpAddr::V4(network), IpAddr::V4(peer)) => {
                 ip_v4_prefix_matches(network, peer, self.prefix_len)

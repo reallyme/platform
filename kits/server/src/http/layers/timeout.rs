@@ -120,7 +120,9 @@ where
         };
 
         if sleep_poll.is_ready() {
-            return Poll::Ready(Ok(JsonErrorResponse::request_timeout()
+            // This is a server-side execution deadline, not a client request
+            // timeout. A 408 would tell clients the request was incomplete.
+            return Poll::Ready(Ok(JsonErrorResponse::service_unavailable()
                 .with_optional_request_id(*this.request_id)
                 .into_response()));
         }

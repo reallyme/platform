@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use axum::http::HeaderValue;
 use std::fmt;
-use std::str::FromStr;
-
-use axum::http::{HeaderValue, Uri};
+use url::{Host, Url};
 
 use super::environment::ServiceEnvironment;
 use super::error::{ConfigError, ConfigValidationErrorReason, CorsConfigField};
@@ -14,28 +13,27 @@ use super::error::{ConfigError, ConfigValidationErrorReason, CorsConfigField};
 /// This type only models generic transport policy. Service-specific route or
 /// product authorization policy must not be encoded here.
 #[derive(Clone, PartialEq, Eq)]
-pub enum CorsConfig {
-    /// Disables cross-origin access by default.
+pub struct CorsConfig(CorsPolicy);
+
+#[derive(Clone, PartialEq, Eq)]
+enum CorsPolicy {
     NoCors,
-    /// Allows requests from one or more exact origins.
     ExactOrigins(ExactCorsOrigins),
-    /// Allows any origin, but should only be used intentionally in local or
-    /// shared development environments.
     AnyForDevelopmentOnly,
 }
 
 impl CorsConfig {
     /// Disables CORS response headers.
     pub fn no_cors() -> Self {
-        Self::NoCors
+        Self(CorsPolicy::NoCors)
     }
 
     /// Allows exactly one origin after validating origin syntax and header
     /// compatibility.
     pub fn allow_exact_origin(origin: &str) -> Result<Self, ConfigError> {
-        Ok(Self::ExactOrigins(ExactCorsOrigins::new(vec![
-            ExactCorsOrigin::new(origin)?,
-        ])?))
+        Ok(Self(CorsPolicy::ExactOrigins(ExactCorsOrigins::new(
+            vec![ExactCorsOrigin::new(origin)?],
+        )?)))
     }
 
     /// Allows one or more exact origins after validating syntax and header
@@ -46,7 +44,9 @@ impl CorsConfig {
             .map(|origin| ExactCorsOrigin::new(origin.as_str()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Self::ExactOrigins(ExactCorsOrigins::new(validated)?))
+        Ok(Self(CorsPolicy::ExactOrigins(ExactCorsOrigins::new(
+            validated,
+        )?)))
     }
 
     /// Allows any origin for explicitly non-production environments.
@@ -59,19 +59,39 @@ impl CorsConfig {
             });
         }
 
-        Ok(Self::AnyForDevelopmentOnly)
+        Ok(Self(CorsPolicy::AnyForDevelopmentOnly))
+    }
+
+    /// Returns whether CORS is disabled.
+    pub const fn is_disabled(&self) -> bool {
+        matches!(self.0, CorsPolicy::NoCors)
+    }
+
+    /// Returns validated exact origins when this policy uses an allowlist.
+    pub const fn exact_origins(&self) -> Option<&ExactCorsOrigins> {
+        match &self.0 {
+            CorsPolicy::ExactOrigins(origins) => Some(origins),
+            CorsPolicy::NoCors | CorsPolicy::AnyForDevelopmentOnly => None,
+        }
+    }
+
+    /// Returns whether the validated development policy permits every origin.
+    pub const fn allows_any_origin(&self) -> bool {
+        matches!(self.0, CorsPolicy::AnyForDevelopmentOnly)
     }
 }
 
 impl fmt::Debug for CorsConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoCors => formatter.write_str("CorsConfig::NoCors"),
-            Self::ExactOrigins(origins) => formatter
+        match &self.0 {
+            CorsPolicy::NoCors => formatter.write_str("CorsConfig::NoCors"),
+            CorsPolicy::ExactOrigins(origins) => formatter
                 .debug_tuple("CorsConfig::ExactOrigins")
                 .field(origins)
                 .finish(),
-            Self::AnyForDevelopmentOnly => formatter.write_str("CorsConfig::AnyForDevelopmentOnly"),
+            CorsPolicy::AnyForDevelopmentOnly => {
+                formatter.write_str("CorsConfig::AnyForDevelopmentOnly")
+            }
         }
     }
 }
@@ -132,9 +152,8 @@ impl ExactCorsOrigin {
     /// whitespace, arbitrary header-safe strings, and paths other than empty or
     /// `/` are rejected.
     ///
-    /// Localhost and `127.0.0.1` origins are valid syntax for local/dev
-    /// services, but CORS remains explicit: the default policy is still
-    /// `NoCors`, and each service must intentionally opt into any origin.
+    /// Remote origins require HTTPS. Loopback HTTP is accepted for local
+    /// services, but CORS remains explicit and disabled by default.
     pub fn new(origin: &str) -> Result<Self, ConfigError> {
         if origin.is_empty() {
             return Err(ConfigError::InvalidCorsConfig {
@@ -179,34 +198,35 @@ impl fmt::Debug for ExactCorsOrigin {
 }
 
 fn validate_origin_syntax(origin: &str) -> Result<(), ConfigError> {
-    if origin.chars().any(char::is_whitespace) || origin.contains('?') || origin.contains('#') {
+    if origin.chars().any(char::is_whitespace) || origin.contains('\\') {
         return Err(invalid_origin_error());
     }
-
-    let uri = Uri::from_str(origin).map_err(|_| invalid_origin_error())?;
-    let Some(scheme) = uri.scheme_str() else {
-        return Err(invalid_origin_error());
-    };
-    let Some(authority) = uri.authority() else {
-        return Err(invalid_origin_error());
-    };
-
-    if scheme != "https" && scheme != "http" {
-        return Err(invalid_origin_error());
-    }
-
-    if authority.as_str().contains('@') {
+    let parsed = Url::parse(origin).map_err(|_| invalid_origin_error())?;
+    if !matches!(parsed.scheme(), "https" | "http")
+        || parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+        || parsed.origin().ascii_serialization() != origin
+    {
         return Err(invalid_origin_error());
     }
-
-    if let Some(path_and_query) = uri.path_and_query() {
-        let path = path_and_query.path();
-
-        if !path.is_empty() && path != "/" {
-            return Err(invalid_origin_error());
+    let loopback = match parsed.host() {
+        Some(Host::Domain(name)) => name == "localhost",
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback())
         }
+        None => false,
+    };
+    if parsed.scheme() == "http" && !loopback {
+        return Err(invalid_origin_error());
     }
-
     Ok(())
 }
 

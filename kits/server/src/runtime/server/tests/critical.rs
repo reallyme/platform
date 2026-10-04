@@ -116,7 +116,7 @@ fn runtime_builder(
     ServerRuntime::builder()
         .server_name(server_name.clone())
         .observability_config(observability_config())
-        .build_info(BuildInfo::new(server_name))
+        .build_info(BuildInfo::new(server_name, env!("CARGO_PKG_VERSION")))
         .readiness(readiness)
         .shutdown_timeout(
             ShutdownTimeout::new(Duration::from_secs(1)).expect("valid fixture shutdown timeout"),

@@ -149,6 +149,8 @@ pub enum HttpRejectionReason {
     MalformedRequestId,
     /// The trace ID header was malformed and replaced.
     MalformedTraceId,
+    /// Content-Length was malformed or ambiguous for a bounded route.
+    MalformedContentLength,
     /// Forwarded/proxy headers were stripped because the peer is not trusted.
     UntrustedProxyHeaders,
     /// Forwarded host metadata from a trusted peer was malformed.
@@ -185,6 +187,7 @@ impl HttpRejectionReason {
             Self::HeaderBytesLimit => "header_bytes_limit",
             Self::MalformedRequestId => "malformed_request_id",
             Self::MalformedTraceId => "malformed_trace_id",
+            Self::MalformedContentLength => "malformed_content_length",
             Self::UntrustedProxyHeaders => "untrusted_proxy_headers",
             Self::MalformedForwardedHost => "malformed_forwarded_host",
             Self::MalformedForwardedProto => "malformed_forwarded_proto",

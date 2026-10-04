@@ -27,7 +27,7 @@ fn resolver_builds_magic_dns_service_url() {
     let resolver =
         TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
             dns_suffix: Some("example.ts.net".to_owned()),
-            default_scheme: Some("http".to_owned()),
+            default_scheme: Some("https".to_owned()),
             default_port: Some(8108),
         })
         .expect("resolver config should validate");
@@ -38,7 +38,7 @@ fn resolver_builds_magic_dns_service_url() {
 
     assert_eq!(
         endpoints.endpoints()[0].as_str(),
-        "http://search.example.ts.net:8108"
+        "https://search.example.ts.net:8108"
     );
 }
 
@@ -47,7 +47,7 @@ fn locator_overrides_default_scheme_and_port() {
     let resolver =
         TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
             dns_suffix: Some("example.ts.net".to_owned()),
-            default_scheme: Some("http".to_owned()),
+            default_scheme: Some("https".to_owned()),
             default_port: Some(8108),
         })
         .expect("resolver config should validate");
@@ -58,30 +58,42 @@ fn locator_overrides_default_scheme_and_port() {
 
     assert_eq!(
         endpoints.endpoints()[0].as_str(),
-        "https://search.example.ts.net:443"
+        "https://search.example.ts.net"
     );
 }
 
 #[test]
-fn resolver_can_delegate_short_name_to_local_tailscale_dns_search() {
-    let resolver = TailscaleServiceResolver::local();
-
-    let endpoints = resolver
-        .resolve(&locator("search", Some(8108), Some("http")))
-        .expect("short service name should remain resolvable by local DNS");
-
-    assert_eq!(endpoints.endpoints()[0].as_str(), "http://search:8108");
+fn resolver_requires_magic_dns_suffix() {
+    let error = TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+        dns_suffix: None,
+        default_scheme: None,
+        default_port: None,
+    })
+    .expect_err("a bare service name must not use ambient DNS search paths");
+    assert_eq!(
+        error.reason(),
+        TailscaleResolverConfigErrorReason::MissingDnsSuffix
+    );
 }
 
 #[test]
-fn local_resolver_defaults_to_plain_http_port() {
-    let resolver = TailscaleServiceResolver::local();
+fn resolver_defaults_to_https_port() {
+    let resolver =
+        TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+            dns_suffix: Some("example.ts.net".to_owned()),
+            default_scheme: None,
+            default_port: None,
+        })
+        .expect("suffix should validate");
 
     let endpoints = resolver
         .resolve(&locator("search", None, None))
-        .expect("short service name should resolve with safe URL defaults");
+        .expect("service name should resolve with safe URL defaults");
 
-    assert_eq!(endpoints.endpoints()[0].as_str(), "http://search:80");
+    assert_eq!(
+        endpoints.endpoints()[0].as_str(),
+        "https://search.example.ts.net"
+    );
 }
 
 #[test]
@@ -101,9 +113,15 @@ fn rejects_invalid_dns_suffix() {
 
 #[test]
 fn invalid_locator_service_name_does_not_resolve() {
-    let resolver = TailscaleServiceResolver::local();
+    let resolver =
+        TailscaleServiceResolver::from_document(TailscaleServiceResolverConfigDocument {
+            dns_suffix: Some("example.ts.net".to_owned()),
+            default_scheme: None,
+            default_port: None,
+        })
+        .expect("suffix should validate");
     let error = resolver
-        .resolve(&locator("bad_service", Some(8108), Some("http")))
+        .resolve(&locator("bad_service", Some(8108), Some("https")))
         .expect_err("invalid DNS label should fail closed");
 
     assert_eq!(

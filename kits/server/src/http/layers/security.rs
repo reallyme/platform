@@ -4,37 +4,45 @@
 mod header_limits;
 use header_limits::header_limits_rejection_reason;
 
+mod origin;
+pub use origin::{ExternalRequestOrigin, ForwardedClientIp, ForwardedHost, ForwardedProto};
+
 mod proxy_metadata;
+#[cfg(feature = "tonic-grpc")]
+pub(crate) use proxy_metadata::client_ip_from_x_forwarded_for;
 use proxy_metadata::{
     direct_request_without_https_proof_allowed, forwarded_client_ip_from_headers,
-    normalized_external_host, normalized_external_proto, request_contains_proxy_headers,
-    strip_untrusted_proxy_headers,
+    has_mixed_proxy_header_families, normalized_external_host, normalized_external_proto,
+    request_contains_proxy_headers, strip_unselected_proxy_headers, strip_untrusted_proxy_headers,
 };
 
 #[path = "security/request_policy.rs"]
 mod request_policy;
 use request_policy::{
     host_authority_is_allowed, is_operational_route, operational_route_is_blocked,
-    peer_ip_from_request, record_security_rejection, route_template_for_request,
+    peer_ip_from_request, record_security_rejection, request_host_header_is_valid,
+    route_template_for_request,
 };
 
 use std::convert::Infallible;
 use std::future::Future;
-use std::net::IpAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
 use axum::body::Body;
-use axum::http::{HeaderName, HeaderValue, Request};
+use axum::http::{HeaderName, HeaderValue, Request, header};
 use axum::response::{IntoResponse, Response};
 use pin_project_lite::pin_project;
 use tower::{Layer, Service};
 
-use crate::config::{HostAuthority, HttpSecurityConfig, NetworkPort, SecurityHeadersConfig};
+use crate::config::{HttpSecurityConfig, SecurityHeadersConfig};
 use crate::observability::{HttpMethodLabel, HttpRejectionReason};
 
 use super::super::response::JsonErrorResponse;
-use super::super::{ErrorCode, PublicHttpError, request_id_from_headers};
+use super::super::{
+    ErrorCode, HttpListenerIdentity, HttpListenerVisibility, PublicHttpError, X_INTERNAL_CALLER,
+    X_SERVICE_TOKEN, request_id_from_headers,
+};
 use super::listener::listener_name_for_request;
 
 const FORWARDED_HEADER: HeaderName = HeaderName::from_static("forwarded");
@@ -59,105 +67,6 @@ const DENY_VALUE: HeaderValue = HeaderValue::from_static("DENY");
 const FRAME_ANCESTORS_NONE_VALUE: HeaderValue = HeaderValue::from_static("frame-ancestors 'none'");
 const SAME_SITE_VALUE: HeaderValue = HeaderValue::from_static("same-site");
 const NO_STORE_VALUE: HeaderValue = HeaderValue::from_static("no-store");
-
-/// Normalized client IP extracted from trusted proxy metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ForwardedClientIp(IpAddr);
-
-impl ForwardedClientIp {
-    /// Returns the normalized client IP.
-    pub const fn into_ip_addr(self) -> IpAddr {
-        self.0
-    }
-}
-
-/// Normalized external host authority selected from trusted proxy metadata or the direct request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForwardedHost(HostAuthority);
-
-impl ForwardedHost {
-    /// Constructs normalized host metadata from a validated authority.
-    pub const fn new(authority: HostAuthority) -> Self {
-        Self(authority)
-    }
-
-    /// Returns the validated external authority.
-    pub const fn authority(&self) -> &HostAuthority {
-        &self.0
-    }
-
-    /// Returns the normalized external host name or IP literal.
-    pub fn host(&self) -> &str {
-        self.0.host()
-    }
-
-    /// Returns the explicit external port, if one was present.
-    pub const fn port(&self) -> Option<NetworkPort> {
-        self.0.port()
-    }
-}
-
-/// Normalized external scheme selected from trusted proxy metadata or the direct request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ForwardedProto {
-    /// HTTP.
-    Http,
-    /// HTTPS.
-    Https,
-}
-
-impl ForwardedProto {
-    /// Returns the stable lowercase scheme string.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Https => "https",
-        }
-    }
-
-    /// Returns whether the normalized external scheme is HTTPS.
-    pub const fn is_https(self) -> bool {
-        matches!(self, Self::Https)
-    }
-}
-
-/// Safely-derived external request origin assembled from normalized scheme and authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExternalRequestOrigin {
-    host: ForwardedHost,
-    proto: ForwardedProto,
-}
-
-impl ExternalRequestOrigin {
-    /// Constructs a normalized external origin.
-    pub const fn new(host: ForwardedHost, proto: ForwardedProto) -> Self {
-        Self { host, proto }
-    }
-
-    /// Returns the normalized external authority.
-    pub const fn host(&self) -> &ForwardedHost {
-        &self.host
-    }
-
-    /// Returns the normalized external scheme.
-    pub const fn proto(&self) -> ForwardedProto {
-        self.proto
-    }
-
-    /// Returns the explicit external port, if one was present.
-    pub const fn port(&self) -> Option<NetworkPort> {
-        self.host.port()
-    }
-
-    /// Returns the safely-derived base URL for the external request origin.
-    pub fn base_url(&self) -> String {
-        format!(
-            "{}://{}",
-            self.proto.as_str(),
-            self.host.authority().as_str()
-        )
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProxyMetadataError {
@@ -261,12 +170,76 @@ where
             );
         }
 
+        if !request_host_header_is_valid(&request) {
+            record_security_rejection(&request, method, HttpRejectionReason::BlockedHostAuthority);
+            return HttpSecurityResponseFuture::ready(
+                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                    ErrorCode::BadRequest,
+                ))
+                .with_optional_request_id(request_id)
+                .into_response(),
+                self.config.security_headers(),
+            );
+        }
+
+        // Connect routes on this HTTP listener can also decode native gRPC
+        // over h2c. Only the tonic listener has the gRPC deadline, message,
+        // and per-method policy layer, so reject that protocol here.
+        if request
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .trim_ascii_start()
+                    .get(.."application/grpc".len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("application/grpc"))
+            })
+        {
+            record_security_rejection(&request, method, HttpRejectionReason::InvalidContentType);
+            return HttpSecurityResponseFuture::ready(
+                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                    ErrorCode::UnsupportedMediaType,
+                ))
+                .with_optional_request_id(request_id)
+                .into_response(),
+                self.config.security_headers(),
+            );
+        }
+
+        // Public transport cannot assert an internal caller or bearer token.
+        if request
+            .extensions()
+            .get::<HttpListenerIdentity>()
+            .is_some_and(|identity| matches!(identity.visibility(), HttpListenerVisibility::Public))
+        {
+            request.headers_mut().remove(X_INTERNAL_CALLER);
+            request.headers_mut().remove(X_SERVICE_TOKEN);
+        }
+
         let peer_ip = peer_ip_from_request(&request);
         let contains_proxy_headers = request_contains_proxy_headers(&request);
         let trusted_peer = self.config.trusted_proxy_headers().trusts_peer(peer_ip);
         let proxy_request_metadata = self.config.trusted_proxy_request_metadata();
         let strict_forwarded_header_consistency =
             proxy_request_metadata.strict_forwarded_header_consistency();
+        if trusted_peer
+            && strict_forwarded_header_consistency
+            && has_mixed_proxy_header_families(request.headers())
+        {
+            record_security_rejection(&request, method, HttpRejectionReason::UntrustedProxyHeaders);
+            return HttpSecurityResponseFuture::ready(
+                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                    ErrorCode::BadRequest,
+                ))
+                .with_optional_request_id(request_id)
+                .into_response(),
+                self.config.security_headers(),
+            );
+        }
+        if trusted_peer {
+            strip_unselected_proxy_headers(&mut request, proxy_request_metadata.header_family());
+        }
         let normalized_host = match normalized_external_host(
             &request,
             trusted_peer,
@@ -350,7 +323,10 @@ where
         }
 
         if trusted_peer {
-            if let Some(client_ip) = forwarded_client_ip_from_headers(request.headers()) {
+            if let Some(client_ip) = forwarded_client_ip_from_headers(
+                request.headers(),
+                self.config.trusted_proxy_headers(),
+            ) {
                 request.extensions_mut().insert(client_ip);
             }
         } else if contains_proxy_headers {
@@ -374,7 +350,11 @@ where
             strip_untrusted_proxy_headers(&mut request);
         }
 
-        if operational_route_is_blocked(&request, self.config.operational_route_access()) {
+        if operational_route_is_blocked(
+            &request,
+            self.config.operational_route_access(),
+            contains_proxy_headers,
+        ) {
             let request_id = request_id_from_headers(request.headers());
             record_security_rejection(
                 &request,

@@ -71,6 +71,12 @@ fn host_authority_validation_rejects_non_authority_shapes() {
         "api.reallyme.net#fragment",
         "user@api.reallyme.net",
         "api reallyme net",
+        ":443",
+        "[garbage]",
+        "a<b>\"c",
+        "evil.com,good.com",
+        "host:080",
+        "999.999.999.999",
     ] {
         assert!(
             HostAuthority::new(value).is_err(),
@@ -201,4 +207,22 @@ fn invalid_trusted_proxy_ranges_are_typed_config_errors() {
             reason: ConfigValidationErrorReason::InvalidNetworkRange,
         })
     );
+    for range in ["0.0.0.0/0", "::/0", "10.1.2.3/8", "2001:db8::1/32"] {
+        assert_eq!(
+            TrustedProxyRange::parse(range),
+            Err(ConfigError::InvalidHttpServerConfig {
+                field: HttpServerConfigField::Security,
+                reason: ConfigValidationErrorReason::InvalidNetworkRange,
+            })
+        );
+    }
+}
+
+#[test]
+fn trusted_ipv4_range_matches_ipv4_mapped_peer() {
+    let range = TrustedProxyRange::parse("127.0.0.0/8").expect("valid loopback network");
+    let peer = "::ffff:127.0.0.1"
+        .parse::<IpAddr>()
+        .expect("valid mapped peer");
+    assert!(range.contains(peer));
 }

@@ -20,6 +20,20 @@ fn rejects_endpoint_without_http_scheme() {
 }
 
 #[test]
+fn plaintext_endpoints_are_only_valid_on_loopback() {
+    for endpoint in ["http://typesense.internal:8108", "http://192.0.2.8:8108"] {
+        assert!(matches!(
+            TypesenseEndpoint::parse(endpoint),
+            Err(TypesenseConfigError::Invalid {
+                reason: TypesenseConfigErrorReason::PlaintextEndpointNotLoopback,
+            })
+        ));
+    }
+    assert!(TypesenseEndpoint::parse("http://127.0.0.1:8108").is_ok());
+    assert!(TypesenseEndpoint::parse("http://[::1]:8108").is_ok());
+}
+
+#[test]
 fn rejects_invalid_endpoint_url() {
     let endpoint = TypesenseEndpoint::parse("https://example.com::8108");
 
@@ -84,6 +98,48 @@ fn rejects_zero_request_timeout() -> Result<(), TypesenseConfigError> {
         config,
         Err(TypesenseConfigError::Invalid {
             reason: TypesenseConfigErrorReason::ZeroRequestTimeout
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn rejects_unbounded_deadlines_retries_and_connection_timing() -> Result<(), TypesenseConfigError> {
+    let endpoint = TypesenseEndpoint::parse("https://typesense.internal")?;
+    let excessive_timeout = TypesenseConfig::new(
+        endpoint.clone(),
+        SecretString::new(String::from("test-key").into()),
+        Duration::from_secs(61),
+    );
+    assert!(matches!(
+        excessive_timeout,
+        Err(TypesenseConfigError::Invalid {
+            reason: TypesenseConfigErrorReason::InvalidRequestDeadline
+        })
+    ));
+
+    let config = TypesenseConfig::new(
+        endpoint,
+        SecretString::new(String::from("test-key").into()),
+        Duration::from_secs(1),
+    )?;
+    assert!(matches!(
+        config.with_max_retries(u8::MAX).validate(),
+        Err(TypesenseConfigError::Invalid {
+            reason: TypesenseConfigErrorReason::InvalidRetryPolicy
+        })
+    ));
+    let config = TypesenseConfig::new(
+        TypesenseEndpoint::parse("https://typesense.internal")?,
+        SecretString::new(String::from("test-key").into()),
+        Duration::from_secs(1),
+    )?;
+    assert!(matches!(
+        config
+            .with_tcp_keepalive(Some(Duration::from_secs(601)))
+            .validate(),
+        Err(TypesenseConfigError::Invalid {
+            reason: TypesenseConfigErrorReason::InvalidConnectionTiming
         })
     ));
     Ok(())

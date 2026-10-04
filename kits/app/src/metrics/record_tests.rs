@@ -46,6 +46,13 @@ impl RecordingRecorder {
             .find(|counter| counter.name == name && counter.labels == labels)
             .map(|counter| counter.value.load(Ordering::Relaxed))
     }
+
+    fn evict(&self, name: &str, labels: &[(String, String)]) {
+        self.counters
+            .lock()
+            .expect("test recorder lock")
+            .retain(|counter| counter.name != name || counter.labels != labels);
+    }
 }
 
 impl Recorder for RecordingRecorder {
@@ -56,19 +63,23 @@ impl Recorder for RecordingRecorder {
     fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
 
     fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
-        let value = Arc::new(AtomicU64::new(0));
         let labels = key
             .labels()
             .map(|label| (label.key().to_owned(), label.value().to_owned()))
             .collect();
-        self.counters
-            .lock()
-            .expect("test recorder lock")
-            .push(RegisteredCounter {
-                name: key.name().to_owned(),
-                labels,
-                value: value.clone(),
-            });
+        let mut counters = self.counters.lock().expect("test recorder lock");
+        if let Some(counter) = counters
+            .iter()
+            .find(|counter| counter.name == key.name() && counter.labels == labels)
+        {
+            return Counter::from_arc(counter.value.clone());
+        }
+        let value = Arc::new(AtomicU64::new(0));
+        counters.push(RegisteredCounter {
+            name: key.name().to_owned(),
+            labels,
+            value: value.clone(),
+        });
         Counter::from_arc(value)
     }
 
@@ -141,6 +152,25 @@ fn rejects_invalid_metric_names_before_registering_series() {
 }
 
 #[test]
+fn recreates_a_series_after_the_recorder_evicts_it() {
+    let recorder = RecordingRecorder::default();
+    let cache = Mutex::new(AppMetricCounterCache::default());
+    let namespace = AppMetricNamespace::new("example").expect("valid namespace fixture");
+    let name = AppMetricName::new("event").expect("valid name fixture");
+    let labels = app_labels("example", "event");
+
+    with_local_recorder(&recorder, || {
+        metric_counter(&cache, &namespace, &name).increment(1);
+        assert_eq!(recorder.value(APP_EVENT_COUNTER, &labels), Some(1));
+        recorder.evict(APP_EVENT_COUNTER, &labels);
+        metric_counter(&cache, &namespace, &name).increment(1);
+    });
+
+    assert_eq!(recorder.value(APP_EVENT_COUNTER, &labels), Some(1));
+    assert_eq!(cache.lock().expect("test cache lock").series_count, 1);
+}
+
+#[test]
 fn refuses_new_series_after_budget_without_disabling_existing_series() {
     let recorder = RecordingRecorder::default();
     let cache = Mutex::new(AppMetricCounterCache::default());
@@ -182,7 +212,7 @@ fn refuses_new_series_after_budget_without_disabling_existing_series() {
 
     let cache = cache.lock().expect("test cache lock");
     assert_eq!(cache.series_count, MAX_APP_METRIC_SERIES);
-    let names = cache.counters.get("example").expect("registered namespace");
+    let names = cache.series.get("example").expect("registered namespace");
     assert_eq!(names.len(), MAX_APP_METRIC_SERIES);
-    assert!(!names.contains_key("new_series"));
+    assert!(!names.contains("new_series"));
 }
