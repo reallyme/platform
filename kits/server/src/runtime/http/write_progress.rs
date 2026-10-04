@@ -81,16 +81,7 @@ impl<T: AsyncRead + Unpin> AsyncRead for WriteProgressIo<T> {
         cx: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let before = buffer.filled().len();
-        let result = Pin::new(&mut this.inner).poll_read(cx, buffer);
-        if let Poll::Ready(Ok(())) = &result
-            && let Some(activity) = &this.activity
-            && let Some(read) = buffer.filled().len().checked_sub(before)
-        {
-            activity.record_read_progress(read);
-        }
-        result
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buffer)
     }
 }
 

@@ -173,6 +173,14 @@ async fn http2_websocket_survives_http_idle_and_short_connection_age() {
             .expect("valid echo");
         assert_eq!(frame.into_text().expect("text frame"), "still-open");
     }
+    let next_request = Request::builder()
+        .uri("/after-idle")
+        .body(Body::empty())
+        .expect("valid follow-up request");
+    assert!(
+        sender.send_request(next_request).await.is_err(),
+        "GOAWAY must stop unrelated new streams while the upgrade drains"
+    );
     drop(socket);
     // A completed upgrade must not pin its shared HTTP/2 connection for the
     // one-hour WebSocket age allowance after all traffic has stopped.

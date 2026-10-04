@@ -16,6 +16,7 @@ use crate::task::ShutdownController;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::server::NamedService;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
@@ -155,6 +156,95 @@ async fn grpc_health_updates_with_readiness_and_shutdown() {
         health_status(&reporter, APP_SERVICE).await,
         tonic_health::pb::health_check_response::ServingStatus::NotServing as i32
     );
+}
+
+async fn assert_connection_retires_with_goaway(timeouts: GrpcTransportTimeouts) {
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind local gRPC fixture");
+    let address = listener.local_addr().expect("local gRPC fixture address");
+    let controller = ShutdownController::new();
+    let policy = GrpcServePolicy {
+        listener_name: Arc::<str>::from("test-grpc"),
+        max_concurrent_streams: None,
+        deadline_required: false,
+        max_timeout: None,
+        max_header_list_size_bytes: 64 * 1024,
+        method_policies: Vec::new(),
+        rate_limit_registry: Arc::new(RateLimitRegistry::new(Arc::new(Vec::new()))),
+        trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
+        connection_limits: ConnectionLimitConfig::secure_defaults(),
+        transport_timeouts: timeouts,
+    };
+    let serve = tokio::spawn(serve_health_grpc(
+        listener,
+        None,
+        Vec::new(),
+        Readiness::new(),
+        policy,
+        DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT,
+        controller.token(),
+    ));
+    let mut peer = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("connect local gRPC fixture");
+    peer.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
+        .await
+        .expect("write HTTP/2 preface and SETTINGS");
+    let frame_reader = async {
+        loop {
+            let mut header = [0_u8; 9];
+            peer.read_exact(&mut header)
+                .await
+                .expect("HTTP/2 frame header before retirement");
+            let frame_len = (usize::from(header[0]) << 16)
+                | (usize::from(header[1]) << 8)
+                | usize::from(header[2]);
+            assert!(frame_len <= 65_536, "bounded HTTP/2 fixture frame");
+            let mut payload = vec![0_u8; frame_len];
+            peer.read_exact(&mut payload)
+                .await
+                .expect("complete HTTP/2 frame before retirement");
+            if header[3] == 7 {
+                assert!(payload.len() >= 8, "GOAWAY has mandatory payload");
+                assert_eq!(&payload[4..8], &[0, 0, 0, 0], "graceful GOAWAY");
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3), frame_reader)
+        .await
+        .expect("gRPC retirement sends GOAWAY");
+    controller.begin_shutdown(ShutdownReason::Sigterm);
+    assert!(serve.await.expect("serve task joins").is_ok());
+}
+
+#[tokio::test]
+async fn grpc_idle_retirement_sends_goaway() {
+    let timeouts = GrpcTransportTimeouts::new(
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+    )
+    .expect("valid fixture timeouts");
+    assert_connection_retires_with_goaway(timeouts).await;
+}
+
+#[tokio::test]
+async fn grpc_age_retirement_sends_goaway() {
+    let timeouts = GrpcTransportTimeouts::new(
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+    )
+    .expect("valid fixture timeouts");
+    assert_connection_retires_with_goaway(timeouts).await;
 }
 
 #[tokio::test]

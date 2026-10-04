@@ -23,22 +23,6 @@ use crate::config::{TrustedProxyHeaders, TrustedProxyRange};
 
 const TEST_SOURCE_LIMIT: usize = 64;
 
-#[cfg(feature = "tonic-grpc")]
-impl BoundedTcpListener {
-    fn with_grpc_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.grpc_transport_timeouts = super::super::grpc::GrpcTransportTimeouts::new(
-            Duration::from_secs(30),
-            Duration::from_secs(10),
-            Duration::from_secs(60),
-            Duration::from_secs(600),
-            timeout,
-            Duration::from_secs(5),
-        )
-        .expect("valid fixture timeout");
-        self
-    }
-}
-
 #[test]
 fn configured_non_loopback_proxy_is_exempt_from_source_cap() {
     let trusted = TrustedProxyHeaders::trust_configured_proxies(vec![
@@ -131,7 +115,7 @@ async fn global_capacity_sheds_new_sockets_without_blocking_accept() {
 
 #[cfg(feature = "tonic-grpc")]
 #[tokio::test]
-async fn grpc_idle_timeout_waits_for_active_streams_then_retires_the_connection() {
+async fn grpc_idle_epoch_waits_for_active_streams() {
     let socket = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind local fixture");
@@ -140,12 +124,15 @@ async fn grpc_idle_timeout_waits_for_active_streams_then_retires_the_connection(
         socket,
         Arc::new(ForceCloseConnections::new()),
         ConnectionLimitConfig::new(1, 1).expect("valid limits"),
-    )
-    .with_grpc_idle_timeout(Duration::from_millis(50));
+    );
     let _client = tokio::net::TcpStream::connect(address)
         .await
         .expect("connect local fixture");
-    let (mut server, _) = listener.accept().await;
+    let (server, _) = listener.accept().await;
+    let mut idle = server
+        .grpc_activity()
+        .expect("gRPC activity")
+        .subscribe_idle();
     let connection = server.connect_info();
     connection.mark_first_request_seen();
     let mut request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
@@ -158,20 +145,11 @@ async fn grpc_idle_timeout_waits_for_active_streams_then_retires_the_connection(
         },
     ));
     let response = service.call(request).await.expect("infallible service");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let mut byte = [0_u8; 1];
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), server.read(&mut byte))
-            .await
-            .is_err(),
-        "an active stream must survive the idle interval"
-    );
+    idle.changed().await.expect("request activity change");
+    assert!(idle.borrow_and_update().is_none());
     drop(response);
-    let error = tokio::time::timeout(Duration::from_secs(1), server.read(&mut byte))
-        .await
-        .expect("idle socket should wake")
-        .expect_err("idle socket must close");
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    idle.changed().await.expect("response completion change");
+    assert!(idle.borrow_and_update().is_some());
 }
 
 #[cfg(feature = "tonic-grpc")]

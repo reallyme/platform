@@ -263,12 +263,6 @@ pub(super) struct BoundedTcpStream {
     #[cfg(feature = "tonic-grpc")]
     grpc_activity: Option<Arc<GrpcConnectionActivity>>,
     #[cfg(feature = "tonic-grpc")]
-    grpc_idle_deadline: Option<Pin<Box<Sleep>>>,
-    #[cfg(feature = "tonic-grpc")]
-    grpc_idle_since: Option<tokio::time::Instant>,
-    #[cfg(feature = "tonic-grpc")]
-    grpc_idle_timeout: Duration,
-    #[cfg(feature = "tonic-grpc")]
     grpc_hard_deadline: Option<Pin<Box<Sleep>>>,
 }
 
@@ -313,15 +307,7 @@ impl BoundedTcpStream {
             force_close,
             close_notified,
             #[cfg(feature = "tonic-grpc")]
-            grpc_idle_deadline: grpc_activity
-                .as_ref()
-                .map(|_| Box::pin(sleep(grpc_transport_timeouts.idle_timeout()))),
-            #[cfg(feature = "tonic-grpc")]
             grpc_activity,
-            #[cfg(feature = "tonic-grpc")]
-            grpc_idle_since: None,
-            #[cfg(feature = "tonic-grpc")]
-            grpc_idle_timeout: grpc_transport_timeouts.idle_timeout(),
             #[cfg(feature = "tonic-grpc")]
             grpc_hard_deadline,
         }
@@ -329,6 +315,11 @@ impl BoundedTcpStream {
 
     pub(super) fn first_request_tracker(&self) -> FirstRequestTracker {
         self.first_request.clone()
+    }
+
+    #[cfg(feature = "tonic-grpc")]
+    pub(super) fn grpc_activity(&self) -> Option<Arc<GrpcConnectionActivity>> {
+        self.grpc_activity.clone()
     }
 
     fn poll_force_close(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
@@ -341,7 +332,6 @@ impl BoundedTcpStream {
             {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            self.poll_grpc_idle(cx)?;
         }
         let Some(force_close) = &self.force_close else {
             return Ok(());
@@ -358,28 +348,6 @@ impl BoundedTcpStream {
             .is_some_and(|notified| notified.as_mut().poll(cx).is_ready())
         {
             return Err(io::ErrorKind::ConnectionAborted.into());
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "tonic-grpc")]
-    fn poll_grpc_idle(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        let Some(activity) = &self.grpc_activity else {
-            return Ok(());
-        };
-        let Some(idle_since) = activity.idle_since(cx) else {
-            self.grpc_idle_since = None;
-            return Ok(());
-        };
-        let Some(deadline) = &mut self.grpc_idle_deadline else {
-            return Ok(());
-        };
-        if self.grpc_idle_since != Some(idle_since) {
-            deadline.as_mut().reset(idle_since + self.grpc_idle_timeout);
-            self.grpc_idle_since = Some(idle_since);
-        }
-        if deadline.as_mut().poll(cx).is_ready() {
-            return Err(io::ErrorKind::TimedOut.into());
         }
         Ok(())
     }

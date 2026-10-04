@@ -320,9 +320,20 @@ async fn serve_connection(
             }
             _ = &mut idle_deadline, if !has_active_requests => {
                 // A completed keep-alive connection consumes capacity without
-                // serving work. Retire it with protocol-level shutdown.
+                // serving work. GOAWAY prevents an old upgrade marker from
+                // reserving this connection for unrelated new requests.
                 connection.as_mut().graceful_shutdown();
-                if tokio::time::timeout(settings.connection_drain_grace, connection)
+                let drain = if snapshot.has_h2_websocket {
+                    // Hyper owns the upgraded stream. Let it complete within
+                    // the same age bound used for a live WebSocket; a closed
+                    // upgrade makes the connection future finish promptly.
+                    (connection_started
+                        + settings.max_connection_age.max(HTTP2_WEBSOCKET_MAX_AGE))
+                    .saturating_duration_since(tokio::time::Instant::now())
+                } else {
+                    settings.connection_drain_grace
+                };
+                if tokio::time::timeout(drain, connection)
                     .await
                     .is_err()
                 {

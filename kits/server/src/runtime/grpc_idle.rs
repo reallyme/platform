@@ -9,9 +9,9 @@ use std::sync::{Arc, LockResult, Mutex, MutexGuard};
 use std::task::{Context, Poll, ready};
 
 use axum::body::Bytes;
-use futures_util::task::AtomicWaker;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use pin_project_lite::pin_project;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tonic::body::Body as TonicBody;
 use tonic::codegen::http::{Request, Response};
@@ -27,17 +27,19 @@ struct ActivityState {
 /// Tracks complete request streams rather than HTTP/2 ping or socket activity.
 pub(crate) struct GrpcConnectionActivity {
     state: Mutex<ActivityState>,
-    waker: AtomicWaker,
+    idle_sender: watch::Sender<Option<Instant>>,
 }
 
 impl GrpcConnectionActivity {
     pub(crate) fn new() -> Arc<Self> {
+        let now = Instant::now();
+        let (idle_sender, _idle_receiver) = watch::channel(Some(now));
         Arc::new(Self {
             state: Mutex::new(ActivityState {
                 active_requests: 0,
-                idle_since: Instant::now(),
+                idle_since: now,
             }),
-            waker: AtomicWaker::new(),
+            idle_sender,
         })
     }
 
@@ -45,18 +47,15 @@ impl GrpcConnectionActivity {
         {
             let mut state = recover_lock(self.state.lock());
             state.active_requests = state.active_requests.saturating_add(1);
+            self.idle_sender.send_replace(None);
         }
-        self.waker.wake();
         Arc::new(GrpcRequestActivityGuard {
             activity: Arc::clone(self),
         })
     }
 
-    /// Registers the connection IO task and returns its current idle epoch.
-    pub(crate) fn idle_since(&self, cx: &Context<'_>) -> Option<Instant> {
-        self.waker.register(cx.waker());
-        let state = recover_lock(self.state.lock());
-        (state.active_requests == 0).then_some(state.idle_since)
+    pub(crate) fn subscribe_idle(&self) -> watch::Receiver<Option<Instant>> {
+        self.idle_sender.subscribe()
     }
 }
 
@@ -80,9 +79,11 @@ impl Drop for GrpcRequestActivityGuard {
             state.active_requests = state.active_requests.saturating_sub(1);
             if state.active_requests == 0 {
                 state.idle_since = Instant::now();
+                self.activity
+                    .idle_sender
+                    .send_replace(Some(state.idle_since));
             }
         }
-        self.activity.waker.wake();
     }
 }
 

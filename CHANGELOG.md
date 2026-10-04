@@ -11,12 +11,17 @@
   search admits newcomers when a refilled
   bucket follows an older source that still owes tokens. Overcommitted source
   caps are reported at registry construction; the global 25,000-bucket cap wins.
-- HTTP/2 WebSocket upgrades survive HTTP keep-alive retirement, and slow
-  response readers continue while socket writes progress. Flow-control stalls
-  receive a longer protocol allowance and GOAWAY with bounded drain.
+- HTTP/2 WebSocket upgrades survive HTTP keep-alive retirement; an idle
+  connection sends GOAWAY while an active upgrade may finish within its age
+  bound. Slow response readers continue while socket writes progress.
+  Flow-control stalls receive a longer protocol allowance and GOAWAY with
+  bounded drain.
 - Native gRPC keepalive, first-request, idle, connection-age, and age-grace
   deadlines can be configured per listener. Connection age and idle retirement
-  remain forceful with Tonic 0.14.6; active streams retain a finite age grace.
+  send HTTP/2 GOAWAY and allow in-flight streams to drain. The age-grace limit
+  remains a hard cap if a stream does not finish.
+- Pin the Axum WebSocket decoder pair to the versions verified by the live
+  protocol close-code test, preserving typed 1002, 1007, and 1009 responses.
 - The reference Worker's oversized Connect request response matches native
   Connect's 413 status and resource-exhausted error envelope.
 - Route visibility requires the raw and decoded path to select the same rule:
