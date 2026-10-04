@@ -102,23 +102,4 @@ impl HttpTransportTimeouts {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{HttpTransportTimeoutErrorReason, HttpTransportTimeouts};
-    use std::time::Duration;
-
-    #[test]
-    fn rejects_zero_and_unbounded_deadlines() {
-        let valid = Duration::from_secs(1);
-        assert_eq!(
-            HttpTransportTimeouts::new(valid, valid, Duration::ZERO, valid)
-                .map_err(|error| error.reason()),
-            Err(HttpTransportTimeoutErrorReason::ZeroDuration)
-        );
-        assert_eq!(
-            HttpTransportTimeouts::new(Duration::from_secs(86_401), valid, valid, valid)
-                .map_err(|error| error.reason()),
-            Err(HttpTransportTimeoutErrorReason::AboveMaximum)
-        );
-        assert!(HttpTransportTimeouts::new(valid, valid, valid, valid).is_ok());
-    }
-}
+mod tests;

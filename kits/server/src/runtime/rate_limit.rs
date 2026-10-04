@@ -131,6 +131,15 @@ impl RateLimitRegistry {
         tier: &HttpRateLimitTierName,
         source_identity: RateLimitSourceIdentity,
     ) -> RateLimitDecision {
+        self.allow_at(tier, source_identity, Instant::now())
+    }
+
+    fn allow_at(
+        &self,
+        tier: &HttpRateLimitTierName,
+        source_identity: RateLimitSourceIdentity,
+        now: Instant,
+    ) -> RateLimitDecision {
         let Some(policy) = self
             .tier_policies
             .iter()
@@ -150,7 +159,6 @@ impl RateLimitRegistry {
             HttpRateLimitScope::Shared => 0,
         };
 
-        let now = Instant::now();
         let mut buckets = recover_rate_limit_buckets_lock(self.buckets.lock());
 
         let mut use_overflow = false;

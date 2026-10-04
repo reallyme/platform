@@ -575,6 +575,7 @@ fn rotating_ipv6_networks_share_a_rate_limited_overflow() {
         Arc::new(vec![(tier.clone(), policy)]),
         LIVE_BUCKET_LIMIT,
     );
+    let now = std::time::Instant::now();
 
     let mut allowed = 0_usize;
     for network in 0..32_768_u128 {
@@ -582,16 +583,13 @@ fn rotating_ipv6_networks_share_a_rate_limited_overflow() {
             (u128::from(0x2001_0db8_0001_u64) << 80) | (network << 64) | 1,
         );
         allowed += usize::from(
-            registry.allow(&tier, RateLimitSourceIdentity::PeerIp(address.into()))
+            registry.allow_at(&tier, RateLimitSourceIdentity::PeerIp(address.into()), now)
                 == super::RateLimitDecision::Allowed,
         );
         assert!(registry.live_bucket_count() <= LIVE_BUCKET_LIMIT + 1);
     }
 
-    assert!(
-        allowed < 4_096,
-        "source rotation cannot mint a token per identity"
-    );
+    assert_eq!(allowed, LIVE_BUCKET_LIMIT + 1);
     let new_client: std::net::IpAddr = "192.0.2.200".parse().expect("valid IPv4 fixture");
     {
         let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
@@ -600,7 +598,7 @@ fn rotating_ipv6_networks_share_a_rate_limited_overflow() {
     }
     assert_eq!(
         super::RateLimitDecision::Allowed,
-        registry.allow(&tier, RateLimitSourceIdentity::PeerIp(new_client))
+        registry.allow_at(&tier, RateLimitSourceIdentity::PeerIp(new_client), now)
     );
     assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT + 1);
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
