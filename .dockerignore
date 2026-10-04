@@ -1,6 +1,8 @@
 # Version-control and local editor state.
 /.git
 /.gitignore
+/.claude/
+/.codex/
 /.idea
 /.vscode
 /.DS_Store

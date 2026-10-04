@@ -3746,6 +3746,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "metrics",
+ "metrics-util",
  "nkeys",
  "reallyme-crypto",
  "reallyme-typesense-kit",
