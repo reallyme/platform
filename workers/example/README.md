@@ -28,12 +28,10 @@ printf "EXAMPLE_APP_CONFIG_JSONC='%s'\n" "$(jq -c . ../../apps/example/config/lo
 pnpm dev
 ```
 
-Call the application and the Worker-owned operational endpoints:
+Call the application:
 
 ```console
 curl http://127.0.0.1:8787/hello
-curl http://127.0.0.1:8787/healthz
-curl http://127.0.0.1:8787/readyz
 buf curl \
   --schema ../../apps/example/contract/proto \
   --protocol connect \
@@ -45,6 +43,12 @@ Set the `EXAMPLE_APP_CONFIG_JSONC` Worker binding to a reviewed JSONC document
 before starting the Worker. The local command requires `jq`. Deployments must
 provide the binding in their environment;
 the Worker rejects requests when it is absent or invalid.
+
+The Worker-owned `/healthz` and `/readyz` endpoints require an
+`OPERATIONAL_PROBE_TOKEN` secret binding of 32–256 bytes. Send it as an
+`Authorization: Bearer` header from a trusted probe. Missing, duplicate, or
+incorrect credentials are rejected. Set the binding with `wrangler secret put`
+for a deployment, or add it to the local `.dev.vars` file for development.
 
 ## Composition
 
@@ -59,7 +63,8 @@ The host boundary is deliberately small:
 The host exposes `GET /hello` and the generated Connect RPC path for
 `ExampleService.Hello`. Both call the same application use-case. Health and
 readiness endpoints describe this Worker host and remain outside the
-application core. Metrics are available through Workers observability.
+application core. They require the probe token. Metrics are available through
+Workers observability.
 
 ## Deploy
 

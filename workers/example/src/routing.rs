@@ -10,13 +10,15 @@ use example_app::ports::ExamplePorts;
 use futures_util::StreamExt;
 use reallyme_app_kit::AppHealthStatus;
 use reallyme_example_contract::generated::proto::reallyme::example::v1::HelloRequest;
+use subtle::ConstantTimeEq;
 use worker::{Env, Method, Request, Response, ResponseBuilder, Result};
+use zeroize::Zeroizing;
 
 use crate::app_adapter::{EXAMPLE_WORKER_HELLO_PATH, ExampleWorkerMethod, handle_worker_request};
 use crate::error::{
-    ExampleWorkerHostError, INTERNAL_ERROR_MESSAGE, INVALID_REQUEST_MESSAGE, NOT_FOUND_MESSAGE,
-    UNAVAILABLE_MESSAGE, WorkerConnectErrorCode, WorkerPublicErrorCode, map_worker_connect_error,
-    map_worker_error,
+    ExampleWorkerHostError, FORBIDDEN_MESSAGE, INTERNAL_ERROR_MESSAGE, INVALID_REQUEST_MESSAGE,
+    NOT_FOUND_MESSAGE, UNAVAILABLE_MESSAGE, WorkerConnectErrorCode, WorkerPublicErrorCode,
+    map_worker_connect_error, map_worker_error,
 };
 use crate::model::WorkerHealthResponse;
 use crate::response::{
@@ -25,6 +27,9 @@ use crate::response::{
 };
 
 const APP_CONFIG_BINDING: &str = "EXAMPLE_APP_CONFIG_JSONC";
+const OPERATIONAL_PROBE_TOKEN_BINDING: &str = "OPERATIONAL_PROBE_TOKEN";
+const MIN_OPERATIONAL_PROBE_TOKEN_BYTES: usize = 32;
+const MAX_OPERATIONAL_PROBE_TOKEN_BYTES: usize = 256;
 const MAX_CONNECT_REQUEST_BYTES: usize = 64 * 1024;
 
 struct ExampleWorkerState {
@@ -90,7 +95,7 @@ pub(crate) fn allowed_origin<'a>(allowed: &'a [String], requested: &str) -> Opti
 
 pub(crate) fn allowed_method_for_path(path: &str) -> Option<&'static str> {
     match path {
-        EXAMPLE_WORKER_HELLO_PATH | "/healthz" | "/readyz" => Some("GET"),
+        EXAMPLE_WORKER_HELLO_PATH => Some("GET"),
         reallyme_example_contract::EXAMPLE_HELLO_RPC_PATH => Some("POST"),
         _ => None,
     }
@@ -125,7 +130,7 @@ async fn route_worker_request_inner(req: &mut Request, env: &Env) -> Result<Resp
         };
     }
 
-    route_operational(method, path.as_str(), env)
+    route_operational(req, env)
 }
 
 async fn route_connect_request(req: &mut Request, env: &Env) -> Result<Response> {
@@ -291,8 +296,14 @@ pub(crate) fn route_example_app_with_deadline(
     handle_worker_request(context, method, path, deadline)
 }
 
-fn route_operational(method: Method, path: &str, env: &Env) -> Result<Response> {
-    match (method, path) {
+fn route_operational(req: &Request, env: &Env) -> Result<Response> {
+    let method = req.method();
+    let path = req.path();
+    if is_known_operational_path(path.as_str()) && !authorized_operational_probe(req, env)? {
+        return stable_error_response(WorkerPublicErrorCode::Forbidden, FORBIDDEN_MESSAGE, 403);
+    }
+
+    match (method, path.as_str()) {
         (Method::Get, "/healthz") => Response::from_json(&WorkerHealthResponse::serving()),
         (Method::Get, "/readyz") => match example_context(env) {
             Ok(context)
@@ -311,6 +322,41 @@ fn route_operational(method: Method, path: &str, env: &Env) -> Result<Response> 
         }
         _ => stable_error_response(WorkerPublicErrorCode::NotFound, NOT_FOUND_MESSAGE, 404),
     }
+}
+
+fn authorized_operational_probe(req: &Request, env: &Env) -> Result<bool> {
+    let headers = Zeroizing::new(req.headers().get_all("authorization")?);
+    if headers.len() != 1 {
+        return Ok(false);
+    }
+    let expected = match env.secret(OPERATIONAL_PROBE_TOKEN_BINDING) {
+        Ok(secret) => Zeroizing::new(secret.to_string()),
+        Err(_) => return Ok(false),
+    };
+    Ok(valid_operational_probe_headers(&headers, &expected))
+}
+
+pub(crate) fn valid_operational_probe_headers(headers: &[String], expected: &str) -> bool {
+    let [authorization] = headers else {
+        return false;
+    };
+    valid_operational_probe_token(authorization, expected)
+}
+
+pub(crate) fn valid_operational_probe_token(authorization: &str, expected: &str) -> bool {
+    // Compare fixed-length credential bytes without leaking token content through timing.
+    if !(MIN_OPERATIONAL_PROBE_TOKEN_BYTES..=MAX_OPERATIONAL_PROBE_TOKEN_BYTES)
+        .contains(&expected.len())
+    {
+        return false;
+    }
+    let Some(candidate) = authorization.strip_prefix("Bearer ") else {
+        return false;
+    };
+    if candidate.len() != expected.len() {
+        return false;
+    }
+    bool::from(candidate.as_bytes().ct_eq(expected.as_bytes()))
 }
 
 pub(crate) fn is_known_app_path(path: &str) -> bool {

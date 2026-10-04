@@ -1268,8 +1268,10 @@ dependencies = [
  "reallyme-example-contract",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror",
  "worker",
+ "zeroize",
 ]
 
 [[package]]
