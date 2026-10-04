@@ -3,8 +3,9 @@
 
 use super::{
     MAX_TENANT_KEY_BYTES, TenantDataAccessErrorReason, TenantDataKey, TenantDataRange,
-    TenantDataRangeLimit,
+    TenantDataRangeLimit, validate_atomic_mutation,
 };
+use foundationdb::options::MutationType;
 
 #[test]
 fn application_keys_exclude_kit_metadata_and_system_space() {
@@ -82,4 +83,14 @@ fn application_range_results_are_bounded() {
         TenantDataRangeLimit::new(64).map(TenantDataRangeLimit::get),
         Ok(64)
     );
+}
+
+#[test]
+fn atomic_mutations_cannot_change_validated_keys() {
+    assert!(matches!(
+        validate_atomic_mutation(MutationType::SetVersionstampedKey),
+        Err(TenantDataAccessErrorReason::KeyChangingMutation)
+    ));
+    assert!(validate_atomic_mutation(MutationType::SetVersionstampedValue).is_ok());
+    assert!(validate_atomic_mutation(MutationType::Add).is_ok());
 }
