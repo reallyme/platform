@@ -12,7 +12,7 @@ repository.workspace = true
 keywords = ["application", "architecture", "connect-rpc", "grpc", "cloudflare-workers"]
 categories = ["development-tools"]
 publish = ["crates-io"]
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [features]
 default = []

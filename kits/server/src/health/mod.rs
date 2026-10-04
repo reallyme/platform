@@ -7,7 +7,7 @@
 //!
 //! ```rust
 //! use reallyme_server_kit::health::{
-//!     LivenessState, Readiness, ReadinessState, liveness_check, readiness_check,
+//!     HealthStatus, LivenessState, Readiness, ReadinessState, liveness_check, readiness_check,
 //! };
 //!
 //! let readiness = Readiness::new();
@@ -21,11 +21,8 @@
 //! assert!(!readiness.is_ready());
 //!
 //! assert_eq!(LivenessState::Live, LivenessState::Live);
-//! assert_eq!(liveness_check().http_status_code(), axum::http::StatusCode::OK);
-//! assert_eq!(
-//!     readiness_check(&readiness).http_status_code(),
-//!     axum::http::StatusCode::SERVICE_UNAVAILABLE
-//! );
+//! assert_eq!(liveness_check().status, HealthStatus::Serving);
+//! assert_eq!(readiness_check(&readiness).status, HealthStatus::NotServing);
 //! ```
 
 mod check;

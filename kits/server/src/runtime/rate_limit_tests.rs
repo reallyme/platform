@@ -4,7 +4,6 @@
 use super::RateLimitSourceIdentity;
 use crate::http::HttpRateLimitTierName;
 use crate::runtime::{HttpRateLimitScope, HttpRateLimitTierPolicy};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +22,7 @@ fn source(number: u8) -> RateLimitSourceIdentity {
 
 fn tier_map_count(registry: &super::RateLimitRegistry) -> usize {
     let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
-    buckets.len()
+    buckets.by_tier.len()
 }
 
 #[test]
@@ -48,22 +47,23 @@ fn scope_specific_sources_share_bucket_map_entry_limit() {
 fn sweep_reduces_bucket_count_after_ttl() {
     let stale_at = Instant::now() - Duration::from_secs(super::RATE_LIMIT_BUCKET_IDLE_TTL_SECS + 1);
     let tier = HttpRateLimitTierName::new("ttl-test").expect("tier name should be valid");
-    let mut tier_buckets = HashMap::new();
-    tier_buckets.insert(
+    let mut buckets = super::state::RateLimitBucketState::default();
+    buckets.insert(
+        tier,
         1,
         super::SourceRateBucket {
             tokens: 0,
             fractional_tokens: 0,
             last_refill_at: stale_at,
             last_activity_at: stale_at,
+            last_admitted_at: stale_at,
         },
     );
-    let mut buckets = HashMap::new();
-    buckets.insert(tier, tier_buckets);
+    buckets.prune_stale(Instant::now());
 
-    super::prune_stale_buckets_locked(&mut buckets, Instant::now());
-
-    assert!(buckets.is_empty());
+    assert_eq!(buckets.len(), 0);
+    assert!(buckets.by_tier.is_empty());
+    assert!(buckets.indexes_are_consistent());
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn global_cap_rejects_new_tier_without_expanding_live_tier_maps() {
 }
 
 #[test]
-fn registry_full_rejects_new_source_without_request_time_sweep() {
+fn registry_full_rotates_sources_within_an_existing_tier() {
     let tier = HttpRateLimitTierName::new("registry-full").expect("tier name should be valid");
     let policy = HttpRateLimitTierPolicy::new(1, 10, 10)
         .expect("valid rate-limit tier policy")
@@ -227,9 +227,189 @@ fn registry_full_rejects_new_source_without_request_time_sweep() {
     );
     assert_eq!(1, registry.live_bucket_count());
     assert_eq!(
-        super::RateLimitDecision::RegistryFull,
+        super::RateLimitDecision::Allowed,
         registry.allow(&tier, source(2))
+    );
+    assert_eq!(
+        super::RateLimitDecision::SourceLimitReached,
+        registry.allow(&tier, source(2)),
+        "an evicted source receives one initial token, not a fresh burst"
     );
     assert_eq!(1, registry.live_bucket_count());
     assert_eq!(1, tier_map_count(&registry));
+}
+
+#[test]
+fn full_tier_evicts_its_least_recently_used_source() {
+    let tier = HttpRateLimitTierName::new("tier-lru").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 3, 2).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(tier.clone(), policy)]),
+        2,
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(1))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(2))
+    );
+    let first_id = source_bucket_id(&registry, source(1));
+    let second_id = source_bucket_id(&registry, source(2));
+    let third_id = source_bucket_id(&registry, source(3));
+    std::thread::sleep(Duration::from_millis(1));
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(1)),
+        "admitting the first source refreshes its eviction priority"
+    );
+    {
+        let mut buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+        buckets
+            .bucket_mut(&tier, second_id)
+            .expect("second source exists")
+            .tokens = 0;
+    }
+    assert_eq!(
+        super::RateLimitDecision::SourceLimitReached,
+        registry.allow(&tier, source(2)),
+        "denied traffic must not refresh eviction priority"
+    );
+
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, source(3))
+    );
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    let entries = buckets.by_tier.get(&tier).expect("tier remains");
+    assert_eq!(entries.len(), 2);
+    assert!(entries.contains_key(&first_id));
+    assert!(!entries.contains_key(&second_id));
+    assert!(entries.contains_key(&third_id));
+    assert!(buckets.indexes_are_consistent());
+}
+
+#[test]
+fn global_cap_keeps_a_bucket_for_each_configured_tier() {
+    let first = HttpRateLimitTierName::new("first").expect("valid tier");
+    let second = HttpRateLimitTierName::new("second").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 2, 3).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(first.clone(), policy), (second.clone(), policy)]),
+        2,
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&first, source(1))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&first, source(2))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&second, source(3))
+    );
+
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    assert_eq!(buckets.by_tier.get(&first).expect("first tier").len(), 1);
+    assert_eq!(buckets.by_tier.get(&second).expect("second tier").len(), 1);
+    assert!(buckets.indexes_are_consistent());
+}
+
+#[test]
+fn global_eviction_preserves_recent_sources_and_each_tiers_last_bucket() {
+    let first = HttpRateLimitTierName::new("global-first").expect("valid tier");
+    let second = HttpRateLimitTierName::new("global-second").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 3, 3).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(first.clone(), policy), (second.clone(), policy)]),
+        3,
+    );
+    for (tier, identity) in [
+        (&first, source(1)),
+        (&first, source(2)),
+        (&second, source(3)),
+    ] {
+        assert_eq!(
+            super::RateLimitDecision::Allowed,
+            registry.allow(tier, identity)
+        );
+    }
+    std::thread::sleep(Duration::from_millis(1));
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&first, source(1))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&second, source(4))
+    );
+
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    let first_entries = buckets.by_tier.get(&first).expect("first tier remains");
+    let second_entries = buckets.by_tier.get(&second).expect("second tier remains");
+    assert!(first_entries.contains_key(&source_bucket_id(&registry, source(1))));
+    assert!(!first_entries.contains_key(&source_bucket_id(&registry, source(2))));
+    assert_eq!(second_entries.len(), 2);
+    assert!(buckets.indexes_are_consistent());
+}
+
+#[test]
+fn rotating_ipv6_networks_cannot_lock_out_new_sources() {
+    let tier = HttpRateLimitTierName::new("ipv6-rotation").expect("valid tier");
+    const LIVE_BUCKET_LIMIT: usize = 2_048;
+    let policy = HttpRateLimitTierPolicy::new(1, 4, LIVE_BUCKET_LIMIT).expect("valid policy");
+    let registry = super::RateLimitRegistry::new_with_max_live_buckets(
+        Arc::new(vec![(tier.clone(), policy)]),
+        LIVE_BUCKET_LIMIT,
+    );
+
+    for network in 0..32_768_u128 {
+        let address = std::net::Ipv6Addr::from(
+            (u128::from(0x2001_0db8_0001_u64) << 80) | (network << 64) | 1,
+        );
+        assert_eq!(
+            super::RateLimitDecision::Allowed,
+            registry.allow(&tier, RateLimitSourceIdentity::PeerIp(address.into()))
+        );
+        assert!(registry.live_bucket_count() <= LIVE_BUCKET_LIMIT);
+    }
+
+    let new_client: std::net::IpAddr = "192.0.2.200".parse().expect("valid IPv4 fixture");
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, RateLimitSourceIdentity::PeerIp(new_client))
+    );
+    assert_eq!(registry.live_bucket_count(), LIVE_BUCKET_LIMIT);
+    let buckets = super::recover_rate_limit_buckets_lock(registry.buckets.lock());
+    assert!(buckets.indexes_are_consistent());
+}
+
+#[test]
+fn configured_ipv6_prefix_groups_multiple_networks_in_one_source_bucket() {
+    let tier = HttpRateLimitTierName::new("ipv6-prefix").expect("valid tier");
+    let policy = HttpRateLimitTierPolicy::new(1, 1, 2)
+        .expect("valid policy")
+        .with_ipv6_source_prefix_len(48)
+        .expect("valid prefix");
+    let registry = super::RateLimitRegistry::new(Arc::new(vec![(tier.clone(), policy)]));
+    let first: std::net::IpAddr = "2001:db8:1:2::1".parse().expect("valid IPv6 fixture");
+    let same_prefix: std::net::IpAddr = "2001:db8:1:3::1".parse().expect("valid IPv6 fixture");
+    let other_prefix: std::net::IpAddr = "2001:db8:2:1::1".parse().expect("valid IPv6 fixture");
+
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, RateLimitSourceIdentity::PeerIp(first))
+    );
+    assert_eq!(
+        super::RateLimitDecision::SourceLimitReached,
+        registry.allow(&tier, RateLimitSourceIdentity::PeerIp(same_prefix))
+    );
+    assert_eq!(
+        super::RateLimitDecision::Allowed,
+        registry.allow(&tier, RateLimitSourceIdentity::PeerIp(other_prefix))
+    );
+    assert_eq!(registry.live_bucket_count(), 2);
 }

@@ -33,7 +33,7 @@ use super::critical::{
 use super::error::ServerRuntimeError;
 #[cfg(feature = "tonic-grpc")]
 use super::grpc::{GrpcServePolicy, GrpcServerSpec, serve_health_grpc};
-use super::http::{HttpServerSpec, serve_http};
+use super::http::{HttpServePolicy, HttpServerSpec, serve_http};
 use super::phase::{ServerRuntimePhase, ServerRuntimePhaseReporter};
 use super::rate_limit::{RateLimitRegistry, run_rate_limit_registry_sweep_task};
 use super::readiness_drain::ReadinessDrainDelay;
@@ -227,12 +227,12 @@ impl ServerRuntime {
                 let listener = bind_http_listener(&http_server).await?;
                 log_http_listener_started(&server_name, http_server.config().bind_address());
                 let task_name = TaskName::new(format!("http-{}", http_server.name().as_str()))?;
-                let listener_name = http_server.name().clone();
-                let header_limits = http_server.config().security().header_limits();
+                let serve_policy =
+                    HttpServePolicy::from_config(http_server.name().clone(), http_server.config());
                 let rate_limit_policies = http_server.rate_limit_policies();
                 let rate_limit_registry =
                     Arc::new(RateLimitRegistry::new(Arc::clone(&rate_limit_policies)));
-                let listener_name_for_sweep = listener_name.clone();
+                let listener_name_for_sweep = http_server.name().clone();
                 let router = build_runtime_http_router(
                     http_server,
                     observability_config.request_logging(),
@@ -252,7 +252,7 @@ impl ServerRuntime {
                                 crate::task::TaskExecutionErrorKind::Internal,
                             )
                         })?;
-                        serve_http(listener, router, listener_name, header_limits, shutdown).await
+                        serve_http(listener, router, serve_policy, shutdown).await
                     },
                 ));
 
@@ -283,6 +283,7 @@ impl ServerRuntime {
                         grpc_server.config().bind_address(),
                     );
                     let concurrency_limit = grpc_server.config().concurrency_limit();
+                    let connection_limits = grpc_server.config().connection_limits();
                     let max_concurrent_streams = grpc_server.max_concurrent_streams();
                     let deadline_required = grpc_server.deadline_required();
                     let max_timeout = grpc_server.max_timeout();
@@ -321,6 +322,7 @@ impl ServerRuntime {
                                     method_policies,
                                     rate_limit_registry: rate_limit_registry_for_policy,
                                     trusted_proxy_headers,
+                                    connection_limits,
                                 },
                                 concurrency_limit,
                                 shutdown,

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    MAX_IN_FLIGHT_REQUEST_LIMIT, MAX_IN_FLIGHT_REQUEST_LIMIT_VALUE, ResourceLimitEnforcement,
-    RuntimeConcurrencyLimit,
+    ConnectionLimitConfig, ConnectionLimitErrorReason, MAX_IN_FLIGHT_REQUEST_LIMIT,
+    MAX_IN_FLIGHT_REQUEST_LIMIT_VALUE, ResourceLimitEnforcement, RuntimeConcurrencyLimit,
 };
 use crate::config::{ConcurrencyLimitConfigField, ConfigError, ConfigValidationErrorReason};
 
@@ -55,5 +55,22 @@ fn concurrency_limits_are_exact_fail_closed_admission_control() {
     assert_eq!(
         limit.enforcement(),
         ResourceLimitEnforcement::ExactFailClosed
+    );
+}
+
+#[test]
+fn tcp_connection_limits_reject_zero_and_per_source_over_global() {
+    assert_eq!(
+        ConnectionLimitConfig::new(0, 1).map_err(|error| error.reason()),
+        Err(ConnectionLimitErrorReason::ZeroGlobal)
+    );
+    assert_eq!(
+        ConnectionLimitConfig::new(8, 9).map_err(|error| error.reason()),
+        Err(ConnectionLimitErrorReason::PerSourceExceedsGlobal)
+    );
+    assert_eq!(
+        ConnectionLimitConfig::new(128, 64)
+            .map(|limits| (limits.max_live(), limits.max_per_source())),
+        Ok((128, 64))
     );
 }

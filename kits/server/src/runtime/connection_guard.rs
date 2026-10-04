@@ -20,13 +20,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, futures::OwnedNotified};
 use tokio::time::{Sleep, sleep};
 
+#[cfg(feature = "tonic-grpc")]
+use super::grpc_idle::{GrpcConnectionActivity, GrpcRequestActivityGuard};
 use super::rate_limit::rate_limit_network;
+use crate::config::{ConnectionLimitConfig, TrustedProxyHeaders};
 
-const MAX_LIVE_CONNECTIONS: usize = 2_048;
-const MAX_CONNECTIONS_PER_SOURCE: usize = 64;
 const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_CONNECTION_AGE: Duration = Duration::from_secs(600);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+const OVER_CAP_BACKOFF: Duration = Duration::from_millis(1);
+#[cfg(feature = "tonic-grpc")]
+const GRPC_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The protocol parser's request dispatch is the only reliable indication
 /// that an HTTP/1 head or HTTP/2 HEADERS frame was completed.
@@ -52,6 +55,7 @@ impl FirstRequestTracker {
 pub(crate) struct BoundedTcpConnectInfo {
     tcp: tonic::transport::server::TcpConnectInfo,
     first_request: FirstRequestTracker,
+    activity: Option<Arc<GrpcConnectionActivity>>,
 }
 
 #[cfg(feature = "tonic-grpc")]
@@ -66,6 +70,12 @@ impl BoundedTcpConnectInfo {
 
     pub(crate) fn mark_first_request_seen(&self) {
         self.first_request.mark_seen();
+    }
+
+    pub(crate) fn begin_request(&self) -> Option<Arc<GrpcRequestActivityGuard>> {
+        self.activity
+            .as_ref()
+            .map(GrpcConnectionActivity::begin_request)
     }
 }
 
@@ -95,27 +105,47 @@ pub(super) struct BoundedTcpListener {
     listener: TcpListener,
     permits: Arc<Semaphore>,
     sources: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    limits: ConnectionLimitConfig,
+    trusted_proxies: TrustedProxyHeaders,
     force_close: Option<Arc<ForceCloseConnections>>,
+    #[cfg(feature = "tonic-grpc")]
+    grpc_idle_timeout: Duration,
 }
 
 impl BoundedTcpListener {
-    pub(super) fn new(listener: TcpListener) -> Self {
+    pub(super) fn new(listener: TcpListener, limits: ConnectionLimitConfig) -> Self {
         Self {
             listener,
-            permits: Arc::new(Semaphore::new(MAX_LIVE_CONNECTIONS)),
+            permits: Arc::new(Semaphore::new(limits.max_live())),
             sources: Arc::new(Mutex::new(HashMap::new())),
+            limits,
+            trusted_proxies: TrustedProxyHeaders::ignore_all(),
             force_close: None,
+            #[cfg(feature = "tonic-grpc")]
+            grpc_idle_timeout: GRPC_IDLE_TIMEOUT,
         }
+    }
+
+    pub(super) fn with_trusted_proxies(mut self, trusted_proxies: TrustedProxyHeaders) -> Self {
+        self.trusted_proxies = trusted_proxies;
+        self
     }
 
     #[cfg(feature = "tonic-grpc")]
     pub(super) fn with_force_close(
         listener: TcpListener,
         force_close: Arc<ForceCloseConnections>,
+        limits: ConnectionLimitConfig,
     ) -> Self {
-        let mut bounded = Self::new(listener);
+        let mut bounded = Self::new(listener, limits);
         bounded.force_close = Some(force_close);
         bounded
+    }
+
+    #[cfg(all(test, feature = "tonic-grpc"))]
+    pub(super) fn with_grpc_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.grpc_idle_timeout = timeout;
+        self
     }
 }
 
@@ -125,23 +155,48 @@ impl Listener for BoundedTcpListener {
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
-            // Acquire before accept so the process never owns more live
-            // connection sockets than its reviewed capacity.
-            let permit = match Arc::clone(&self.permits).acquire_owned().await {
-                Ok(permit) => permit,
-                Err(_) => std::future::pending().await,
-            };
             match self.listener.accept().await {
                 Ok((stream, peer)) => {
-                    let source = rate_limit_network(peer.ip().to_canonical());
-                    if let Some(slot) = SourceSlot::acquire(Arc::clone(&self.sources), source) {
+                    // Accept and promptly shed over-cap sockets instead of
+                    // leaving clients stuck in the kernel's accept backlog.
+                    let permit = match Arc::clone(&self.permits).try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            drop(stream);
+                            sleep(OVER_CAP_BACKOFF).await;
+                            continue;
+                        }
+                    };
+                    let peer_ip = peer.ip().to_canonical();
+                    // A reverse proxy multiplexes many clients on one peer IP.
+                    // The global permit still bounds sockets from that peer;
+                    // request-level limits use the validated forwarded client.
+                    let slot = if source_limit_exempt(peer_ip, &self.trusted_proxies) {
+                        Some(None)
+                    } else {
+                        SourceSlot::acquire(
+                            Arc::clone(&self.sources),
+                            rate_limit_network(peer_ip),
+                            self.limits.max_per_source(),
+                        )
+                        .map(Some)
+                    };
+                    if let Some(slot) = slot {
                         return (
-                            BoundedTcpStream::new(stream, permit, slot, self.force_close.clone()),
+                            BoundedTcpStream::new(
+                                stream,
+                                permit,
+                                slot,
+                                self.force_close.clone(),
+                                #[cfg(feature = "tonic-grpc")]
+                                self.grpc_idle_timeout,
+                            ),
                             peer,
                         );
                     }
                     // One peer cannot occupy the whole listener. Closing an
                     // over-cap socket also releases its global permit.
+                    sleep(OVER_CAP_BACKOFF).await;
                 }
                 Err(_) => sleep(ACCEPT_ERROR_BACKOFF).await,
             }
@@ -153,20 +208,28 @@ impl Listener for BoundedTcpListener {
     }
 }
 
+fn source_limit_exempt(peer_ip: IpAddr, trusted_proxies: &TrustedProxyHeaders) -> bool {
+    peer_ip.is_loopback() || trusted_proxies.trusts_peer(Some(peer_ip))
+}
+
 struct SourceSlot {
     sources: Arc<Mutex<HashMap<IpAddr, usize>>>,
     source: IpAddr,
 }
 
 impl SourceSlot {
-    fn acquire(sources: Arc<Mutex<HashMap<IpAddr, usize>>>, source: IpAddr) -> Option<Self> {
+    fn acquire(
+        sources: Arc<Mutex<HashMap<IpAddr, usize>>>,
+        source: IpAddr,
+        max_per_source: usize,
+    ) -> Option<Self> {
         {
             let mut counts = match sources.lock() {
                 Ok(counts) => counts,
                 Err(poisoned) => poisoned.into_inner(),
             };
             let count = counts.entry(source).or_insert(0);
-            if *count >= MAX_CONNECTIONS_PER_SOURCE {
+            if *count >= max_per_source {
                 return None;
             }
             *count = count.checked_add(1)?;
@@ -196,34 +259,50 @@ pub(super) struct BoundedTcpStream {
     io: DeadlineIo<TcpStream>,
     first_request: FirstRequestTracker,
     _permit: OwnedSemaphorePermit,
-    _source_slot: SourceSlot,
+    _source_slot: Option<SourceSlot>,
     force_close: Option<Arc<ForceCloseConnections>>,
     close_notified: Option<Pin<Box<OwnedNotified>>>,
+    #[cfg(feature = "tonic-grpc")]
+    grpc_activity: Option<Arc<GrpcConnectionActivity>>,
+    #[cfg(feature = "tonic-grpc")]
+    grpc_idle_deadline: Option<Pin<Box<Sleep>>>,
+    #[cfg(feature = "tonic-grpc")]
+    grpc_idle_since: Option<tokio::time::Instant>,
+    #[cfg(feature = "tonic-grpc")]
+    grpc_idle_timeout: Duration,
 }
 
 impl BoundedTcpStream {
     fn new(
         stream: TcpStream,
         permit: OwnedSemaphorePermit,
-        source_slot: SourceSlot,
+        source_slot: Option<SourceSlot>,
         force_close: Option<Arc<ForceCloseConnections>>,
+        #[cfg(feature = "tonic-grpc")] grpc_idle_timeout: Duration,
     ) -> Self {
         let close_notified = force_close
             .as_ref()
             .map(|state| Box::pin(Arc::clone(&state.notify).notified_owned()));
         let first_request = FirstRequestTracker::new();
+        #[cfg(feature = "tonic-grpc")]
+        let grpc_activity = force_close.as_ref().map(|_| GrpcConnectionActivity::new());
         Self {
-            io: DeadlineIo::new(
-                stream,
-                FIRST_REQUEST_TIMEOUT,
-                MAX_CONNECTION_AGE,
-                first_request.clone(),
-            ),
+            io: DeadlineIo::new(stream, FIRST_REQUEST_TIMEOUT, first_request.clone()),
             first_request,
             _permit: permit,
             _source_slot: source_slot,
             force_close,
             close_notified,
+            #[cfg(feature = "tonic-grpc")]
+            grpc_idle_deadline: grpc_activity
+                .as_ref()
+                .map(|_| Box::pin(sleep(grpc_idle_timeout))),
+            #[cfg(feature = "tonic-grpc")]
+            grpc_activity,
+            #[cfg(feature = "tonic-grpc")]
+            grpc_idle_since: None,
+            #[cfg(feature = "tonic-grpc")]
+            grpc_idle_timeout,
         }
     }
 
@@ -232,6 +311,8 @@ impl BoundedTcpStream {
     }
 
     fn poll_force_close(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        #[cfg(feature = "tonic-grpc")]
+        self.poll_grpc_idle(cx)?;
         let Some(force_close) = &self.force_close else {
             return Ok(());
         };
@@ -247,6 +328,28 @@ impl BoundedTcpStream {
             .is_some_and(|notified| notified.as_mut().poll(cx).is_ready())
         {
             return Err(io::ErrorKind::ConnectionAborted.into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "tonic-grpc")]
+    fn poll_grpc_idle(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        let Some(activity) = &self.grpc_activity else {
+            return Ok(());
+        };
+        let Some(idle_since) = activity.idle_since(cx) else {
+            self.grpc_idle_since = None;
+            return Ok(());
+        };
+        let Some(deadline) = &mut self.grpc_idle_deadline else {
+            return Ok(());
+        };
+        if self.grpc_idle_since != Some(idle_since) {
+            deadline.as_mut().reset(idle_since + self.grpc_idle_timeout);
+            self.grpc_idle_since = Some(idle_since);
+        }
+        if deadline.as_mut().poll(cx).is_ready() {
+            return Err(io::ErrorKind::TimedOut.into());
         }
         Ok(())
     }
@@ -292,6 +395,7 @@ impl tonic::transport::server::Connected for BoundedTcpStream {
         BoundedTcpConnectInfo {
             tcp: self.io.inner.connect_info(),
             first_request: self.first_request.clone(),
+            activity: self.grpc_activity.clone(),
         }
     }
 }
@@ -299,29 +403,20 @@ impl tonic::transport::server::Connected for BoundedTcpStream {
 struct DeadlineIo<T> {
     inner: T,
     first_request_deadline: Pin<Box<Sleep>>,
-    max_age_deadline: Pin<Box<Sleep>>,
     first_request: FirstRequestTracker,
 }
 
 impl<T> DeadlineIo<T> {
-    fn new(
-        inner: T,
-        first_request: Duration,
-        max_age: Duration,
-        tracker: FirstRequestTracker,
-    ) -> Self {
+    fn new(inner: T, first_request: Duration, tracker: FirstRequestTracker) -> Self {
         Self {
             inner,
             first_request_deadline: Box::pin(sleep(first_request)),
-            max_age_deadline: Box::pin(sleep(max_age)),
             first_request: tracker,
         }
     }
 
     fn timed_out(&mut self, cx: &mut Context<'_>) -> bool {
-        self.max_age_deadline.as_mut().poll(cx).is_ready()
-            || (!self.first_request.was_seen()
-                && self.first_request_deadline.as_mut().poll(cx).is_ready())
+        !self.first_request.was_seen() && self.first_request_deadline.as_mut().poll(cx).is_ready()
     }
 }
 

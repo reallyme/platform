@@ -20,7 +20,8 @@ use super::{
 use crate::config::{
     HostAuthority, HostAuthorityPolicy, HttpHeaderBytesLimit, HttpHeaderCountLimit,
     HttpHeaderLimitConfig, HttpSecurityConfig, OperationalRouteAccess, SecurityHeadersConfig,
-    TrustedProxyHeaders, TrustedProxyRange, TrustedProxyRequestMetadataConfig,
+    TrustedProxyHeaderFamily, TrustedProxyHeaders, TrustedProxyRange,
+    TrustedProxyRequestMetadataConfig,
 };
 
 #[derive(Clone)]
@@ -400,6 +401,37 @@ async fn strict_mode_rejects_conflicting_forwarded_host_and_proto() {
 
     let response = service.call(request).await.expect("infallible service");
 
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn forwarded_family_rejects_client_and_proxy_field_lines_in_strict_mode() {
+    let config = HttpSecurityConfig::new(
+        SecurityHeadersConfig::secure_defaults(),
+        HostAuthorityPolicy::allow_list(vec![
+            HostAuthority::new("api.reallyme.net").expect("valid host"),
+        ])
+        .expect("non-empty allowlist"),
+        TrustedProxyHeaders::trust_configured_proxies(vec![
+            TrustedProxyRange::parse("10.0.0.0/8").expect("valid proxy range"),
+        ])
+        .expect("non-empty ranges"),
+        TrustedProxyRequestMetadataConfig::new(true, true, true, true, true)
+            .with_header_family(TrustedProxyHeaderFamily::Forwarded),
+        OperationalRouteAccess::Public,
+    );
+    let mut service = security_layer(&config).layer(EchoHeadersService);
+    let trusted = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 1, 2, 3), 40_000));
+    let mut request = Request::builder()
+        .uri("/app")
+        .header("host", "internal-lb.local")
+        .header("forwarded", "for=203.0.113.7;host=evil.example;proto=https")
+        .header("forwarded", "for=10.1.2.3;host=api.reallyme.net;proto=http")
+        .body(Body::empty())
+        .expect("valid test request");
+    request.extensions_mut().insert(ConnectInfo(trusted));
+
+    let response = service.call(request).await.expect("infallible service");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 

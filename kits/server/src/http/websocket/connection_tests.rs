@@ -217,6 +217,23 @@ fn websocket_connection_limiter_enforces_active_connection_capacity() {
 }
 
 #[test]
+fn websocket_connection_limiter_does_not_share_a_source_bucket_for_unknown_peers() {
+    let limiter = WebSocketConnectionLimiter::new(
+        RuntimeConcurrencyLimit::new(128, ConcurrencyLimitConfigField::WebSocketConnections)
+            .expect("fixture should be valid"),
+    );
+    let mut permits = Vec::new();
+    for _ in 0..65 {
+        permits.push(
+            limiter
+                .try_acquire()
+                .expect("unknown peers are bounded by global capacity"),
+        );
+    }
+    assert_eq!(permits.len(), 65);
+}
+
+#[test]
 fn websocket_connection_limiter_preserves_capacity_for_other_sources() {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

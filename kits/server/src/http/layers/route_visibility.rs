@@ -132,9 +132,12 @@ where
             &self.listener_visibility,
             request_path,
         );
-        if !self
-            .policy
-            .allows_request(&self.listener_name, &self.listener_visibility, request_path)
+        if ambiguous_policy_path(request_path)
+            || !self.policy.allows_request(
+                &self.listener_name,
+                &self.listener_visibility,
+                request_path,
+            )
         {
             let request_id = request_id_from_headers(request.headers());
             record_http_request_rejected_for_route_template_with_transport(
@@ -297,6 +300,16 @@ where
     }
 }
 
+fn ambiguous_policy_path(path: &str) -> bool {
+    // Axum and intermediaries can decode or normalise paths differently from
+    // the raw URI used for visibility, rate tiers, and body limits. Reject
+    // ambiguous spellings before applying any of those policies.
+    path.as_bytes().contains(&b'%')
+        || path.contains("//")
+        || path.contains('\\')
+        || path.split('/').any(|segment| matches!(segment, "." | ".."))
+}
+
 fn request_body_limit_rejection(
     request: &Request<Body>,
     request_body_limit: RequestBodyLimitBytes,
@@ -447,5 +460,7 @@ fn transport_label_for_request(request: &Request<Body>) -> TransportLabel {
 
 #[cfg(test)]
 mod body_limit_tests;
+#[cfg(test)]
+mod path_canonicalization_tests;
 #[cfg(test)]
 mod route_visibility_tests;

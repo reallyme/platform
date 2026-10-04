@@ -18,6 +18,8 @@ mod critical;
 mod error;
 #[cfg(feature = "tonic-grpc")]
 mod grpc;
+#[cfg(feature = "tonic-grpc")]
+mod grpc_idle;
 mod http;
 mod phase;
 pub(crate) mod rate_limit;
@@ -46,8 +48,9 @@ pub use grpc::{
     GrpcAppRoutes, GrpcAppRoutesError, GrpcAppRoutesErrorReason, GrpcMethodPolicy, GrpcServerSpec,
 };
 pub use http::{
-    HttpRateLimitScope, HttpRateLimitTierPolicy, HttpRateLimitTierPolicyError,
-    HttpRateLimitTierPolicyErrorReason, HttpServerSpec,
+    HttpIpv6SourcePrefixError, HttpIpv6SourcePrefixErrorReason, HttpRateLimitScope,
+    HttpRateLimitTierPolicy, HttpRateLimitTierPolicyError, HttpRateLimitTierPolicyErrorReason,
+    HttpServerSpec,
 };
 pub use phase::{
     ServerRuntimePhase, ServerRuntimePhaseReporter, ServerRuntimePhaseWatchError,

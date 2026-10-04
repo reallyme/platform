@@ -12,7 +12,7 @@ repository.workspace = true
 keywords = ["nats", "jetstream", "messaging", "queue", "transport"]
 categories = ["asynchronous", "network-programming"]
 publish = ["crates-io"]
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [features]
 default = []

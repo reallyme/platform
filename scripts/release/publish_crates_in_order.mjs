@@ -409,6 +409,17 @@ function inspectPackage(pkg) {
   }
 
   const manifestPath = path.join(unpackDirectory, `${pkg.name}-${pkg.version}`, "Cargo.toml");
+  for (const name of ["LICENSE-MIT", "LICENSE-APACHE"]) {
+    const packaged = path.join(unpackDirectory, `${pkg.name}-${pkg.version}`, name);
+    const canonical = path.join(process.cwd(), name);
+    if (
+      !fs.existsSync(packaged) ||
+      !fs.readFileSync(packaged).equals(fs.readFileSync(canonical))
+    ) {
+      console.error(`${pkg.name} package must include the full ${name} text`);
+      process.exit(1);
+    }
+  }
   const patchArguments = patchArgumentsFor(pkg);
   const fetchArguments = ["fetch", "--manifest-path", manifestPath, ...patchArguments];
   if (patchArguments.length === 0) {

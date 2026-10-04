@@ -141,9 +141,10 @@ async fn route_connect_request(req: &mut Request, env: &Env) -> Result<Response>
     if !is_connect_content_type(content_type.as_str()) {
         return connect_unsupported_media_type_response();
     }
-    let timeout_values = match req.headers().get_all("connect-timeout-ms") {
-        Ok(values) => values,
-        Err(_) => {
+    let timeout_values = match req.headers().get("connect-timeout-ms") {
+        Ok(Some(value)) if !value.contains(',') => vec![value],
+        Ok(None) => Vec::new(),
+        Ok(Some(_)) | Err(_) => {
             return connect_error_response(
                 WorkerConnectErrorCode::InvalidArgument,
                 INVALID_REQUEST_MESSAGE,
@@ -325,17 +326,21 @@ fn route_operational(req: &Request, env: &Env) -> Result<Response> {
 }
 
 fn authorized_operational_probe(req: &Request, env: &Env) -> Result<bool> {
-    let headers = Zeroizing::new(req.headers().get_all("authorization")?);
-    if headers.len() != 1 {
+    let Some(authorization) = req.headers().get("authorization")? else {
+        return Ok(false);
+    };
+    let authorization = Zeroizing::new(authorization);
+    if authorization.contains(',') {
         return Ok(false);
     }
     let expected = match env.secret(OPERATIONAL_PROBE_TOKEN_BINDING) {
         Ok(secret) => Zeroizing::new(secret.to_string()),
         Err(_) => return Ok(false),
     };
-    Ok(valid_operational_probe_headers(&headers, &expected))
+    Ok(valid_operational_probe_token(&authorization, &expected))
 }
 
+#[cfg(test)]
 pub(crate) fn valid_operational_probe_headers(headers: &[String], expected: &str) -> bool {
     let [authorization] = headers else {
         return false;

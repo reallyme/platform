@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::error::{ConcurrencyLimitConfigField, ConfigError, ConfigValidationErrorReason};
+use thiserror::Error;
 
 /// Default maximum number of concurrent HTTP requests handled by one server process.
 ///
@@ -36,6 +37,90 @@ pub const DEFAULT_WEBSOCKET_CONNECTION_LIMIT: RuntimeConcurrencyLimit =
 /// Maximum accepted runtime concurrency limit.
 pub const MAX_IN_FLIGHT_REQUEST_LIMIT: RuntimeConcurrencyLimit =
     RuntimeConcurrencyLimit::new_unchecked(MAX_IN_FLIGHT_REQUEST_LIMIT_VALUE);
+
+/// Validated TCP connection admission limits for one listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectionLimitConfig {
+    max_live: RuntimeConcurrencyLimit,
+    max_per_source: RuntimeConcurrencyLimit,
+}
+
+/// Classified TCP admission limit validation failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionLimitErrorReason {
+    /// The global connection bound must be positive.
+    ZeroGlobal,
+    /// The per-source connection bound must be positive.
+    ZeroPerSource,
+    /// A configured bound exceeds the platform maximum.
+    AboveMaximum,
+    /// Per-source capacity cannot exceed the listener-wide capacity.
+    PerSourceExceedsGlobal,
+}
+
+/// Typed validation error for TCP connection admission limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("invalid TCP connection limit: {reason:?}")]
+pub struct ConnectionLimitError {
+    reason: ConnectionLimitErrorReason,
+}
+
+impl ConnectionLimitError {
+    /// Returns a stable reason without exposing a raw configuration value.
+    pub const fn reason(self) -> ConnectionLimitErrorReason {
+        self.reason
+    }
+}
+
+impl ConnectionLimitConfig {
+    /// The global bound remains in force for trusted proxies and local sidecars.
+    pub const fn secure_defaults() -> Self {
+        Self {
+            max_live: RuntimeConcurrencyLimit::new_unchecked(2_048),
+            max_per_source: RuntimeConcurrencyLimit::new_unchecked(64),
+        }
+    }
+
+    /// Constructs bounds with a per-source limit no greater than the global limit.
+    pub fn new(max_live: usize, max_per_source: usize) -> Result<Self, ConnectionLimitError> {
+        if max_live == 0 {
+            return Err(ConnectionLimitError {
+                reason: ConnectionLimitErrorReason::ZeroGlobal,
+            });
+        }
+        if max_per_source == 0 {
+            return Err(ConnectionLimitError {
+                reason: ConnectionLimitErrorReason::ZeroPerSource,
+            });
+        }
+        if max_live > MAX_IN_FLIGHT_REQUEST_LIMIT_VALUE
+            || max_per_source > MAX_IN_FLIGHT_REQUEST_LIMIT_VALUE
+        {
+            return Err(ConnectionLimitError {
+                reason: ConnectionLimitErrorReason::AboveMaximum,
+            });
+        }
+        if max_per_source > max_live {
+            return Err(ConnectionLimitError {
+                reason: ConnectionLimitErrorReason::PerSourceExceedsGlobal,
+            });
+        }
+        Ok(Self {
+            max_live: RuntimeConcurrencyLimit::new_unchecked(max_live),
+            max_per_source: RuntimeConcurrencyLimit::new_unchecked(max_per_source),
+        })
+    }
+
+    /// Maximum concurrent TCP connections admitted by the listener.
+    pub const fn max_live(self) -> usize {
+        self.max_live.as_usize()
+    }
+
+    /// Maximum concurrent TCP connections from an untrusted source network.
+    pub const fn max_per_source(self) -> usize {
+        self.max_per_source.as_usize()
+    }
+}
 
 /// Validated in-flight request concurrency limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

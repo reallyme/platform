@@ -5,7 +5,9 @@ use super::{
     GrpcServePolicy, grpc_health_status_for_readiness, serve_health_grpc,
     set_registered_health_status, sync_grpc_health_with_readiness,
 };
-use crate::config::{DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT, TrustedProxyHeaders};
+use crate::config::{
+    ConnectionLimitConfig, DEFAULT_GRPC_IN_FLIGHT_REQUEST_LIMIT, TrustedProxyHeaders,
+};
 use crate::grpc::{GrpcHealthServingStatus, health_reporter};
 use crate::health::Readiness;
 use crate::runtime::RateLimitRegistry;
@@ -172,6 +174,7 @@ async fn aborting_grpc_serve_closes_detached_watch_connections() {
         method_policies: Vec::new(),
         rate_limit_registry,
         trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
+        connection_limits: ConnectionLimitConfig::secure_defaults(),
     };
     let serve = tokio::spawn(serve_health_grpc(
         listener,
@@ -227,6 +230,7 @@ async fn routed_grpc_watch_survives_first_request_deadline() {
         method_policies: Vec::new(),
         rate_limit_registry: Arc::new(RateLimitRegistry::new(Arc::new(Vec::new()))),
         trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
+        connection_limits: ConnectionLimitConfig::secure_defaults(),
     };
     let serve = tokio::spawn(serve_health_grpc(
         listener,
@@ -289,6 +293,7 @@ async fn aborting_grpc_serve_cancels_in_flight_app_handler() {
         method_policies: Vec::new(),
         rate_limit_registry: Arc::new(RateLimitRegistry::new(Arc::new(Vec::new()))),
         trusted_proxy_headers: TrustedProxyHeaders::ignore_all(),
+        connection_limits: ConnectionLimitConfig::secure_defaults(),
     };
     let controller = ShutdownController::new();
     let serve = tokio::spawn(serve_health_grpc(

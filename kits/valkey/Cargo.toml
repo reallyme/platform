@@ -12,7 +12,7 @@ repository.workspace = true
 keywords = ["valkey", "redis", "database", "cache", "connector"]
 categories = ["asynchronous", "caching", "database"]
 publish = ["crates-io"]
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [dependencies]
 redis.workspace = true

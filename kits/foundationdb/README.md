@@ -127,9 +127,11 @@ Supported actions are `ensure`, `repair`, `exists`, and `delete`. Existing
 tenants with missing or incompatible metadata fail closed under `ensure`.
 If provisioning was interrupted after tenant creation, an operator may run
 `repair` after verifying the intended tenant name; it writes metadata only
-when the tenant is empty. `delete` clears only the kit metadata keys and
-deletes the tenant in one transaction. FoundationDB rejects deletion when
-application data remains, leaving the metadata intact.
+when the tenant is empty. `delete` first checks that no application data remains,
+then clears only the kit metadata keys in a tenant transaction. It deletes the
+empty tenant in a second operation and restores metadata if that operation fails
+while the tenant still exists. Application data produces a typed empty-tenant
+administration error without clearing metadata.
 
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the

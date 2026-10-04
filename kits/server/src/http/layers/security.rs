@@ -35,7 +35,7 @@ use axum::response::{IntoResponse, Response};
 use pin_project_lite::pin_project;
 use tower::{Layer, Service};
 
-use crate::config::{HttpSecurityConfig, SecurityHeadersConfig};
+use crate::config::{HttpSecurityConfig, SecurityHeadersConfig, TrustedProxyHeaderFamily};
 use crate::observability::{HttpMethodLabel, HttpRejectionReason};
 
 use super::super::response::JsonErrorResponse;
@@ -223,6 +223,22 @@ where
         let proxy_request_metadata = self.config.trusted_proxy_request_metadata();
         let strict_forwarded_header_consistency =
             proxy_request_metadata.strict_forwarded_header_consistency();
+        // A proxy may append a second field line while leaving an untrusted
+        // client line first. Host and scheme must never read that first line.
+        if trusted_peer
+            && proxy_request_metadata.header_family() == TrustedProxyHeaderFamily::Forwarded
+            && request.headers().get_all(FORWARDED_HEADER).iter().count() > 1
+        {
+            record_security_rejection(&request, method, HttpRejectionReason::UntrustedProxyHeaders);
+            return HttpSecurityResponseFuture::ready(
+                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                    ErrorCode::BadRequest,
+                ))
+                .with_optional_request_id(request_id)
+                .into_response(),
+                self.config.security_headers(),
+            );
+        }
         if trusted_peer
             && strict_forwarded_header_consistency
             && has_mixed_proxy_header_families(request.headers())

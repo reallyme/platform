@@ -13,7 +13,10 @@ use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
 
 use super::connection_guard::{BoundedTcpListener, ForceCloseConnections};
-use crate::config::{GrpcServerConfig, RuntimeConcurrencyLimit, TrustedProxyHeaders};
+use super::grpc_idle::GrpcActivityLayer;
+use crate::config::{
+    ConnectionLimitConfig, GrpcServerConfig, RuntimeConcurrencyLimit, TrustedProxyHeaders,
+};
 use crate::grpc::{GrpcHealthServingStatus, health_reporter};
 use crate::grpc::{GrpcTimeout, grpc_policy_layer};
 use crate::health::{GrpcServingStatus, Readiness, ReadinessWatcher, readiness_check};
@@ -234,6 +237,7 @@ pub(crate) async fn serve_health_grpc(
     };
 
     let mut shutdown_for_server = shutdown.clone();
+    let trusted_proxies = policy.trusted_proxy_headers.clone();
     let grpc_policy = crate::grpc::GrpcPolicy::new(
         policy.listener_name,
         policy.max_timeout,
@@ -257,14 +261,19 @@ pub(crate) async fn serve_health_grpc(
         builder = builder.timeout(max_timeout.as_duration());
     }
     let incoming = stream::unfold(
-        BoundedTcpListener::with_force_close(listener, force_close),
+        BoundedTcpListener::with_force_close(listener, force_close, policy.connection_limits)
+            .with_trusted_proxies(trusted_proxies),
         |mut listener| async move {
             let (stream, _peer) = listener.accept().await;
             Some((Ok::<_, std::io::Error>(stream), listener))
         },
     );
     let server = builder
-        .layer(ServiceBuilder::new().layer(grpc_policy_layer(grpc_policy)))
+        .layer(
+            ServiceBuilder::new()
+                .layer(GrpcActivityLayer)
+                .layer(grpc_policy_layer(grpc_policy)),
+        )
         .layer(ConcurrencyLimitLayer::new(concurrency_limit.as_usize()))
         .add_routes(routes)
         .serve_with_incoming_shutdown(incoming, async move {
@@ -303,6 +312,7 @@ pub(crate) struct GrpcServePolicy {
     pub(crate) method_policies: Vec<GrpcMethodPolicy>,
     pub(crate) rate_limit_registry: Arc<RateLimitRegistry>,
     pub(crate) trusted_proxy_headers: TrustedProxyHeaders,
+    pub(crate) connection_limits: ConnectionLimitConfig,
 }
 
 /// Native gRPC method-level runtime policy.
