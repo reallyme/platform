@@ -120,10 +120,10 @@ async fn http2_websocket_survives_http_idle_and_short_connection_age() {
         }),
     );
     let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
-    policy.idle_timeout = Duration::from_millis(80);
-    policy.write_stall_timeout = Duration::from_millis(80);
-    policy.connection_drain_grace = Duration::from_millis(50);
-    policy.max_connection_age = Duration::from_millis(100);
+    policy.idle_timeout = Duration::from_secs(1);
+    policy.write_stall_timeout = Duration::from_secs(1);
+    policy.connection_drain_grace = Duration::from_millis(250);
+    policy.max_connection_age = Duration::from_millis(300);
     let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
 
     let io = TokioIo::new(TcpStream::connect(address).await.expect("client connects"));
@@ -158,8 +158,10 @@ async fn http2_websocket_survives_http_idle_and_short_connection_age() {
         None,
     )
     .await;
-    for _ in 0..5 {
-        tokio::time::sleep(Duration::from_millis(60)).await;
+    // Repeated traffic spans both deadlines while leaving enough scheduling
+    // margin for the test to distinguish idle retirement from executor load.
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
         socket
             .send(tungstenite::Message::Text("still-open".into()))
             .await

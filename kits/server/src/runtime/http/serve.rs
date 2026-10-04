@@ -251,6 +251,17 @@ async fn serve_connection(
                 break;
             }
             _ = &mut age_deadline => {
+                // The upgrade notification can still be pending when the
+                // original age deadline fires on a busy executor. Inspect
+                // current activity before retiring an upgraded stream.
+                let upgraded_deadline = connection_started
+                    + settings.max_connection_age.max(HTTP2_WEBSOCKET_MAX_AGE);
+                if activity_rx.borrow().has_h2_websocket
+                    && tokio::time::Instant::now() < upgraded_deadline
+                {
+                    age_deadline.as_mut().reset(upgraded_deadline);
+                    continue;
+                }
                 // Hyper sends GOAWAY for HTTP/2 and finishes in-flight streams.
                 // Upgraded WebSockets have their own close-frame age policy.
                 connection.as_mut().graceful_shutdown();
