@@ -308,7 +308,7 @@ jobs:
             --name reallyme-ci-nats \
             --publish 4222:4222 \
             --publish 8222:8222 \
-            nats:2 \
+            nats:2.15.0-scratch@sha256:c0d27f3054601a99055aa5ec897b0a55bf1869ae50f454e659acfbbea11d2ab7 \
             -js \
             -m 8222
           for _attempt in {1..30}; do
@@ -363,6 +363,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          fdb_digest=sha256:559b178a137bbe09272ad6e3752531aa04e2ddacab8ccfa4ffa86467db033bea
           docker run --detach \
             --name reallyme-ci-fdb \
             --network host \
@@ -371,7 +372,7 @@ jobs:
             --env FDB_PORT=4500 \
             --tmpfs /var/fdb/data:rw,size=2g \
             --tmpfs /var/fdb/logs:rw,size=2g \
-            "foundationdb/foundationdb:${FDB_VERSION}"
+            "foundationdb/foundationdb:${FDB_VERSION}@${fdb_digest}"
           configured=0
           for _attempt in {1..30}; do
             if docker exec reallyme-ci-fdb fdbcli --exec 'configure new single memory' 2>&1 \
@@ -410,6 +411,12 @@ jobs:
           cargo test --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --test foundationdb_integration \
             live_tenant_delete_clears_metadata_but_refuses_application_data -- --ignored --exact
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib -- --list \
+            | rg '^fdb::tenant::admin::tests::tenant_delete_recovery_live_cases: test$'
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib \
+            fdb::tenant::admin::tests::tenant_delete_recovery_live_cases -- --ignored --exact
 
       - name: Start Typesense
         shell: bash
@@ -432,14 +439,16 @@ jobs:
 
       - name: Run Typesense integration test
         shell: bash
+        env:
+          REALLYME_TYPESENSE_INTEGRATION_API_KEY: platform-integration-key
         run: |
           set -euo pipefail
           cargo test --locked -p reallyme-typesense-kit \
             --test typesense_integration -- --list \
-            | rg '^connector_reports_live_typesense_ready: test$'
+            | rg '^connector_checks_live_health_and_authenticated_collection_read: test$'
           cargo test --locked -p reallyme-typesense-kit \
             --test typesense_integration \
-            connector_reports_live_typesense_ready -- --ignored --exact
+            connector_checks_live_health_and_authenticated_collection_read -- --ignored --exact
 
       - name: Start Valkey
         shell: bash
