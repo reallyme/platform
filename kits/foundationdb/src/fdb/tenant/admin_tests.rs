@@ -48,6 +48,34 @@ async fn interrupted_creation_requires_explicit_empty_tenant_repair(
         ensure_tenant(connector, tenant).await.is_err(),
         "normal startup must not silently adopt a tenant without kit metadata"
     );
+    let inner = connector
+        .database()
+        .open_tenant(tenant.as_bytes())
+        .expect("open interrupted tenant fixture");
+    let transaction = inner.create_trx().expect("create foreign-data transaction");
+    transaction.set(b"application/data", b"value");
+    transaction
+        .commit()
+        .await
+        .expect("write foreign application data");
+    assert!(matches!(
+        repair_tenant_metadata(connector, tenant).await,
+        Err(FdbError::Tenant {
+            reason: TenantErrorReason::RepairRequiresEmptyTenant { .. }
+        })
+    ));
+    assert!(
+        ensure_tenant(connector, tenant).await.is_err(),
+        "refused repair must leave the tenant fail closed"
+    );
+    let transaction = inner
+        .create_trx()
+        .expect("create fixture cleanup transaction");
+    transaction.clear(b"application/data");
+    transaction
+        .commit()
+        .await
+        .expect("remove foreign application data");
     repair_tenant_metadata(connector, tenant)
         .await
         .expect("operator repair of an empty tenant");
