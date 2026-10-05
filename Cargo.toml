@@ -21,7 +21,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.99.0"
 license = "MIT OR Apache-2.0"
@@ -77,7 +77,7 @@ hyper = { version = "1", default-features = false, features = ["server", "http1"
 hyper-util = { version = "0.1", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
 redis = { version = "1.7.1", default-features = false, features = ["connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 reallyme-codec = { version = "=0.3.1", default-features = false }
-reallyme-crypto = { version = "=0.3.12", default-features = false, features = ["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"] }
+reallyme-crypto = { version = "=0.3.13", default-features = false, features = ["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"] }
 rustls-native-certs = "0.8.4"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1.0.9"
@@ -96,16 +96,16 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Workspace-local crates use the same release version and are declared here so
 # member manifests express only their feature requirements, not path/version policy.
-example-app = { path = "apps/example", version = "0.3.2", default-features = false }
-reallyme-app-kit = { path = "kits/app", version = "0.3.2" }
-reallyme-example-contract = { path = "apps/example/contract", version = "0.3.2" }
-reallyme-foundationdb-kit = { path = "kits/foundationdb", version = "0.3.2" }
-reallyme-nats-kit = { path = "kits/nats", version = "0.3.2" }
-reallyme-postgres-kit = { path = "kits/postgres", version = "0.3.2" }
-reallyme-s3-kit = { path = "kits/s3", version = "0.3.2", default-features = false }
-reallyme-server-kit = { path = "kits/server", version = "0.3.2", default-features = false }
-reallyme-typesense-kit = { path = "kits/typesense", version = "0.3.2" }
-reallyme-valkey-kit = { path = "kits/valkey", version = "0.3.2" }
+example-app = { path = "apps/example", version = "0.3.3", default-features = false }
+reallyme-app-kit = { path = "kits/app", version = "0.3.3" }
+reallyme-example-contract = { path = "apps/example/contract", version = "0.3.3" }
+reallyme-foundationdb-kit = { path = "kits/foundationdb", version = "0.3.3" }
+reallyme-nats-kit = { path = "kits/nats", version = "0.3.3" }
+reallyme-postgres-kit = { path = "kits/postgres", version = "0.3.3" }
+reallyme-s3-kit = { path = "kits/s3", version = "0.3.3", default-features = false }
+reallyme-server-kit = { path = "kits/server", version = "0.3.3", default-features = false }
+reallyme-typesense-kit = { path = "kits/typesense", version = "0.3.3" }
+reallyme-valkey-kit = { path = "kits/valkey", version = "0.3.3" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
