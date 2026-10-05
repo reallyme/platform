@@ -2,6 +2,11 @@
 
 ## 0.3.2
 
+- Preserve the 0.3.1 `websocket_same_origin` call signature while keeping the
+  URI-aware check available through `websocket_same_origin_with_external_origin`.
+- Release each gRPC listener's per-connection Tonic future when its socket
+  closes, so rapid TCP connection churn does not retain server futures until
+  the connection-age deadline.
 - Refresh compatible Rust dependencies and the workspace lockfile, and update
   Worker tooling to pnpm 12.9.1.
 - Rate-limit source churn no longer grants a fresh token while existing buckets

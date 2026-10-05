@@ -13,14 +13,25 @@ const MAX_WEBSOCKET_ORIGIN_BYTES: usize = 2_048;
 /// Browsers send `Origin` on WebSocket handshakes. Requests without it can be
 /// non-browser clients, which must still authenticate through the app's own
 /// transport policy. A present but malformed or cross-origin value is denied.
-pub fn websocket_same_origin(headers: &HeaderMap, uri: &Uri) -> bool {
-    websocket_same_origin_with_external_origin(headers, uri, None)
+pub fn websocket_same_origin(
+    headers: &HeaderMap,
+    external_origin: Option<&ExternalRequestOrigin>,
+) -> bool {
+    websocket_same_origin_inner(headers, None, external_origin)
 }
 
-/// Checks the origin against a trusted externally visible endpoint when present.
+/// Checks the origin using the request URI and a trusted external endpoint when present.
 pub fn websocket_same_origin_with_external_origin(
     headers: &HeaderMap,
     uri: &Uri,
+    external_origin: Option<&ExternalRequestOrigin>,
+) -> bool {
+    websocket_same_origin_inner(headers, Some(uri), external_origin)
+}
+
+fn websocket_same_origin_inner(
+    headers: &HeaderMap,
+    uri: Option<&Uri>,
     external_origin: Option<&ExternalRequestOrigin>,
 ) -> bool {
     let mut origins = headers.get_all(header::ORIGIN).iter();
@@ -68,21 +79,24 @@ pub fn websocket_same_origin_with_external_origin(
                     Ok(host) => host,
                     Err(_) => return false,
                 },
-                None => match uri.authority() {
+                None => match uri.and_then(Uri::authority) {
                     Some(authority) => authority.as_str(),
                     None => return false,
                 },
             };
             if uri
-                .authority()
+                .and_then(Uri::authority)
                 .is_some_and(|authority| authority.as_str() != host)
             {
                 return false;
             }
-            let scheme = match uri.scheme_str() {
-                Some("https") => "https",
-                Some("http") | None => "http",
-                Some(_) => return false,
+            let scheme = match uri {
+                Some(uri) => match uri.scheme_str() {
+                    Some("https") => "https",
+                    Some("http") | None => "http",
+                    Some(_) => return false,
+                },
+                None => "http",
             };
             format!("{scheme}://{host}")
         }

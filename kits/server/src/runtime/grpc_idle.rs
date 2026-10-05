@@ -28,18 +28,21 @@ struct ActivityState {
 pub(crate) struct GrpcConnectionActivity {
     state: Mutex<ActivityState>,
     idle_sender: watch::Sender<Option<Instant>>,
+    closed_sender: watch::Sender<bool>,
 }
 
 impl GrpcConnectionActivity {
     pub(crate) fn new() -> Arc<Self> {
         let now = Instant::now();
         let (idle_sender, _idle_receiver) = watch::channel(Some(now));
+        let (closed_sender, _closed_receiver) = watch::channel(false);
         Arc::new(Self {
             state: Mutex::new(ActivityState {
                 active_requests: 0,
                 idle_since: now,
             }),
             idle_sender,
+            closed_sender,
         })
     }
 
@@ -56,6 +59,19 @@ impl GrpcConnectionActivity {
 
     pub(crate) fn subscribe_idle(&self) -> watch::Receiver<Option<Instant>> {
         self.idle_sender.subscribe()
+    }
+
+    pub(crate) fn mark_transport_closed(&self) {
+        self.closed_sender.send_replace(true);
+    }
+
+    pub(crate) async fn wait_transport_closed(&self) {
+        let mut closed = self.closed_sender.subscribe();
+        while !*closed.borrow_and_update() {
+            if closed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 
