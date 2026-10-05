@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+- Update `reallyme-crypto` and its component crates to 0.3.13.
+
 ## 0.3.2
 
 - Preserve the 0.3.1 `websocket_same_origin` call signature while keeping the
