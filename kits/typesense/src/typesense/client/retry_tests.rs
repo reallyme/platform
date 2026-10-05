@@ -18,7 +18,7 @@ fn server_retry_after_and_jitter_cannot_exceed_local_policy() {
     .with_retry_initial_delay(Duration::from_secs(2))
     .with_retry_jitter_percent(100);
     let http_client = reqwest::Client::builder()
-        .tls_backend_preconfigured(crate::typesense::connector::tls_config().expect("test TLS"))
+        .tls_backend_preconfigured(crate::typesense::connector::tls_config(None).expect("test TLS"))
         .build()
         .expect("test HTTP client");
     let client = TypesenseClient::new(http_client, config);

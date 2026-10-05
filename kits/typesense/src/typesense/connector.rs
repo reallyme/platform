@@ -25,6 +25,32 @@ pub struct TypesenseConnector {
 impl TypesenseConnector {
     /// Builds a connector from validated configuration.
     pub fn connect(config: TypesenseConfig) -> Result<Self, ConnectorBuildError> {
+        Self::build(config, None)
+    }
+
+    /// Builds a connector that trusts only the supplied certificate roots.
+    ///
+    /// A private Typesense CA is not combined with host or bundled public roots.
+    pub fn connect_with_custom_tls_roots(
+        config: TypesenseConfig,
+        roots: rustls::RootCertStore,
+    ) -> Result<Self, ConnectorBuildError> {
+        if config
+            .endpoints()
+            .iter()
+            .any(|endpoint| !endpoint.as_str().starts_with("https://"))
+        {
+            return Err(ConnectorBuildError::Invalid {
+                reason: ConnectorBuildErrorReason::InvalidRequestPolicy,
+            });
+        }
+        Self::build(config, Some(roots))
+    }
+
+    fn build(
+        config: TypesenseConfig,
+        custom_roots: Option<rustls::RootCertStore>,
+    ) -> Result<Self, ConnectorBuildError> {
         config
             .validate()
             .map_err(|_| ConnectorBuildError::Invalid {
@@ -44,7 +70,7 @@ impl TypesenseConnector {
         default_headers.insert(TYPESENSE_API_KEY_HEADER, api_key);
 
         let mut builder = Client::builder()
-            .tls_backend_preconfigured(tls_config()?)
+            .tls_backend_preconfigured(tls_config(custom_roots)?)
             // The API key must not transit a proxy inherited from process env.
             .no_proxy()
             // Custom credential headers are not stripped by redirect handling.
@@ -105,13 +131,26 @@ impl TypesenseConnector {
     }
 }
 
-pub(crate) fn tls_config() -> Result<rustls::ClientConfig, ConnectorBuildError> {
-    let mut roots = rustls::RootCertStore::empty();
-    let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    if roots.is_empty() {
-        // A host-managed trust store must not be widened by bundled roots.
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    }
+pub(crate) fn tls_config(
+    custom_roots: Option<rustls::RootCertStore>,
+) -> Result<rustls::ClientConfig, ConnectorBuildError> {
+    let roots = match custom_roots {
+        Some(roots) if !roots.is_empty() => roots,
+        Some(_) => {
+            return Err(ConnectorBuildError::Invalid {
+                reason: ConnectorBuildErrorReason::HttpClientBuildFailed,
+            });
+        }
+        None => {
+            let mut roots = rustls::RootCertStore::empty();
+            let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+            if roots.is_empty() {
+                // A host-managed trust store must not be widened by bundled roots.
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            }
+            roots
+        }
+    };
     rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
         .map(|builder| {

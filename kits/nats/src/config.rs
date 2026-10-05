@@ -13,7 +13,8 @@ mod connection;
 mod validation;
 
 pub use connection::{
-    connect_client, connect_client_with_credentials, connect_with_credentials, create_context,
+    connect_client, connect_client_with_credentials, connect_with_credentials,
+    connect_with_credentials_and_custom_tls_roots, create_context,
 };
 use validation::{
     redact_nats_url, validate_component, validate_filter_subject, validate_nats_url,

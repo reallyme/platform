@@ -25,3 +25,9 @@ JSONL import results. Split larger operations into bounded batches. HTTP redirec
 are rejected to keep API keys confined to the configured endpoint. Server-provided
 retry delays beyond the configured maximum return the rate-limit error without
 retrying early. Retry jitter stays within that maximum.
+
+`TypesenseConnector::connect` uses operating-system certificate roots, with
+bundled public roots only when the host store is empty. For a private CA,
+`TypesenseConnector::connect_with_custom_tls_roots` accepts a nonempty
+`rustls::RootCertStore` and trusts only those roots. Its configured endpoints
+must all use HTTPS.

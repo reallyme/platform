@@ -7,6 +7,31 @@ use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[test]
+fn custom_tls_roots_require_a_nonempty_exclusive_store() {
+    assert!(super::nats_tls_config(Some(rustls::RootCertStore::empty())).is_err());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().take(1).cloned());
+    assert_eq!(roots.len(), 1);
+    super::nats_tls_config(Some(roots)).expect("single custom root builds");
+}
+
+#[tokio::test]
+async fn custom_tls_roots_reject_plaintext_policy_before_connecting() {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().take(1).cloned());
+    assert!(matches!(
+        super::connect_with_credentials_and_custom_tls_roots(
+            "nats://127.0.0.1:4222",
+            super::JetStreamTlsPolicy::Disabled,
+            &super::JetStreamCredentials::None,
+            roots,
+        )
+        .await,
+        Err(crate::error::JetStreamError::InvalidConfiguration)
+    ));
+}
+
 #[tokio::test]
 async fn plaintext_seed_does_not_follow_discovered_server_with_token() {
     let seed = TcpListener::bind("127.0.0.1:0")

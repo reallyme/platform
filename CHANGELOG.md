@@ -42,7 +42,9 @@
   Application transactions opened with a read policy reject mutations.
 - Explicit plaintext NATS connections ignore discovered servers. Native TLS
   clients use host certificate roots when available, with bundled public roots
-  only as a fallback; HTTP clients offer HTTP/2 and HTTP/1.1 through ALPN.
+  only as a fallback. App-kit HTTPS, S3, Typesense, and NATS clients also accept
+  explicit nonempty custom root stores that exclude both host and bundled
+  public roots. HTTP clients offer HTTP/2 and HTTP/1.1 through ALPN.
 - HTTP transport deadlines are configurable through validated server settings.
   JSONC rejects bare CR line endings to avoid ambiguous comment boundaries.
 - Valkey TLS again installs the ring crypto provider when the host has not
