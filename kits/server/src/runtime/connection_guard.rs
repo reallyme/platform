@@ -18,7 +18,9 @@ use axum::serve::Listener;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, futures::OwnedNotified};
-use tokio::time::{Sleep, sleep};
+#[cfg(feature = "tonic-grpc")]
+use tokio::time::Sleep;
+use tokio::time::sleep;
 
 #[cfg(feature = "tonic-grpc")]
 use super::grpc::GrpcTransportTimeouts;
@@ -26,6 +28,10 @@ use super::grpc::GrpcTransportTimeouts;
 use super::grpc_idle::{GrpcConnectionActivity, GrpcRequestActivityGuard};
 use super::rate_limit::rate_limit_network;
 use crate::config::{ConnectionLimitConfig, TrustedProxyHeaders};
+
+#[path = "connection_guard/deadline_io.rs"]
+mod deadline_io;
+use deadline_io::DeadlineIo;
 
 const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
@@ -351,6 +357,27 @@ impl BoundedTcpStream {
         }
         Ok(())
     }
+
+    fn mark_transport_closed(&self) {
+        #[cfg(feature = "tonic-grpc")]
+        if let Some(activity) = &self.grpc_activity {
+            activity.mark_transport_closed();
+        }
+    }
+
+    fn poll_force_close_or_mark(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        let result = self.poll_force_close(cx);
+        if result.is_err() {
+            self.mark_transport_closed();
+        }
+        result
+    }
+}
+
+impl Drop for BoundedTcpStream {
+    fn drop(&mut self) {
+        self.mark_transport_closed();
+    }
 }
 
 impl AsyncRead for BoundedTcpStream {
@@ -359,8 +386,20 @@ impl AsyncRead for BoundedTcpStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.poll_force_close(cx)?;
-        Pin::new(&mut self.io).poll_read(cx, buf)
+        self.poll_force_close_or_mark(cx)?;
+        let had_capacity = buf.remaining() != 0;
+        let filled_before = buf.filled().len();
+        let result = Pin::new(&mut self.io).poll_read(cx, buf);
+        if matches!(&result, Poll::Ready(Err(_)))
+            || (had_capacity
+                && matches!(&result, Poll::Ready(Ok(())))
+                && buf.filled().len() == filled_before)
+        {
+            // A completed nonempty read with no bytes is TCP EOF. Retire the
+            // per-connection Tonic future now rather than at its age limit.
+            self.mark_transport_closed();
+        }
+        result
     }
 }
 
@@ -370,18 +409,30 @@ impl AsyncWrite for BoundedTcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.poll_force_close(cx)?;
-        Pin::new(&mut self.io).poll_write(cx, buf)
+        self.poll_force_close_or_mark(cx)?;
+        let result = Pin::new(&mut self.io).poll_write(cx, buf);
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.mark_transport_closed();
+        }
+        result
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_force_close(cx)?;
-        Pin::new(&mut self.io).poll_flush(cx)
+        self.poll_force_close_or_mark(cx)?;
+        let result = Pin::new(&mut self.io).poll_flush(cx);
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.mark_transport_closed();
+        }
+        result
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_force_close(cx)?;
-        Pin::new(&mut self.io).poll_shutdown(cx)
+        self.poll_force_close_or_mark(cx)?;
+        let result = Pin::new(&mut self.io).poll_shutdown(cx);
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.mark_transport_closed();
+        }
+        result
     }
 }
 
@@ -395,66 +446,6 @@ impl tonic::transport::server::Connected for BoundedTcpStream {
             first_request: self.first_request.clone(),
             activity: self.grpc_activity.clone(),
         }
-    }
-}
-
-struct DeadlineIo<T> {
-    inner: T,
-    first_request_deadline: Pin<Box<Sleep>>,
-    first_request: FirstRequestTracker,
-}
-
-impl<T> DeadlineIo<T> {
-    fn new(inner: T, first_request: Duration, tracker: FirstRequestTracker) -> Self {
-        Self {
-            inner,
-            first_request_deadline: Box::pin(sleep(first_request)),
-            first_request: tracker,
-        }
-    }
-
-    fn timed_out(&mut self, cx: &mut Context<'_>) -> bool {
-        !self.first_request.was_seen() && self.first_request_deadline.as_mut().poll(cx).is_ready()
-    }
-}
-
-impl<T: AsyncRead + Unpin> AsyncRead for DeadlineIo<T> {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        if this.timed_out(cx) {
-            return Poll::Ready(Err(io::Error::from(io::ErrorKind::TimedOut)));
-        }
-        Pin::new(&mut this.inner).poll_read(cx, buf)
-    }
-}
-
-impl<T: AsyncWrite + Unpin> AsyncWrite for DeadlineIo<T> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let this = self.get_mut();
-        if this.timed_out(cx) {
-            return Poll::Ready(Err(io::Error::from(io::ErrorKind::TimedOut)));
-        }
-        Pin::new(&mut this.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        if this.timed_out(cx) {
-            return Poll::Ready(Err(io::Error::from(io::ErrorKind::TimedOut)));
-        }
-        Pin::new(&mut this.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
     }
 }
 

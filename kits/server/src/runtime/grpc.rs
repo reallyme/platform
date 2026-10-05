@@ -13,7 +13,7 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
 
 use super::connection_guard::{BoundedTcpListener, ForceCloseConnections};
-use super::grpc_idle::GrpcActivityLayer;
+use super::grpc_idle::{GrpcActivityLayer, GrpcConnectionActivity};
 use crate::config::{
     ConnectionLimitConfig, GrpcServerConfig, RuntimeConcurrencyLimit, TrustedProxyHeaders,
 };
@@ -292,16 +292,15 @@ pub(crate) async fn serve_health_grpc(
     let transport_timeouts = policy.transport_timeouts;
     let server = serve_connections::serve_connections(
         listener,
-        move |stream, mut connection_shutdown| {
+        move |stream, connection_shutdown| {
             let activity = stream.grpc_activity();
+            // Tonic keeps its detached connection task alive after this one
+            // incoming item. The pending stream lets it drain, while the
+            // transport-close signal ends this future as soon as IO ends.
             let incoming = stream::once(async move { Ok::<_, std::io::Error>(stream) })
                 .chain(stream::pending());
-            let signal = async move {
-                tokio::select! {
-                    _reason = connection_shutdown.cancelled() => {},
-                    () = retire_grpc_connection(activity, transport_timeouts) => {},
-                }
-            };
+            let signal =
+                grpc_connection_shutdown_signal(activity, transport_timeouts, connection_shutdown);
             Box::pin(builder.clone().serve_with_incoming_shutdown(
                 service.clone(),
                 incoming,
@@ -328,6 +327,25 @@ pub(crate) async fn serve_health_grpc(
             // RPCs; the task supervisor owns the finite drain deadline.
             server.await
         }
+    }
+}
+
+async fn grpc_connection_shutdown_signal(
+    activity: Option<Arc<GrpcConnectionActivity>>,
+    timeouts: GrpcTransportTimeouts,
+    mut shutdown: ShutdownToken,
+) {
+    let retirement_activity = activity.clone();
+    let transport_closed = async {
+        match activity {
+            Some(activity) => activity.wait_transport_closed().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        _reason = shutdown.cancelled() => {},
+        () = retire_grpc_connection(retirement_activity, timeouts) => {},
+        () = transport_closed => {},
     }
 }
 

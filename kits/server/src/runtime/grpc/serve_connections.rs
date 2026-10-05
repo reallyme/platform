@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Owns bounded gRPC connection futures until their graceful drain completes.
+//! Owns gRPC connection futures until transport closure or graceful drain.
+//!
+//! The connection future must finish when its socket closes so churn cannot
+//! accumulate completed sockets here until the maximum connection age.
 
 use axum::serve::Listener;
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};

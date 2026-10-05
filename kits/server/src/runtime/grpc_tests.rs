@@ -11,13 +11,17 @@ use crate::config::{
 use crate::grpc::{GrpcHealthServingStatus, health_reporter};
 use crate::health::Readiness;
 use crate::runtime::RateLimitRegistry;
+use crate::runtime::connection_guard::{BoundedTcpListener, ForceCloseConnections};
 use crate::shutdown::ShutdownReason;
 use crate::task::ShutdownController;
+use axum::serve::Listener;
+use futures_util::{StreamExt, stream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::server::NamedService;
+use tonic::transport::Server;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::health_server::Health;
@@ -245,6 +249,51 @@ async fn grpc_age_retirement_sends_goaway() {
     )
     .expect("valid fixture timeouts");
     assert_connection_retires_with_goaway(timeouts).await;
+}
+
+#[tokio::test]
+async fn closed_grpc_socket_releases_its_tonic_server_future() {
+    const CONNECTION_CHURN_CASES: usize = 128;
+    for _ in 0..CONNECTION_CHURN_CASES {
+        let socket = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind local gRPC fixture");
+        let address = socket.local_addr().expect("local gRPC fixture address");
+        let mut listener = BoundedTcpListener::with_force_close(
+            socket,
+            Arc::new(ForceCloseConnections::new()),
+            ConnectionLimitConfig::secure_defaults(),
+        );
+        let peer = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect local gRPC fixture");
+        let (stream, _) = listener.accept().await;
+        let activity = stream.grpc_activity();
+        let incoming =
+            stream::once(async move { Ok::<_, std::io::Error>(stream) }).chain(stream::pending());
+        let controller = ShutdownController::new();
+        let signal = super::grpc_connection_shutdown_signal(
+            activity,
+            GrpcTransportTimeouts::default(),
+            controller.token(),
+        );
+        let (_reporter, health_service) = health_reporter();
+        let server = Server::builder()
+            .add_service(health_service)
+            .serve_with_incoming_shutdown(incoming, signal);
+
+        let close_peer = async move {
+            tokio::task::yield_now().await;
+            drop(peer);
+        };
+        let server_exits = async {
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("closed socket must release the per-connection future")
+                .expect("Tonic server exits cleanly");
+        };
+        tokio::join!(close_peer, server_exits);
+    }
 }
 
 #[tokio::test]
