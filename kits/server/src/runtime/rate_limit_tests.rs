@@ -665,6 +665,33 @@ fn overcommitted_tiers_retain_independent_source_allowances() {
 }
 
 #[test]
+fn overcommitted_source_caps_use_every_slot_independent_of_tier_order() {
+    let small = HttpRateLimitTierName::new("small").expect("valid tier");
+    let medium = HttpRateLimitTierName::new("medium").expect("valid tier");
+    let large = HttpRateLimitTierName::new("large").expect("valid tier");
+    let entries = [
+        (
+            small,
+            HttpRateLimitTierPolicy::new(1, 1, 1).expect("valid policy"),
+        ),
+        (
+            medium,
+            HttpRateLimitTierPolicy::new(1, 1, 2).expect("valid policy"),
+        ),
+        (
+            large,
+            HttpRateLimitTierPolicy::new(1, 1, 10).expect("valid policy"),
+        ),
+    ];
+    let forward = super::effective_source_caps(&entries, 7);
+    let reversed =
+        super::effective_source_caps(&entries.iter().cloned().rev().collect::<Vec<_>>(), 7);
+    assert_eq!(forward, vec![1, 2, 4]);
+    assert_eq!(reversed, vec![4, 2, 1]);
+    assert_eq!(forward.iter().sum::<usize>(), 7);
+}
+
+#[test]
 fn rotating_ipv6_networks_share_a_rate_limited_overflow() {
     let tier = HttpRateLimitTierName::new("ipv6-rotation").expect("valid tier");
     const LIVE_BUCKET_LIMIT: usize = 2_048;

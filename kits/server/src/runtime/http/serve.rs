@@ -33,6 +33,7 @@ use crate::config::{
     ConnectionLimitConfig, HttpHeaderLimitConfig, HttpServerConfig, TrustedProxyHeaders,
 };
 use crate::http::HttpListenerName;
+use crate::shutdown::{ShutdownMode, ShutdownPolicy, ShutdownReason};
 use crate::task::{ShutdownToken, TaskExecutionError, TaskExecutionErrorKind};
 
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -63,7 +64,9 @@ pub(crate) struct HttpServePolicy {
     connection_drain_grace: Duration,
     idle_timeout: Duration,
     write_stall_timeout: Duration,
-    shutdown_drain_budget: Duration,
+    graceful_shutdown_drain_budget: Duration,
+    fast_shutdown_drain_budget: Duration,
+    shutdown_policy: ShutdownPolicy,
 }
 
 impl HttpServePolicy {
@@ -71,6 +74,8 @@ impl HttpServePolicy {
         listener_name: HttpListenerName,
         config: &HttpServerConfig,
         shutdown_timeout: Duration,
+        fast_shutdown_timeout: Duration,
+        shutdown_policy: ShutdownPolicy,
     ) -> Self {
         let timeouts = config.transport_timeouts();
         Self {
@@ -84,8 +89,18 @@ impl HttpServePolicy {
             write_stall_timeout: timeouts.write_stall(),
             // Leave the supervisor time to observe child-task cancellation
             // before it begins application cleanup at the global deadline.
-            shutdown_drain_budget: shutdown_timeout
+            graceful_shutdown_drain_budget: shutdown_timeout
                 .saturating_sub(LISTENER_ABORT_SETTLE_RESERVE.min(shutdown_timeout / 2)),
+            fast_shutdown_drain_budget: fast_shutdown_timeout
+                .saturating_sub(LISTENER_ABORT_SETTLE_RESERVE.min(fast_shutdown_timeout / 2)),
+            shutdown_policy,
+        }
+    }
+
+    fn shutdown_drain_budget(&self, reason: ShutdownReason) -> Duration {
+        match self.shutdown_policy.mode_for(reason) {
+            ShutdownMode::Graceful => self.graceful_shutdown_drain_budget,
+            ShutdownMode::Fast => self.fast_shutdown_drain_budget,
         }
     }
 }
@@ -97,7 +112,7 @@ pub(crate) async fn serve_http(
     mut shutdown: ShutdownToken,
 ) -> Result<(), TaskExecutionError> {
     let mut listener = BoundedTcpListener::new(listener, policy.connection_limits)
-        .with_trusted_proxies(policy.trusted_proxies);
+        .with_trusted_proxies(policy.trusted_proxies.clone());
     let mut connections = JoinSet::new();
     let listener_name = policy.listener_name.as_str().to_owned();
     let max_headers = policy
@@ -124,12 +139,12 @@ pub(crate) async fn serve_http(
         write_stall_timeout: policy.write_stall_timeout,
     };
 
-    loop {
+    let shutdown_reason = loop {
         tokio::select! {
             biased;
             reason = shutdown.cancelled() => {
                 debug!(listener_name, ?reason, "http_listener_draining");
-                break;
+                break reason;
             }
             result = connections.join_next(), if !connections.is_empty() => {
                 if result.is_some_and(|outcome| outcome.is_err()) {
@@ -149,7 +164,7 @@ pub(crate) async fn serve_http(
                 ));
             }
         }
-    }
+    };
     drop(listener);
 
     // End overdue connection tasks before the outer task-set deadline. A
@@ -162,7 +177,7 @@ pub(crate) async fn serve_http(
             }
         }
     };
-    if tokio::time::timeout(policy.shutdown_drain_budget, drain)
+    if tokio::time::timeout(policy.shutdown_drain_budget(shutdown_reason), drain)
         .await
         .is_err()
     {

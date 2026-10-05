@@ -9,6 +9,7 @@
 //! - `recover-delete <tenant-name> <expected-tenant-id>`
 //! - `delete <tenant-name>`
 //! - `exists <tenant-name>`
+//! - `id <tenant-name>`
 
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
@@ -19,7 +20,7 @@ use reallyme_foundationdb_kit::FoundationDbTenantName;
 use reallyme_foundationdb_kit::{FdbConfig, FdbContext, fdb::tenant::admin};
 use thiserror::Error;
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists> <tenant> | recover-delete <tenant> <expected-tenant-id>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id> <tenant> | recover-delete <tenant> <expected-tenant-id>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 enum AdminToolError {
@@ -43,6 +44,10 @@ enum AdminToolError {
     DeleteFailed,
     #[error("tenant exists operation failed")]
     ExistsFailed,
+    #[error("tenant ID lookup failed")]
+    IdLookupFailed,
+    #[error("tenant does not exist")]
+    TenantMissing,
 }
 
 async fn run() -> Result<(), AdminToolError> {
@@ -96,6 +101,16 @@ async fn run() -> Result<(), AdminToolError> {
             } else {
                 println!("false");
             }
+            Ok(())
+        }
+        "id" => {
+            let id = admin::tenant_id(&context, tenant)
+                .await
+                .map_err(|_| AdminToolError::IdLookupFailed)?
+                .ok_or(AdminToolError::TenantMissing)?;
+            // A machine-readable ID lets operators retain the identity needed
+            // for recovery without parsing FoundationDB's own CLI output.
+            println!("{id}");
             Ok(())
         }
         _ => Err(AdminToolError::Usage),

@@ -321,6 +321,28 @@ pub async fn tenant_exists(
     }
 }
 
+/// Returns the cluster-assigned ID for a tenant before an operator deletes it.
+///
+/// Keep a trusted record of this ID for `recover_interrupted_delete`; tenant
+/// names alone cannot distinguish the intended tenant from a later replacement.
+pub async fn tenant_id(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<Option<i64>> {
+    let lookup = tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        TenantManagement::get_tenant(connector.database(), tenant.as_bytes()),
+    )
+    .await;
+    match lookup {
+        Ok(Ok(Some(Ok(info)))) => Ok(Some(info.id)),
+        Ok(Ok(None)) => Ok(None),
+        Ok(Ok(Some(Err(_)))) | Ok(Err(_)) | Err(_) => Err(FdbError::Tenant {
+            reason: TenantErrorReason::LookupFailed { tenant },
+        }),
+    }
+}
+
 #[cfg(test)]
 #[path = "admin_tests.rs"]
 mod tests;

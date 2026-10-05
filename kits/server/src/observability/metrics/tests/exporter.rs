@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use metrics::SharedString;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,10 +11,11 @@ use crate::http::HttpListenerName;
 use crate::observability::ObservabilityError;
 use crate::observability::metrics::{
     HttpMethodLabel, HttpRejectionReason, HttpStatusClass, MetricName, MetricRouteTemplateLabel,
-    RouteTemplate, RuntimeAppFailureOutcome, RuntimeQueueLabel, install_prometheus_recorder,
-    record_http_request_completed, record_http_request_outcome,
-    record_http_request_rejected_for_route_template, record_rate_limit_buckets_live,
-    record_rate_limit_mutex_poisoned, record_rate_limit_overflow_decision, record_readiness_state,
+    RouteTemplate, RuntimeAppFailureOutcome, RuntimeQueueLabel, TransportLabel,
+    install_prometheus_recorder, record_http_malformed_request_path, record_http_request_completed,
+    record_http_request_outcome, record_http_request_rejected_for_route_template,
+    record_rate_limit_buckets_live, record_rate_limit_mutex_poisoned,
+    record_rate_limit_overflow_decision, record_readiness_state,
     record_runtime_app_cleanup_failure, record_runtime_app_startup_failure, record_runtime_phase,
     record_runtime_queue_saturation, record_startup_info,
 };
@@ -72,6 +74,12 @@ fn metrics_subprocess_worker() {
                 &route_label,
                 HttpRejectionReason::UntrustedProxyHeaders,
             );
+            record_http_malformed_request_path(
+                SharedString::from_shared(listener_name.clone_shared()),
+                TransportLabel::Http,
+                HttpMethodLabel::Get,
+                &route_label,
+            );
             record_readiness_state(ReadinessState::Ready);
             record_runtime_phase(ServerRuntimePhase::Serving);
             record_runtime_queue_saturation(RuntimeQueueLabel::TaskChannel);
@@ -105,6 +113,7 @@ fn metrics_subprocess_worker() {
             assert!(rendered.contains("listener_name=\"__unknown\""));
             assert!(rendered.contains("reason=\"concurrency_limit\""));
             assert!(rendered.contains("reason=\"untrusted_proxy_headers\""));
+            assert!(rendered.contains("reason=\"malformed_request_path\""));
             assert!(rendered.contains("server_name=\"reallyme-api\""));
             assert!(rendered.contains("service_version="));
             assert!(rendered.contains("git_sha="));

@@ -205,13 +205,47 @@ pub(crate) fn record_http_request_rejected_for_route_template_with_transport(
     route_template: &MetricRouteTemplateLabel,
     reason: HttpRejectionReason,
 ) {
+    record_http_request_rejected_with_label(
+        listener_name,
+        transport,
+        method,
+        route_template,
+        reason.as_str(),
+    );
+}
+
+#[cfg(feature = "http")]
+pub(crate) fn record_http_malformed_request_path(
+    listener_name: SharedString,
+    transport: TransportLabel,
+    method: HttpMethodLabel,
+    route_template: &MetricRouteTemplateLabel,
+) {
+    // Keep the public exhaustive rejection enum stable in the patch release.
+    record_http_request_rejected_with_label(
+        listener_name,
+        transport,
+        method,
+        route_template,
+        "malformed_request_path",
+    );
+}
+
+#[cfg(feature = "http")]
+fn record_http_request_rejected_with_label(
+    listener_name: SharedString,
+    transport: TransportLabel,
+    method: HttpMethodLabel,
+    route_template: &MetricRouteTemplateLabel,
+    reason: &'static str,
+) {
     counter!(
         MetricName::HttpRejectedCount.as_str(),
         METRIC_LABEL_LISTENER_NAME => listener_name,
         METRIC_LABEL_TRANSPORT => transport.as_str(),
         METRIC_LABEL_METHOD => method.as_str(),
         METRIC_LABEL_ROUTE => route_template.clone_shared(),
-        METRIC_LABEL_REJECTION_REASON => reason.as_str()
+        METRIC_LABEL_REJECTION_REASON => reason
     )
     .increment(1);
 }

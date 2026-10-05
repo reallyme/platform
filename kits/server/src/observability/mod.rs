@@ -53,6 +53,7 @@ pub use metrics::{
 };
 #[cfg(all(feature = "http", feature = "metrics"))]
 pub(crate) use metrics::{
+    record_http_malformed_request_path,
     record_http_rate_limit_decision_for_route_template_with_transport,
     record_http_request_outcome_for_route_template,
     record_http_request_rejected_for_route_template,
