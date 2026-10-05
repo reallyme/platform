@@ -24,7 +24,7 @@ use crate::config::{
     ConnectionLimitConfig, HttpHeaderLimitConfig, TrustedProxyHeaders, TrustedProxyRange,
 };
 use crate::http::HttpListenerName;
-use crate::shutdown::ShutdownReason;
+use crate::shutdown::{ShutdownMode, ShutdownPolicy, ShutdownReason};
 use crate::task::ShutdownController;
 
 const MAX_HTTP_CONNECTION_AGE: Duration = Duration::from_secs(600);
@@ -42,8 +42,27 @@ fn test_policy(trusted_proxies: TrustedProxyHeaders) -> HttpServePolicy {
         connection_drain_grace: CONNECTION_DRAIN_GRACE,
         idle_timeout: HTTP_IDLE_TIMEOUT,
         write_stall_timeout: HTTP_WRITE_STALL_TIMEOUT,
-        shutdown_drain_budget: Duration::from_secs(1),
+        graceful_shutdown_drain_budget: Duration::from_secs(1),
+        fast_shutdown_drain_budget: Duration::from_secs(1),
+        shutdown_policy: ShutdownPolicy::graceful(),
     }
+}
+
+#[test]
+fn listener_drain_budget_follows_the_selected_shutdown_mode() {
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.graceful_shutdown_drain_budget = Duration::from_secs(10);
+    policy.fast_shutdown_drain_budget = Duration::from_millis(400);
+    policy.shutdown_policy = ShutdownPolicy::graceful().with_ctrl_c_mode(ShutdownMode::Fast);
+
+    assert_eq!(
+        policy.shutdown_drain_budget(ShutdownReason::Sigterm),
+        Duration::from_secs(10)
+    );
+    assert_eq!(
+        policy.shutdown_drain_budget(ShutdownReason::CtrlC),
+        Duration::from_millis(400)
+    );
 }
 
 #[cfg(feature = "websocket")]
@@ -465,6 +484,24 @@ async fn owned_listener_preserves_peer_identity_and_serves_http() {
 
 #[tokio::test]
 async fn listener_joins_overdue_connection_tasks_before_returning() {
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.graceful_shutdown_drain_budget = Duration::from_millis(50);
+    assert_listener_joins_overdue_connection_tasks(policy, ShutdownReason::Sigterm).await;
+}
+
+#[tokio::test]
+async fn fast_shutdown_joins_connection_tasks_before_cleanup_deadline() {
+    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
+    policy.graceful_shutdown_drain_budget = Duration::from_secs(5);
+    policy.fast_shutdown_drain_budget = Duration::from_millis(50);
+    policy.shutdown_policy = ShutdownPolicy::graceful().with_ctrl_c_mode(ShutdownMode::Fast);
+    assert_listener_joins_overdue_connection_tasks(policy, ShutdownReason::CtrlC).await;
+}
+
+async fn assert_listener_joins_overdue_connection_tasks(
+    policy: HttpServePolicy,
+    reason: ShutdownReason,
+) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct DropMarker(Arc<AtomicBool>);
@@ -493,8 +530,6 @@ async fn listener_joins_overdue_connection_tasks_before_returning() {
             }
         }),
     );
-    let mut policy = test_policy(TrustedProxyHeaders::ignore_all());
-    policy.shutdown_drain_budget = Duration::from_millis(50);
     let server = tokio::spawn(serve_http(listener, router, policy, controller.token()));
     let mut client = TcpStream::connect(address).await.expect("client connects");
     client
@@ -508,7 +543,7 @@ async fn listener_joins_overdue_connection_tasks_before_returning() {
         .expect("response headers read");
     assert!(headers[..received].starts_with(b"HTTP/1.1 200"));
 
-    controller.begin_shutdown(ShutdownReason::Sigterm);
+    controller.begin_shutdown(reason);
     timeout(Duration::from_secs(1), server)
         .await
         .expect("listener drain finishes within its budget")

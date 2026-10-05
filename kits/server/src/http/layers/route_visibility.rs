@@ -27,7 +27,8 @@ use crate::http::{
 };
 use crate::observability::{
     HttpMethodLabel, HttpRateLimitOutcome, HttpRejectionReason, MetricRouteTemplateLabel,
-    TransportLabel, record_http_rate_limit_decision_for_route_template_with_transport,
+    TransportLabel, record_http_malformed_request_path,
+    record_http_rate_limit_decision_for_route_template_with_transport,
     record_http_request_rejected_for_route_template_with_transport,
 };
 use crate::runtime::HttpRateLimitTierPolicy;
@@ -134,12 +135,11 @@ where
             Some(path) => path,
             None => {
                 let request_id = request_id_from_headers(request.headers());
-                record_http_request_rejected_for_route_template_with_transport(
+                record_http_malformed_request_path(
                     SharedString::from_shared(self.listener_name.clone_shared()),
                     transport_label_for_request(&request),
                     HttpMethodLabel::from_method(request.method()),
                     &route_template,
-                    HttpRejectionReason::BlockedRouteVisibility,
                 );
                 return RouteVisibilityResponseFuture::ready(
                     JsonErrorResponse::from_public_error(PublicHttpError::from_code(

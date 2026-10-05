@@ -7,6 +7,7 @@ use super::metadata_keys;
 use super::{
     TenantHandle, clear_metadata_if_empty, delete_tenant, ensure_tenant, finish_delete_after_clear,
     read_tenant_metadata, recover_interrupted_delete, repair_tenant_metadata, restore_metadata,
+    tenant_id,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
@@ -171,12 +172,10 @@ async fn interrupted_delete_recovery_restores_metadata_even_with_application_dat
     ensure_tenant(connector, tenant)
         .await
         .expect("provision tenant");
-    let tenant_id = TenantManagement::get_tenant(connector.database(), tenant.as_bytes())
+    let tenant_id = tenant_id(connector, tenant)
         .await
-        .expect("tenant lookup")
-        .expect("tenant exists")
-        .expect("tenant info")
-        .id;
+        .expect("tenant ID lookup")
+        .expect("tenant exists");
     let handle = connector.open_tenant(tenant).await.expect("open tenant");
     handle
         .transact_boxed(

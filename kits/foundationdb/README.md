@@ -123,7 +123,8 @@ cargo run -p reallyme-foundationdb-kit \
   --bin fdb-tenant-admin --features tenant-admin -- ensure example
 ```
 
-Supported actions are `ensure`, `repair`, `recover-delete`, `exists`, and `delete`. Existing
+Supported actions are `ensure`, `repair`, `recover-delete`, `exists`, `id`, and `delete`. Record
+the numeric output of `id <tenant>` before deletion in a trusted operator record. Existing
 tenants with missing or incompatible metadata fail closed under `ensure`.
 If provisioning was interrupted after tenant creation, an operator may run
 `repair` after verifying the intended tenant name; it writes metadata only

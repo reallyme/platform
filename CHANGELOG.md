@@ -7,6 +7,8 @@
 - Release each gRPC listener's per-connection Tonic future when its socket
   closes, so rapid TCP connection churn does not retain server futures until
   the connection-age deadline.
+- Inbound gRPC request and trace IDs are regenerated at the listener boundary;
+  callers must read the server-generated IDs from responses and logs.
 - Refresh compatible Rust dependencies and the workspace lockfile, and update
   Worker tooling to pnpm 12.9.1.
 - Rate-limit source churn no longer grants a fresh token while existing buckets
@@ -26,13 +28,15 @@
   deadlines can be configured per listener. Connection age and idle retirement
   send HTTP/2 GOAWAY and allow in-flight streams to drain. The age-grace limit
   remains a hard cap if a stream does not finish.
-- Pin the Axum WebSocket decoder pair to the versions verified by the live
-  protocol close-code test, preserving typed 1002, 1007, and 1009 responses.
+- Keep the Axum WebSocket decoder on the compatible Tungstenite version line
+  verified by the live protocol close-code test, preserving typed 1002, 1007,
+  and 1009 responses without exact dependency pins.
 - The reference Worker's oversized Connect request response matches native
   Connect's 413 status and resource-exhausted error envelope.
 - Route visibility requires the raw and decoded path to select the same rule:
   ordinary escaped characters are accepted, while encoded separators, percent
-  signs, NUL, and dot segments receive a bad-request response.
+  signs, NUL, and dot segments receive a bad-request response. Malformed paths
+  use their own rejection metric label instead of route-visibility blocking.
 - Over-cap sockets no longer pause the listener's shared accept loop. Trusted
   proxy client chains accept port forms, multiple field lines, and unspecified
   identities; malformed addresses are rejected. The nearest proxy field line
@@ -40,23 +44,31 @@
 - FoundationDB delete attempts bounded metadata restoration after any failed
   phase. Operators can recreate missing metadata with `recover-delete` only
   when they supply a previously recorded tenant ID and the entire reserved
-  metadata namespace is empty; application data may remain. Recovery records
+  metadata namespace is empty; application data may remain. The
+  `fdb-tenant-admin id` command prints that ID before deletion. Recovery records
   a new metadata creation time. Tenant creation and metadata initialization
   remain separate FoundationDB operations; an interrupted `ensure` requires
   explicit repair of an empty tenant.
   Application transactions opened with a read policy reject mutations.
 - Explicit plaintext NATS connections ignore discovered servers. Native TLS
   clients use host certificate roots when available, with bundled public roots
-  only as a fallback. App-kit HTTPS, S3, Typesense, and NATS clients also accept
-  explicit nonempty custom root stores that exclude both host and bundled
-  public roots. HTTP clients offer HTTP/2 and HTTP/1.1 through ALPN.
+  only as a fallback. A host store containing only a private CA therefore no
+  longer also trusts public roots unless the store includes them. App-kit HTTPS,
+  S3, Typesense, and NATS clients also accept explicit nonempty custom root
+  stores that exclude both host and bundled public roots. HTTP clients offer
+  HTTP/2 and HTTP/1.1 through ALPN.
 - HTTP transport deadlines are configurable through validated server settings.
   JSONC rejects bare CR line endings to avoid ambiguous comment boundaries.
 - Valkey TLS again installs the ring crypto provider when the host has not
   selected a process-wide provider, preserving the 0.3.1 default behavior.
 - Service locators and Tailscale resolver configuration continue to require
   HTTPS; an unverified private transport cannot enable plain HTTP endpoints.
-  Tailscale resolver suffixes also accept validated custom DNS domains.
+  Tailscale resolver suffixes also accept validated custom DNS domains, while
+  single-label suffixes are rejected to prevent search-path resolution.
+- Fast shutdown selects the listener drain budget from the active shutdown
+  mode, keeping listener cancellation inside its shorter task deadline.
+- Overcommitted rate-limit tiers share source slots independently of
+  registration order and use the full configured registry capacity.
 - Preserve the 0.3.1 FoundationDB data-error enum and `clear` signatures while
   aborting any read-policy transaction that attempts a mutation, including
   when a callback ignores the method result.

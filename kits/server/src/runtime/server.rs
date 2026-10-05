@@ -219,6 +219,8 @@ impl ServerRuntime {
                     http_server.name().clone(),
                     http_server.config(),
                     shutdown_timeout.as_duration(),
+                    fast_shutdown_timeout.as_duration(),
+                    shutdown_policy,
                 );
                 let rate_limit_policies = http_server.rate_limit_policies();
                 let rate_limit_registry =

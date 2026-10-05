@@ -283,18 +283,44 @@ fn effective_source_caps(
             .collect();
     }
 
-    let mut remaining = registry_cap;
-    policies
+    // Water-fill the tier caps. The allocation must not depend on registration
+    // order: a small tier cannot strand capacity needed by a later large tier.
+    let mut low = 0_usize;
+    let mut high = registry_cap;
+    while low < high {
+        let level = low + (high - low).div_ceil(2);
+        let demand = policies.iter().fold(0_usize, |total, (_, policy)| {
+            total.saturating_add(policy.max_distinct_sources().min(level))
+        });
+        if demand <= registry_cap {
+            low = level;
+        } else {
+            high = level - 1;
+        }
+    }
+
+    let mut caps: Vec<usize> = policies
         .iter()
-        .enumerate()
-        .map(|(index, (_, policy))| {
-            let remaining_tiers = policies.len().saturating_sub(index).max(1);
-            let fair_share = remaining.div_ceil(remaining_tiers);
-            let allocated = policy.max_distinct_sources().min(fair_share);
-            remaining = remaining.saturating_sub(allocated);
-            allocated
-        })
-        .collect()
+        .map(|(_, policy)| policy.max_distinct_sources().min(low))
+        .collect();
+    let allocated = caps.iter().copied().sum::<usize>();
+    let mut remaining = registry_cap - allocated;
+    let mut eligible: Vec<usize> = (0..policies.len())
+        .filter(|&index| caps[index] < policies[index].1.max_distinct_sources())
+        .collect();
+    // A stable name breaks remainder ties without giving the first configured
+    // tier a privileged source allowance.
+    eligible.sort_unstable_by(|&left, &right| {
+        policies[left].0.as_str().cmp(policies[right].0.as_str())
+    });
+    for index in eligible {
+        if remaining == 0 {
+            break;
+        }
+        caps[index] += 1;
+        remaining -= 1;
+    }
+    caps
 }
 
 fn consume_overflow_bucket(
