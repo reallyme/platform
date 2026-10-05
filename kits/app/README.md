@@ -95,6 +95,11 @@ the app JSONC owns app behavior.
 `reflection_enabled` must remain `false`; app-kit validation rejects `true`.
 Configurable gRPC/Connect schema introspection is not supported.
 
+The native `BoundedHttpsClient` uses operating-system certificate roots, with
+bundled public roots only if the host store is empty. For a private service CA,
+`BoundedHttpsClient::new_with_custom_tls_roots` accepts a nonempty
+`rustls::RootCertStore` and trusts only those roots.
+
 The intended layering is:
 
 - app core depends on `reallyme-app-kit`, its app-owned domain, and app-owned ports

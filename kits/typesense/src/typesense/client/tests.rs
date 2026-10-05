@@ -47,7 +47,7 @@ fn retry_policy_never_replays_mutations_after_ambiguous_response() {
 
 fn test_http_client() -> Client {
     Client::builder()
-        .tls_backend_preconfigured(crate::typesense::connector::tls_config().expect("test TLS"))
+        .tls_backend_preconfigured(crate::typesense::connector::tls_config(None).expect("test TLS"))
         .build()
         .expect("test HTTP client")
 }

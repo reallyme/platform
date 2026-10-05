@@ -8,6 +8,47 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[test]
+fn custom_tls_roots_require_a_nonempty_exclusive_store() {
+    assert!(super::tls_config(Some(rustls::RootCertStore::empty())).is_err());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().take(1).cloned());
+    assert_eq!(roots.len(), 1);
+    super::tls_config(Some(roots)).expect("single custom root builds");
+}
+
+#[test]
+fn custom_tls_root_constructor_requires_https() {
+    let config = |endpoint| {
+        TypesenseConfig::new(
+            TypesenseEndpoint::parse(endpoint).expect("endpoint"),
+            SecretString::from("test-key"),
+            Duration::from_secs(1),
+        )
+        .expect("config")
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().take(1).cloned());
+    assert!(
+        TypesenseConnector::connect_with_custom_tls_roots(
+            config("https://localhost:8108"),
+            roots.clone(),
+        )
+        .is_ok()
+    );
+    assert!(
+        TypesenseConnector::connect_with_custom_tls_roots(config("http://127.0.0.1:8108"), roots,)
+            .is_err()
+    );
+    assert!(
+        TypesenseConnector::connect_with_custom_tls_roots(
+            config("https://localhost:8108"),
+            rustls::RootCertStore::empty(),
+        )
+        .is_err()
+    );
+}
+
 #[tokio::test]
 async fn excessive_retry_after_returns_rate_limit_without_retrying_early() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");

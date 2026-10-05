@@ -169,6 +169,13 @@ non-TLS URLs; `Disabled` allows cleartext for local/test; `Optional` (default)
 is derived from the URL scheme by `JetStreamPublisherConfig::new`. Credentials
 and the URL userinfo are redacted from `Debug`.
 
+The default connector uses operating-system certificate roots, falling back
+to bundled public roots only if the host store is empty. For a private CA,
+`connect_with_credentials_and_custom_tls_roots` accepts a nonempty
+`rustls::RootCertStore` and trusts only those roots. It requires a TLS policy
+other than `Disabled`. Pass the returned client to `JetStreamPublisher::from_client`
+or `JetStreamPullConsumer::from_client` with the validated config.
+
 ## Testing
 
 `testing.rs` provides in-memory backends so app and queue-consumer tests need no

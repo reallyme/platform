@@ -29,7 +29,24 @@ pub struct S3StorageClient {
 impl S3StorageClient {
     /// Constructs the reusable S3 storage client.
     pub fn new(config: S3StorageConfig) -> Result<Self, S3StorageError> {
-        let http_client = http_client_builder()?
+        Self::build(config, None)
+    }
+
+    /// Constructs a client that trusts only the supplied certificate roots.
+    ///
+    /// This keeps a private S3 endpoint's CA separate from host and public roots.
+    pub fn new_with_custom_tls_roots(
+        config: S3StorageConfig,
+        roots: rustls::RootCertStore,
+    ) -> Result<Self, S3StorageError> {
+        Self::build(config, Some(roots))
+    }
+
+    fn build(
+        config: S3StorageConfig,
+        custom_roots: Option<rustls::RootCertStore>,
+    ) -> Result<Self, S3StorageError> {
+        let http_client = http_client_builder(custom_roots)?
             .build()
             .map_err(|_| S3StorageError::new(S3StorageErrorReason::ClientUnavailable))?;
         Ok(Self {
@@ -215,15 +232,24 @@ impl std::fmt::Debug for S3StorageClient {
     }
 }
 
-fn http_client_builder() -> Result<reqwest::ClientBuilder, S3StorageError> {
+fn http_client_builder(
+    custom_roots: Option<rustls::RootCertStore>,
+) -> Result<reqwest::ClientBuilder, S3StorageError> {
     // A signature authorizes one endpoint and method. Redirects can replay an
     // upload body elsewhere, and automatic decompression changes stored bytes.
-    let mut roots = rustls::RootCertStore::empty();
-    let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    if roots.is_empty() {
-        // Respect a configured host trust store before using public fallback roots.
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    }
+    let roots = match custom_roots {
+        Some(roots) if !roots.is_empty() => roots,
+        Some(_) => return Err(S3StorageError::new(S3StorageErrorReason::ClientUnavailable)),
+        None => {
+            let mut roots = rustls::RootCertStore::empty();
+            let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+            if roots.is_empty() {
+                // Respect a configured host trust store before using public fallback roots.
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            }
+            roots
+        }
+    };
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))

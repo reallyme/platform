@@ -25,7 +25,24 @@ pub struct BoundedHttpsClient {
 impl BoundedHttpsClient {
     /// Builds a client that refuses plaintext HTTP and never follows redirects.
     pub fn new(origin: HttpsOrigin) -> Result<Self, HttpsTransportError> {
-        let client = hardened_builder()?.build().map_err(|_| {
+        Self::build(origin, None)
+    }
+
+    /// Builds a client that trusts only the supplied certificate roots.
+    ///
+    /// Private service roots are kept separate from host and public roots.
+    pub fn new_with_custom_tls_roots(
+        origin: HttpsOrigin,
+        roots: rustls::RootCertStore,
+    ) -> Result<Self, HttpsTransportError> {
+        Self::build(origin, Some(roots))
+    }
+
+    fn build(
+        origin: HttpsOrigin,
+        custom_roots: Option<rustls::RootCertStore>,
+    ) -> Result<Self, HttpsTransportError> {
+        let client = hardened_builder(custom_roots)?.build().map_err(|_| {
             HttpsTransportError::local(HttpsTransportErrorReason::ClientInitializationFailed)
         })?;
         Ok(Self { origin, client })
@@ -90,18 +107,31 @@ fn zeroizing_body(body: &[u8]) -> Result<Body, HttpsTransportError> {
     Ok(Body::from(Bytes::from_owner(owned)))
 }
 
-fn hardened_builder() -> Result<reqwest::ClientBuilder, HttpsTransportError> {
+fn hardened_builder(
+    custom_roots: Option<rustls::RootCertStore>,
+) -> Result<reqwest::ClientBuilder, HttpsTransportError> {
     const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
     const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
     const MAXIMUM_IDLE_CONNECTIONS_PER_HOST: usize = 8;
 
-    let mut roots = rustls::RootCertStore::empty();
-    let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    if roots.is_empty() {
-        // A configured host trust store remains authoritative; bundled roots
-        // only keep slim images without a store able to establish TLS.
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    }
+    let roots = match custom_roots {
+        Some(roots) if !roots.is_empty() => roots,
+        Some(_) => {
+            return Err(HttpsTransportError::local(
+                HttpsTransportErrorReason::ClientInitializationFailed,
+            ));
+        }
+        None => {
+            let mut roots = rustls::RootCertStore::empty();
+            let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+            if roots.is_empty() {
+                // A configured host trust store remains authoritative; bundled
+                // roots only keep slim images able to establish public TLS.
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            }
+            roots
+        }
+    };
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
