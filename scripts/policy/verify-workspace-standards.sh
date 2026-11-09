@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 set -euo pipefail
@@ -48,7 +48,7 @@ while IFS= read -r rust_file; do
   fi
   first_line="$(sed -n '1p' "${rust_file}")"
   second_line="$(sed -n '2p' "${rust_file}")"
-  if [[ "${first_line}" != '// SPDX-FileCopyrightText: 2026 ReallyMe LLC' ]] || \
+  if [[ "${first_line}" != '// SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited' ]] || \
     [[ "${second_line}" != '// SPDX-License-Identifier: MIT OR Apache-2.0' ]]; then
     printf 'missing exact ReallyMe SPDX header: %s\n' "${rust_file}" >&2
     status=1

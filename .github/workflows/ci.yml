@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 name: CI
@@ -14,15 +14,15 @@ permissions:
   contents: read
 
 env:
-  BUF_VERSION: 1.72.0
+  BUF_VERSION: 1.75.0
   BUFFA_VERSION: 0.9.2
   CONNECTRPC_CODEGEN_VERSION: 0.9.0
-  BUF_LINUX_X86_64_SHA256: 8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
+  BUF_LINUX_X86_64_SHA256: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
   FDB_CLIENT_SHA256: b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254
   FDB_VERSION: 7.3.77
   CARGO_AUDIT_VERSION: 0.22.2
   CARGO_DENY_VERSION: 0.20.2
-  CARGO_SEMVER_CHECKS_VERSION: 0.50.0
+  CARGO_SEMVER_CHECKS_VERSION: 0.51.0
 
 jobs:
   rust-fast:
@@ -37,14 +37,14 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.99.1
           components: clippy,rustfmt
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
 
       - name: Install Ripgrep for repository policy checks
         shell: bash
@@ -84,12 +84,12 @@ jobs:
           sudo dpkg -i "$package_path"
 
       - name: Install Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
 
       - name: Set up pnpm and Node for Worker validation
-        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           runtime: node@24
           cache: true
@@ -103,7 +103,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207
+          --package=github:reallyme/release-readiness#9cf40c7da1def8a8d809af51789284097c572dd5
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
@@ -134,8 +134,8 @@ jobs:
 
       - name: Verify minimum supported Rust version
         run: |
-          rustup toolchain install 1.99.0 --profile minimal
-          cargo +1.99.0 check --locked --workspace --all-features
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 check --locked --workspace --all-features
 
       - name: Cargo test
         run: cargo test --locked --workspace --all-features
@@ -156,17 +156,17 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
 
@@ -210,14 +210,14 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.99.1
           components: clippy,rustfmt
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
 
       - name: Install Ripgrep for repository policy checks
         shell: bash
@@ -256,12 +256,12 @@ jobs:
           sudo dpkg -i "$package_path"
 
       - name: Install Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
 
       - name: Set up pnpm and Node for Worker validation
-        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           runtime: node@24
           cache: true
@@ -275,7 +275,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207
+          --package=github:reallyme/release-readiness#9cf40c7da1def8a8d809af51789284097c572dd5
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators

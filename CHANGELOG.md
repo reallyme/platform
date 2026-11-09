@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.4
+
+- Update the audited ReallyMe codec and crypto crates to 0.3.2 and 0.3.17,
+  refresh compatible Rust dependencies, and move the workspace toolchain and
+  MSRV to Rust 1.99.1.
+- Update the shared release-readiness policy to v0.6.9.
+- Update Worker and CI tooling to current reviewed releases, including pnpm
+  12.18.0, Wrangler 4.158.0, and Buf 1.75.0.
+- Update first-party copyright-holder and trademark-owner references to
+  ReallyMe Technologies Limited.
+
 ## 0.3.3
 
 - Update `reallyme-crypto` and its component crates to 0.3.13.

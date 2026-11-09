@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 set -euo pipefail
@@ -16,7 +16,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
 npm exec --yes --allow-git=root \
-  --package=github:reallyme/release-readiness#5c2da5e5d5795c2c895d0dca0819287ee7101207 \
+  --package=github:reallyme/release-readiness#9cf40c7da1def8a8d809af51789284097c572dd5 \
   -- reallyme-release-readiness
 cargo fmt --all -- --check
 if [[ "${contracts_are_generated}" != true ]]; then

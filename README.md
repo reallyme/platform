@@ -313,9 +313,9 @@ Third-party components retain their own licenses and notices.
 
 ## Copyright And Trademarks
 
-Copyright © 2026 by ReallyMe LLC.
+Copyright © 2026 by ReallyMe Technologies Limited.
 
-ReallyMe® is a registered trademark of ReallyMe LLC.
+ReallyMe® is a registered trademark of ReallyMe Technologies Limited.
 
 Cloudflare and Cloudflare Workers are trademarks and/or registered trademarks
 of Cloudflare, Inc.

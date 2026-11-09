@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 ReallyMe LLC
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 set -euo pipefail
@@ -22,18 +22,18 @@ fail_matches() {
   fi
 }
 
-if ! rg -n '^reallyme-crypto = \{ version = "=0\.3\.13", default-features = false, features = \["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"\] \}' Cargo.toml >/dev/null; then
-  printf 'workspace reallyme-crypto dependency must stay pinned to crates.io version 0.3.13 with the audited platform feature set\n' >&2
+if ! rg -n '^reallyme-crypto = \{ version = "=0\.3\.17", default-features = false, features = \["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"\] \}' Cargo.toml >/dev/null; then
+  printf 'workspace reallyme-crypto dependency must stay pinned to crates.io version 0.3.17 with the audited platform feature set\n' >&2
   status=1
 fi
 
-if ! rg -n '^reallyme-codec = \{ version = "=0\.3\.1", default-features = false \}' Cargo.toml >/dev/null; then
-  printf 'workspace reallyme-codec dependency must stay pinned to crates.io version 0.3.1\n' >&2
+if ! rg -n '^reallyme-codec = \{ version = "=0\.3\.2", default-features = false \}' Cargo.toml >/dev/null; then
+  printf 'workspace reallyme-codec dependency must stay pinned to crates.io version 0.3.2\n' >&2
   status=1
 fi
 
 fail_matches \
-  'do not depend directly on split reallyme-crypto primitive crates; use crates.io reallyme-crypto 0.3.13 via workspace dependency' \
+  'do not depend directly on split reallyme-crypto primitive crates; use crates.io reallyme-crypto 0.3.17 via workspace dependency' \
   'reallyme-crypto-(core|ed25519|hmac|p256|sha2-256)' \
   --glob Cargo.toml
 

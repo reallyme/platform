@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-FileCopyrightText: 2026 ReallyMe LLC
+// SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { existsSync } from "node:fs";
@@ -35,7 +35,7 @@ const {
 
 assertReallyMeReleasePackagePolicy({
   scriptPath: "scripts/check_release_readiness.mjs",
-  version: "0.6.7",
+  version: "0.6.9",
 });
 assertWorkflowActionsPinned();
 assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
@@ -60,7 +60,7 @@ assertRustSourcePolicy({
   forbidDynamicErrorSurfaces: true,
 });
 assertSpdxHeaders({
-  copyright: "SPDX-FileCopyrightText: 2026 ReallyMe LLC",
+  copyright: "SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited",
   license: "SPDX-License-Identifier: MIT OR Apache-2.0",
   exclusions: [
     {
