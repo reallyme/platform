@@ -35,7 +35,7 @@ const {
 
 assertReallyMeReleasePackagePolicy({
   scriptPath: "scripts/check_release_readiness.mjs",
-  version: "0.6.7",
+  version: "0.6.9",
 });
 assertWorkflowActionsPinned();
 assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
