@@ -86,12 +86,12 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: "26"
 
       - name: Set up pnpm and Node for Worker validation
         uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
-          runtime: node@24
+          runtime: node@26
           cache: true
           cache-dependency-path: workers/example/pnpm-lock.yaml
           working-directory: workers/example
@@ -103,7 +103,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#9cf40c7da1def8a8d809af51789284097c572dd5
+          --package=github:reallyme/release-readiness#18a6d91d99837e80f92e41fe04effb0b043d754e
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
@@ -156,17 +156,17 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
 
@@ -258,12 +258,12 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: "26"
 
       - name: Set up pnpm and Node for Worker validation
         uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
-          runtime: node@24
+          runtime: node@26
           cache: true
           cache-dependency-path: workers/example/pnpm-lock.yaml
           working-directory: workers/example
@@ -275,7 +275,7 @@ jobs:
         run: >-
           npm exec --yes
           --allow-git=root
-          --package=github:reallyme/release-readiness#9cf40c7da1def8a8d809af51789284097c572dd5
+          --package=github:reallyme/release-readiness#18a6d91d99837e80f92e41fe04effb0b043d754e
           -- reallyme-release-readiness
 
       - name: Install Rust protobuf generators
@@ -308,7 +308,7 @@ jobs:
             --name reallyme-ci-nats \
             --publish 4222:4222 \
             --publish 8222:8222 \
-            nats:2.15.0-scratch@sha256:c0d27f3054601a99055aa5ec897b0a55bf1869ae50f454e659acfbbea11d2ab7 \
+            nats:2.15.2-scratch@sha256:965fc69c168a39f2bfd63a68361288beb0cc64ca60c8c308bf6c0eb74f463b1d \
             -js \
             -m 8222
           for _attempt in {1..30}; do
@@ -337,7 +337,7 @@ jobs:
             --publish 5432:5432 \
             --env POSTGRES_PASSWORD=reallyme-integration-password \
             --env POSTGRES_DB=reallyme_integration \
-            postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+            postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
           for _attempt in {1..30}; do
             if docker exec reallyme-ci-postgres pg_isready --username postgres --dbname reallyme_integration; then
               exit 0
@@ -426,7 +426,7 @@ jobs:
             --name reallyme-ci-typesense \
             --publish 127.0.0.1:8108:8108 \
             --tmpfs /data:rw,size=1g \
-            typesense/typesense@sha256:dea1b62b7b6e374939349ba58843218473942501b3a17cd07170e9ca70dbbc0c \
+            typesense/typesense:30.2@sha256:610f2d34b1f93d00762869da2c67736775e5798d19a2c8b91b014b8a0cc1e110 \
             --data-dir /data --api-key=platform-integration-key
           for _attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:8108/health > /dev/null; then
@@ -445,10 +445,10 @@ jobs:
           set -euo pipefail
           cargo test --locked -p reallyme-typesense-kit \
             --test typesense_integration -- --list \
-            | rg '^connector_checks_live_health_and_authenticated_collection_read: test$'
+            | rg '^connector_exercises_typesense_30_collection_import_and_search: test$'
           cargo test --locked -p reallyme-typesense-kit \
             --test typesense_integration \
-            connector_checks_live_health_and_authenticated_collection_read -- --ignored --exact
+            connector_exercises_typesense_30_collection_import_and_search -- --ignored --exact
 
       - name: Start Valkey
         shell: bash
@@ -457,7 +457,7 @@ jobs:
           docker run --detach \
             --name reallyme-ci-valkey \
             --publish 127.0.0.1:6379:6379 \
-            valkey/valkey@sha256:475ee65cc75c327407458f5096cdd36954b3de3fc83f4c8ac31a4a8edecbf49e \
+            valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7 \
             valkey-server --save '' --appendonly no
           for _attempt in {1..30}; do
             if docker exec reallyme-ci-valkey valkey-cli ping | rg '^PONG$'; then

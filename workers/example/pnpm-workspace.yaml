@@ -12,3 +12,16 @@ pmOnFail: ignore
 allowBuilds:
   esbuild: true
   workerd: true
+
+# Wrangler 4.159.0 and its platform-specific runtime were reviewed as one
+# release set. Exact pins keep this narrow exception deterministic while the
+# global minimum-release-age policy continues to protect all other packages.
+minimumReleaseAgeExclude:
+  - '@cloudflare/workerd-darwin-64@1.20261109.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20261109.1'
+  - '@cloudflare/workerd-linux-64@1.20261109.1'
+  - '@cloudflare/workerd-linux-arm64@1.20261109.1'
+  - '@cloudflare/workerd-windows-64@1.20261109.1'
+  - miniflare@5.20261109.0-beta
+  - workerd@1.20261109.1
+  - wrangler@4.159.0

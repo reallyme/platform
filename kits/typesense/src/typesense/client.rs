@@ -48,6 +48,7 @@ static NEXT_RETRY_ENTROPY_SEED: AtomicU64 = AtomicU64::new(DEFAULT_RETRY_ENTROPY
 struct CollectionSchemaRequest<'a> {
     name: &'a CollectionName,
     fields: &'a [crate::typesense::CollectionField],
+    #[serde(skip_serializing_if = "Option::is_none")]
     default_sorting_field: Option<&'a SortField>,
 }
 

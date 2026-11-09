@@ -17,7 +17,7 @@ use super::{
 
 use crate::typesense::{
     CollectionField, CollectionName, FieldKind, FilterValue, PageSize, SearchFieldName,
-    SearchFields, SearchFilter, SearchQuery, SortField, TypesenseConfig, TypesenseEndpoint,
+    SearchFields, SearchFilter, SearchQuery, TypesenseConfig, TypesenseEndpoint,
     TypesenseEndpointSelection, TypesenseError, TypesenseTransportReason,
 };
 
@@ -79,16 +79,14 @@ fn metric_gauge_value(
 }
 
 #[test]
-fn collection_schema_request_omits_alias_field() -> Result<(), TypesenseError> {
+fn collection_schema_request_omits_client_only_and_absent_fields() -> Result<(), TypesenseError> {
     let schema = crate::typesense::CollectionSchema::new(
         CollectionName::parse("people_directory")?,
         vec![CollectionField::new(
             SearchFieldName::parse("handle")?,
             FieldKind::String,
         )],
-        Some(SortField::from_search_field(SearchFieldName::parse(
-            "handle",
-        )?)),
+        None,
     )?
     .with_alias(CollectionName::parse("directory")?);
 
@@ -103,6 +101,7 @@ fn collection_schema_request_omits_alias_field() -> Result<(), TypesenseError> {
     })?;
 
     assert!(!object.contains_key("alias"));
+    assert!(!object.contains_key("default_sorting_field"));
     assert!(object.contains_key("name"));
     assert!(object.contains_key("fields"));
     Ok(())

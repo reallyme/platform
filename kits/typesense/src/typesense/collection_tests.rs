@@ -103,6 +103,23 @@ fn deserializes_collection_schema_without_alias_field() -> Result<(), TypesenseE
 }
 
 #[test]
+fn deserializes_empty_server_default_sorting_field_as_absent() -> Result<(), TypesenseError> {
+    let decoded: CollectionSchema = serde_json::from_str(
+        r#"{
+            "name":"people_directory",
+            "fields":[{"name":"handle","type":"string","optional":false,"facet":false}],
+            "default_sorting_field":""
+        }"#,
+    )
+    .map_err(|_| TypesenseError::InvalidRequest {
+        reason: TypesenseRequestReason::InvalidFilterValue,
+    })?;
+
+    assert_eq!(decoded.default_sorting_field, None);
+    Ok(())
+}
+
+#[test]
 fn serializes_bounded_vector_dimensions() -> Result<(), TypesenseError> {
     let field = CollectionField::new(
         crate::typesense::SearchFieldName::parse("embedding")?,
