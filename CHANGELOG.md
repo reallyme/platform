@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.5
+
+- Validate the Platform kits against NATS 2.15.2, PostgreSQL 18, Typesense
+  30.2, and Valkey 9.1.3 using immutable container image digests.
+- Support Typesense 30 collection schema responses, omit absent default sort
+  fields from collection creation, and exercise collection creation, document
+  import, and search in the live compatibility test.
+- Update release readiness to v0.7.0, move CI and release workflows to Node 26,
+  update Wrangler to 4.159.0 with its reviewed transitive runtime set, and
+  update the pinned GitHub Actions installer.
+- Refresh all compatible Rust dependencies and pin the example server's Docker
+  frontend, Rust builder, and distroless runtime images by digest.
+
 ## 0.3.4
 
 - Update the audited ReallyMe codec and crypto crates to 0.3.2 and 0.3.17,

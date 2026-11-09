@@ -35,10 +35,10 @@ const {
 
 assertReallyMeReleasePackagePolicy({
   scriptPath: "scripts/check_release_readiness.mjs",
-  version: "0.6.9",
+  version: "0.7.0",
 });
 assertWorkflowActionsPinned();
-assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
+assertNodeWorkflowJobsPinNode({ nodeVersion: "26" });
 assertCargoWorkspacePolicy({
   requireWorkspaceLints: true,
   requirePublishInclude: true,

@@ -16,7 +16,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
 npm exec --yes --allow-git=root \
-  --package=github:reallyme/release-readiness#9cf40c7da1def8a8d809af51789284097c572dd5 \
+  --package=github:reallyme/release-readiness#18a6d91d99837e80f92e41fe04effb0b043d754e \
   -- reallyme-release-readiness
 cargo fmt --all -- --check
 if [[ "${contracts_are_generated}" != true ]]; then

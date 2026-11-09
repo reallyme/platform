@@ -3,7 +3,7 @@
 
 //! Collection names and schema request models.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::typesense::{
     SearchFieldName, SortField, TypesenseError, TypesenseRequestReason, error::TypesenseResult,
@@ -49,10 +49,29 @@ pub struct CollectionSchema {
     /// Field definitions.
     pub fields: Vec<CollectionField>,
     /// Optional default sorting field.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_default_sorting_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_sorting_field: Option<SortField>,
     /// Optional logical alias name that should point to this physical collection.
     #[serde(skip_serializing, default)]
     pub alias: Option<CollectionName>,
+}
+
+fn deserialize_default_sorting_field<'de, D>(deserializer: D) -> Result<Option<SortField>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => SortField::parse(value)
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom("invalid default sorting field")),
+    }
 }
 
 impl CollectionSchema {
