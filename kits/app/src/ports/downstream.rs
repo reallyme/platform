@@ -7,9 +7,8 @@ use super::AppPortDescriptor;
 ///
 /// Downstream ports are app-owned outbound boundaries: another app, a remote
 /// capability, or an external provider that the app calls through a typed
-/// contract. Server composition may later bind that port in-process or to a
-/// remote Connect client, but the app contract should describe it as a
-/// downstream port rather than as a vague "dependency".
+/// contract. The host supplies the concrete binding; this descriptor records
+/// the required capability independently of its transport or deployment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppDownstreamPortDescriptor {
     port: AppPortDescriptor,

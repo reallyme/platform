@@ -6,7 +6,7 @@ use super::AppPortName;
 /// Host-neutral app port descriptor.
 ///
 /// Apps define which ports they require; app-kit defines the common descriptor
-/// shape used by hosts, tests, and future Workers adapters.
+/// shape used by native hosts, Worker hosts, and tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPortDescriptor {
     name: AppPortName,

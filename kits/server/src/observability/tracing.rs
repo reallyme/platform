@@ -85,10 +85,11 @@ pub fn init_tracing(
     Ok(())
 }
 
-/// Builds a tracing OpenTelemetry bridge layer for future exporter wiring.
+/// Builds a tracing OpenTelemetry bridge layer using a host-supplied tracer.
 ///
 /// This keeps OpenTelemetry integration aligned with the platform tracing
-/// standard without forcing app crates to construct ad hoc bridge layers.
+/// standard. Hosts own tracer-provider and exporter configuration and install
+/// the returned layer in their subscriber.
 pub fn opentelemetry_bridge_layer<T>(tracer: T) -> OpenTelemetryLayer<Registry, T>
 where
     T: Tracer + Send + Sync + 'static,

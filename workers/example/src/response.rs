@@ -81,7 +81,7 @@ pub(crate) fn with_standard_worker_headers(mut response: Response) -> Result<Res
 
     // Keep host-level hardening close to the Worker host boundary. App cores
     // should not know whether a response is served by Cloudflare Workers,
-    // reallyme-server, or a future host. HSTS is intentionally left to
+    // or a native server. HSTS is intentionally left to
     // Cloudflare zone/origin policy because this example also runs under
     // plaintext `wrangler dev`.
     headers.set("x-content-type-options", "nosniff")?;

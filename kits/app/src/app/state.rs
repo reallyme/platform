@@ -3,10 +3,9 @@
 
 /// Generic host-neutral app state wrapper.
 ///
-/// Most apps begin with validated app-owned config as their only state. App-kit
-/// owns that boring container so new apps do not copy one-field state structs.
-/// Apps can replace this with app-specific state later when they truly own
-/// additional host-neutral resources.
+/// Stores validated app-owned configuration without acquiring runtime or
+/// infrastructure responsibilities. Apps with additional host-neutral resources
+/// can supply their own state type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StandardAppState<TConfig> {
     config: TConfig,

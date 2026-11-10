@@ -12,7 +12,7 @@ pub enum AppLifecycleErrorKind {
     DependencyUnavailable,
     /// Startup, cleanup, or task execution timed out.
     Timeout,
-    /// App behavior is not implemented in the current phase.
+    /// The app does not implement the requested lifecycle operation.
     NotImplemented,
     /// The host requested cancellation or shutdown.
     Cancelled,

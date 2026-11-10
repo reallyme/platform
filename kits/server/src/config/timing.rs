@@ -12,11 +12,9 @@ pub const MINIMUM_METRICS_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Validated per-request timeout.
 ///
-/// The shared type currently enforces only the cross-service invariant that a
-/// timeout must be non-zero. It does not impose a global upper bound yet
-/// because acceptable ceilings can vary by service and endpoint. If the
-/// platform later adopts a shared maximum, that should be added here
-/// deliberately as a documented operational policy.
+/// Requires a non-zero duration. Hosts must choose an appropriate upper bound
+/// for each service or endpoint; this type imposes no shared maximum because
+/// acceptable deadlines depend on the workload.
 ///
 /// # Examples
 ///

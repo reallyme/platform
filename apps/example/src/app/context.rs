@@ -21,7 +21,7 @@ pub fn new_context(config: ExampleAppConfig, ports: ExamplePorts) -> ExampleAppC
     ExampleAppContext::new(ExampleAppCore::new(ExampleAppState::new(config)), ports)
 }
 
-/// Constructs a local/example context with deterministic placeholder ports.
+/// Constructs a local test context with no downstream dependencies.
 #[cfg(feature = "testing")]
 pub fn for_tests_only_local_context() -> ExampleAppContext {
     new_context(ExampleAppConfig::new(true), ExamplePorts::unconfigured())

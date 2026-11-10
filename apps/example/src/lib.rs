@@ -9,11 +9,10 @@
 )]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::panic, clippy::unwrap_used))]
 
-//! Example app used by local and CI server-runtime verification.
+//! Reference host-neutral application with native and Worker adapters.
 //!
-//! This app intentionally has no product behavior. It demonstrates the same
-//! app shape future product apps should use: host-neutral use-cases, typed
-//! config, app-kit descriptors, and thin host/transport adapters.
+//! The Hello use-case demonstrates typed configuration, app-kit descriptors,
+//! and transport adaptation without owning process or host lifecycle.
 
 pub mod adapters;
 pub mod app;

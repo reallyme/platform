@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 /// Host or transport adapter kind used by an app.
 ///
 /// This enum documents the supported adapter boundary without coupling app
-/// core behavior to any concrete runtime. New host kinds should be added only
-/// when a real adapter exists or is actively being built.
+/// core behavior to any concrete runtime. Each kind identifies a transport or
+/// host boundary; applications declare only the adapters they implement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppAdapterKind {
@@ -21,6 +21,6 @@ pub enum AppAdapterKind {
     ConnectRpc,
     /// Native ReallyMe server-process host adapter.
     Server,
-    /// Future Cloudflare Workers host adapter.
+    /// Cloudflare Workers host adapter.
     Worker,
 }

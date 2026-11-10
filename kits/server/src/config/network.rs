@@ -25,9 +25,7 @@ impl NetworkPort {
     ///
     /// Port `0` is rejected intentionally for server runtime configuration so
     /// startup fails closed instead of silently binding to an OS-assigned
-    /// ephemeral port. If the platform later needs an explicit ephemeral-port
-    /// mode for tests or developer tooling, that should be modeled with a
-    /// separate abstraction rather than weakening this production-facing type.
+    /// ephemeral port.
     pub fn new(value: u16) -> Result<Self, ConfigError> {
         if value == 0 {
             return Err(ConfigError::InvalidBindAddressConfig {

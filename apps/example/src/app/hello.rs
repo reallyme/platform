@@ -16,7 +16,7 @@ pub fn hello(
     request: HelloRequest,
     deadline: Option<std::time::Duration>,
 ) -> Result<HelloResponse, ExampleAppError> {
-    // This use-case currently has no request fields with behavioral impact.
+    // Hello has no request fields with behavioral impact.
     let _ = request;
 
     if deadline.is_some_and(|remaining| remaining.is_zero()) {

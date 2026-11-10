@@ -1,20 +1,20 @@
 # example-app
 
-`example-app` is the runnable example app used by local development,
-CI, and app-template validation.
+`example-app` is the reference implementation of a host-neutral Platform
+application. Its `Hello` use-case runs through native HTTP, Connect RPC, and
+Cloudflare Worker adapters and is exercised by the repository's tests.
 
-It is intentionally built in the same shape product apps should use. This crate
-is not a toy smoke test; it is the reference implementation for how a
-host-neutral app plugs into the ReallyMe platform.
+The [architecture guide](../../docs/concepts/architecture.md) defines the
+application, contract, adapter, and host boundaries used here.
 
 - `contract/` owns raw protobuf, generated Connect/protobuf code, DTOs, typed
   port traits, and contract errors.
 - `config/` owns app JSONC behavior settings.
-- `app/` owns host-neutral config, context, descriptor, errors, health, and use-cases.
-- `ports/` owns concrete downstream port declarations for this app.
-- `adapters/connect/` owns generated Connect RPC service wiring.
-- `adapters/http/` owns Axum compatibility routes.
-- `adapters/server/` bridges the app into `reallyme-server-kit`.
+- `src/app/` owns host-neutral config, context, descriptor, errors, health, and use-cases.
+- `src/ports/` owns the typed port collection; this example has no downstream dependencies.
+- `src/adapters/connect/` implements the generated Connect RPC service trait.
+- `src/adapters/http/` owns Axum compatibility routes.
+- `src/adapters/server/` bridges the app into `reallyme-server-kit`.
 
 The reference Worker calls the same host-neutral app use-case from its own
 Cloudflare adapter. The app does not need a Cloudflare feature or a dependency
@@ -24,19 +24,6 @@ The app does not start listeners, initialize tracing, manage process shutdown,
 own process readiness, or supervise long-running tasks. Those concerns stay in
 host/runtime kits.
 
-## Vocabulary
-
-- `app`: business/use-case unit that owns behavior and app contracts.
-- `protobuf service`: generated RPC trait declared in `.proto`; an app may
-  expose one or more of these.
-- `server`: runnable process host that composes apps.
-- `server-kit`: reusable runtime/lifecycle framework that defines how servers
-  run.
-- `app-kit`: reusable host-neutral app contracts/conventions.
-
-This app exposes one protobuf service, `ExampleService`. That service is not a
-process, listener, runtime, container, or deployment unit.
-
 ## Feature Gates
 
 Adapters are feature-gated so product apps can compile in different host
@@ -44,19 +31,21 @@ profiles without dragging in native-only dependencies by accident.
 
 Current features:
 
+- `contract`: enables generated protobuf DTOs without a native Connect router.
 - `connect`: enables generated Buffa/Connect RPC types and `connectrpc` router
   wiring.
 - `connect-axum`: enables Connect RPC plus the Axum mounting helpers used by
   the native HTTP host.
-- `native-server`: enables Axum compatibility routes plus the
-  `reallyme-server-kit` adapter. It does not require `connect`; an HTTP-only
-  native server app is a valid deployment shape.
+- `http`: enables Axum compatibility routes and server-kit HTTP primitives.
+- `native-server`: enables `http` plus the `reallyme-server-kit` runtime adapter.
+  It does not require `connect`; an HTTP-only native server app is supported.
 - `websocket`: enables the example app WebSocket echo adapter through
   `reallyme-server-kit` WebSocket primitives. It is intentionally separate from
   `native-server` so HTTP-only native apps can stay WebSocket-free.
 - `default`: enables `connect-axum`, `native-server`, and `websocket` for native
   development and CI. Standalone tonic gRPC is intentionally not part of this
-  example app scaffold.
+  example app.
+- `testing`: enables the local test-context constructor.
 
 Useful checks:
 
@@ -64,29 +53,11 @@ Useful checks:
 cargo check -p example-app
 cargo check -p example-app --no-default-features
 cargo check -p example-app --no-default-features --features connect
+cargo check -p example-app --no-default-features --features http
 cargo check -p example-app --no-default-features --features native-server
 cargo check -p example-app --no-default-features --features native-server,websocket
 cargo check -p example-app --no-default-features --features native-server,connect-axum
 ```
-
-Rules:
-
-- App core code must compile without `server`.
-- HTTP/native-server adapters must compile without Connect or tonic gRPC when a
-  deployment intentionally exposes only HTTP compatibility routes.
-- Worker hosts must call host-neutral app behavior and keep `workers-rs` out of
-  the application crate.
-- Native server adapters may depend on `reallyme-server-kit`, but only behind
-  the `native-server` feature and only inside `adapters/server/`.
-- Axum-specific code belongs in `adapters/http/` and is also gated by
-  `native-server`, not in `app/`.
-- Connect generated transport types stay in contract/adapters and must not leak
-  deep into host-neutral app use-cases. If a product app later adds standalone
-  tonic gRPC, it should be an explicit `tonic-grpc` feature and adapter, not
-  default app scaffolding.
-
-Use direct Cargo feature checks to prove the feature matrix for
-`example-app`.
 
 ## App Config
 
@@ -102,9 +73,7 @@ The app-kit standard envelope owns common fields such as:
 
 - `public_base_url`
 - `cors.allowed_origins`
-- `timeouts.request_timeout_millis`
-- `limits.request_body_limit_bytes`
-- `limits.max_inflight_requests`
+- `cookies.secure`, `cookies.domain`, and `cookies.same_site_policy`
 - `reflection_enabled`
 - `downstream.<port_name>.base_url`
 
@@ -113,9 +82,9 @@ standard envelope. Server composition chooses which app config profile to load
 and injects the validated config into app context. App core code must not read
 local files or environment variables directly.
 
-`reflection_enabled` is present only as a reserved, reviewed policy field. It
-must remain `false`; app-kit rejects `true` so example/template-derived apps do
-not accidentally expose schema introspection.
+`reflection_enabled` must remain `false`; app-kit rejects `true` so configuration
+cannot enable schema introspection. Request timeouts, body limits, and admission
+limits belong to the host configuration.
 
 ## How Requests Flow
 
@@ -184,11 +153,10 @@ Use this sequence for new app-owned protobuf/RPC services.
 7. Add or update host-neutral DTOs/ports/errors in `contract/src/`.
 8. Add a host-neutral request/response/use-case in `src/app/`.
 9. Implement the generated Connect trait in `src/adapters/connect/`.
-10. Add or update canonical path constants in `src/adapters/connect/path.rs`.
-11. Mount the Connect route in `src/adapters/http/router.rs` when the native
-    HTTP host should expose it.
-12. Add gRPC/Workers adapters only if the app actually needs those host
-    surfaces.
+10. Add or update canonical path constants in `contract/src/rpc.rs`.
+11. Register the service in `src/adapters/connect/router.rs` and mount that
+    router through `src/adapters/server/runtime.rs` for native HTTP serving.
+12. Keep Cloudflare-specific request adaptation in the Worker host.
 13. Add tests for the app use-case and each adapter that exposes it.
 
 Adapter tests should prove:
@@ -198,14 +166,6 @@ Adapter tests should prove:
 - HTTP compatibility route, if any, calls the same app use-case
 - generated route constants match protobuf/gRPC service names
 - feature-gated builds still compile
-
-Do not:
-
-- add protobuf generation to Cargo `build.rs`
-- put business logic in generated-code adapters
-- let generated protobuf types become the app core model
-- bypass `reallyme-server-kit` standard HTTP layers in native server hosts
-- introduce app-owned listener/shutdown/readiness code
 
 ## Adding App Behavior
 
@@ -233,7 +193,7 @@ cargo run -p example-server -- \
 ```
 
 The server-kit observability API supports request-completion logging control.
-The reference `servers/example` JSONC parser currently uses a fixed local
+The reference `servers/example` JSONC parser uses a fixed local
 observability configuration and does not accept an `observability` object.
 Product hosts that expose the API can configure `request_log_mode`:
 
@@ -259,10 +219,9 @@ buf curl --schema apps/example/contract/proto --protocol connect --data '{}' \
   http://127.0.0.1:8080/reallyme.example.v1.ExampleService/Hello
 ```
 
-The default example build also exposes `GET /ws` as a minimal bounded
-WebSocket echo route. It exists to prove the native server WebSocket foundation;
-real product apps should define their own protocol messages below app core and
-keep payload logging disabled.
+The default example build also exposes `GET /ws` as a bounded WebSocket echo
+route. Product applications own their protocol messages and keep payload logging
+disabled.
 
 If a port is already in use, change the server JSONC composition rather than
 hardcoding listener behavior in this app.
@@ -297,15 +256,16 @@ Expected local checks:
 
 ```text
 curl http://127.0.0.1:8787/hello
-curl http://127.0.0.1:8787/healthz
-curl http://127.0.0.1:8787/readyz
+curl -H "Authorization: Bearer ${OPERATIONAL_PROBE_TOKEN}" http://127.0.0.1:8787/healthz
+curl -H "Authorization: Bearer ${OPERATIONAL_PROBE_TOKEN}" http://127.0.0.1:8787/readyz
 buf curl --schema ../../apps/example/contract/proto --protocol connect --data '{}' \
   http://127.0.0.1:8787/reallyme.example.v1.ExampleService/Hello
 ```
 
 The Worker host exposes `/healthz` and `/readyz` with a configured operational
-probe token. Native server processes expose `/metrics` through
-`reallyme-server-kit`; the Worker uses Workers observability.
+probe token. The commands above require `OPERATIONAL_PROBE_TOKEN` in the shell
+to match the Worker's secret binding. Native server processes expose `/metrics`
+through `reallyme-server-kit`; the Worker uses Workers observability.
 
 ## Validation
 

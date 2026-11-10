@@ -133,10 +133,7 @@ impl fmt::Debug for ExactCorsOrigins {
 /// Validated exact CORS origin.
 ///
 /// The value is not a secret, but `Debug` remains conservative so startup and
-/// config-derived logs do not blindly echo arbitrary configuration values. If
-/// we later need richer operational summaries, they should expose a sanitized
-/// and intentionally documented representation rather than relying on generic
-/// `Debug` output.
+/// config-derived logs do not blindly echo arbitrary configuration values.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ExactCorsOrigin {
     raw: String,

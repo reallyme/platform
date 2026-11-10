@@ -20,7 +20,7 @@ const MAX_APP_HTTP_MOUNT_PATH_BYTES: usize = 128;
 /// Validated name for a logical app hosted by a server runtime.
 ///
 /// An app is a logical service unit inside one server process. App names flow
-/// into startup diagnostics and future composition policy, so they use the same
+/// into startup diagnostics and composition validation, so they use the same
 /// conservative DNS-label-style shape as server and task names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppName(String);
