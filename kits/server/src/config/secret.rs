@@ -15,9 +15,8 @@ use zeroize::{Zeroize, Zeroizing};
 ///
 /// `Secret<T>` intentionally does not implement `Clone`, `PartialEq`, or `Eq`.
 /// Cloning duplicates secret material in memory, and direct equality checks can
-/// encourage casual secret comparisons in higher-level code. If a future use
-/// case needs either behavior, it should be added deliberately with explicit
-/// review of the memory and API tradeoffs.
+/// encourage casual secret comparisons in higher-level code. Use the explicit
+/// constant-time comparison methods when comparing supported secret values.
 ///
 /// # Allocation Notes
 ///

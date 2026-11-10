@@ -77,9 +77,9 @@ pub struct ValkeyConnector {
 impl ValkeyConnector {
     /// Establishes and authenticates the initial connection.
     pub async fn connect(config: &ValkeyConfig) -> ValkeyResult<Self> {
-        // Redis currently builds its rustls config through the process-default
+        // Redis builds its rustls config through the process-default
         // provider. Preserve a provider chosen by the host; otherwise install
-        // ring as this kit did in 0.3.1 so TLS works without host setup.
+        // ring so TLS works without requiring host setup.
         if matches!(
             config.transport_security(),
             ValkeyTransportSecurity::RequireTls

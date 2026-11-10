@@ -1,11 +1,11 @@
 # reallyme-valkey-kit
 
-TLS callers must install a rustls process crypto provider before connecting.
-The Redis driver constructs its TLS client from that provider, so the kit
-returns a typed setup error if the host has not selected one. The kit does not
-install a process-global provider as a side effect.
-
 First-class Valkey database connector for native ReallyMe services.
+
+TLS connections preserve a rustls process crypto provider selected by the host.
+If none is installed, the kit installs ring because the Redis driver uses the
+process provider to construct its TLS client. Connection setup returns a typed
+error if no provider is available after installation.
 
 The kit owns:
 

@@ -18,7 +18,10 @@ Cloudflare Workers. It demonstrates the complete edge boundary:
 - explicit selection of one application and one checked-in config profile;
 - HTTP and Connect RPC request adaptation;
 - stable public errors and host-owned security headers; and
-- Worker-local health, readiness, version, and metrics compatibility routes.
+- authenticated Worker-local health and readiness routes.
+
+The reference Worker has no `/version` or `/metrics` route. Runtime telemetry
+uses Workers observability.
 
 The same application core also runs inside the reference native server. The
 application owns behavior; each host owns execution.

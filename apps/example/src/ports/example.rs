@@ -3,17 +3,16 @@
 
 /// Typed collection of example app ports.
 ///
-/// The example app has no downstream ports. Real product apps should
-/// replace this with app-specific typed port traits and deterministic
-/// fail-closed unconfigured implementations.
+/// The example app has no downstream dependencies. Applications with downstream
+/// capabilities define typed ports and fail closed when required bindings are absent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExamplePorts {
-    /// Placeholder marker for explicit typed construction.
+    /// Private field keeps construction behind the port-collection API.
     _ports: (),
 }
 
 impl ExamplePorts {
-    /// Constructs example app ports when no downstream ports are wired yet.
+    /// Constructs the empty example app port collection.
     pub const fn unconfigured() -> Self {
         Self { _ports: () }
     }

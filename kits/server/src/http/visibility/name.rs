@@ -90,7 +90,7 @@ pub enum HttpListenerVisibility {
     Custom(HttpVisibilityClass),
 }
 
-/// Validated listener name used in logs, tests, and future per-listener metrics.
+/// Validated listener name used in route policy and operational diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpListenerName(Arc<str>);
 

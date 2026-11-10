@@ -7,12 +7,9 @@ use super::error::{BodyLimitConfigField, ConfigError, ConfigValidationErrorReaso
 
 /// Validated request body limit.
 ///
-/// This shared infrastructure type currently enforces only the cross-service
-/// invariant that the limit must be greater than zero. It does not impose a
-/// global upper bound yet because acceptable limits can vary materially across
-/// services and endpoints. If the platform later adopts a shared maximum, that
-/// ceiling should be added here deliberately and documented as a platform-wide
-/// operational policy.
+/// Requires a limit greater than zero. Hosts must choose an appropriate upper
+/// bound for each service or endpoint; this type imposes no shared maximum
+/// because acceptable body sizes depend on the workload.
 ///
 /// # Examples
 ///

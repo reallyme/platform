@@ -6,7 +6,7 @@ ReallyMe app crates.
 It is intentionally not a server runtime. It does not bind listeners, initialize
 Tokio, mount Axum routes, register tonic services, install tracing, or own
 shutdown. Those responsibilities belong to host runtimes such as
-`reallyme-server-kit` or future Workers host adapters.
+`reallyme-server-kit` or the reference Cloudflare Worker host.
 
 App crates use this kit for reusable, typed conventions:
 
@@ -92,16 +92,15 @@ own typed composition API. The reference `servers/example` host uses its
 `apps[].config_inline_jsonc`. The server JSONC owns process/runtime concerns;
 the app JSONC owns app behavior.
 
-`reflection_enabled` is reserved for future host-reviewed schema exposure
-policy. It must remain `false` today; app-kit validation rejects `true` so apps
-cannot quietly request gRPC/Connect introspection from config.
+`reflection_enabled` must be `false`. App-kit validation rejects `true`;
+configuration cannot enable gRPC/Connect schema introspection.
 
 The native `BoundedHttpsClient` uses operating-system certificate roots, with
 bundled public roots only if the host store is empty. For a private service CA,
 `BoundedHttpsClient::new_with_custom_tls_roots` accepts a nonempty
 `rustls::RootCertStore` and trusts only those roots.
 
-The intended layering is:
+The dependency boundaries are:
 
 - app core depends on `reallyme-app-kit`, its app-owned domain, and app-owned ports
 - server adapters bridge app behavior into `reallyme-server-kit`

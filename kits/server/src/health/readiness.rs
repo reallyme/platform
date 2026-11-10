@@ -17,12 +17,10 @@ pub enum ReadinessState {
 
 /// Shared readiness controller.
 ///
-/// Readiness transitions are intentionally explicit because they gate whether a
-/// process should receive new traffic. The underlying atomic is private so the
-/// crate can evolve the representation without leaking concurrency details.
-///
-/// Future dependency readiness checks can be layered on top of this controller
-/// without changing the stable transport response model exposed by this module.
+/// Process readiness and aggregate app health share one watch-channel value so
+/// concurrent updates cannot overwrite either gate. Effective readiness requires
+/// both gates to be ready; subscribers observe effective-state changes
+/// without depending on the internal representation.
 #[derive(Debug, Clone)]
 pub struct Readiness {
     state_sender: watch::Sender<ReadinessSnapshot>,

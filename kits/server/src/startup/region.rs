@@ -6,8 +6,8 @@ use super::error::StartupError;
 /// Validated deployment/region label used in safe startup summaries.
 ///
 /// Region is operational metadata, not a trust signal. It is deliberately
-/// bounded and low-cardinality so it is safe for structured logs and future
-/// metrics labels when deployments need regional observability.
+/// bounded and low-cardinality so startup summaries can identify the deployment
+/// region without accepting arbitrary metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentRegion(String);
 

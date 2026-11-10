@@ -88,13 +88,23 @@ returns a lazy stream so payloads are not all buffered at once.
 use std::time::Duration;
 use futures_util::StreamExt;
 use async_nats::jetstream::consumer::{DeliverPolicy, ReplayPolicy};
-use reallyme_nats_kit::config::{JetStreamConsumerConfig, JetStreamConsumerConfigInput};
+use reallyme_nats_kit::config::{
+    JetStreamConsumerConfig, JetStreamConsumerConfigInput, JetStreamTlsPolicy,
+};
 use reallyme_nats_kit::consumer::JetStreamPullConsumer;
 use reallyme_nats_kit::error::JetStreamError;
 
 const JOB_REQUESTS_SUBJECT: &str = "example.jobs.requests.v1";
 
-async fn consume() -> Result<(), JetStreamError> {
+enum DeliveryDisposition {
+    Acknowledge,
+    Retry,
+    Reject,
+}
+
+async fn consume(
+    on_payload: impl Fn(&[u8]) -> DeliveryDisposition,
+) -> Result<(), JetStreamError> {
     let config = JetStreamConsumerConfig::new(JetStreamConsumerConfigInput {
         enabled: true,
         nats_url: "nats://127.0.0.1:4222",
@@ -103,13 +113,13 @@ async fn consume() -> Result<(), JetStreamError> {
         subject: JOB_REQUESTS_SUBJECT,       // filter subject
         operation_timeout: Duration::from_secs(5),
         ack_timeout: Duration::from_secs(30),
-        max_ack_pending: 256,               // -1 for unlimited
+        max_ack_pending: 256,
         max_deliver: 5,
         deliver_policy: DeliverPolicy::All,
         replay_policy: ReplayPolicy::Instant,
         inactive_threshold: Duration::from_secs(300),
         num_replicas: 1,
-        tls_policy: Default::default(),
+        tls_policy: JetStreamTlsPolicy::Disabled, // explicit loopback development transport
     })?;
 
     let consumer = JetStreamPullConsumer::connect(config).await?;
@@ -118,16 +128,14 @@ async fn consume() -> Result<(), JetStreamError> {
     let mut deliveries = consumer.pull(64, Duration::from_secs(2)).await?;
     while let Some(delivery) = deliveries.next().await {
         let delivery = delivery?;
-        match handle(delivery.payload()) {
-            Ok(()) => delivery.ack().await?,
-            Err(retryable) if retryable => delivery.nak().await?,
-            Err(_) => delivery.term().await?, // poison message, stop redelivery
+        match on_payload(delivery.payload()) {
+            DeliveryDisposition::Acknowledge => delivery.ack().await?,
+            DeliveryDisposition::Retry => delivery.nak().await?,
+            DeliveryDisposition::Reject => delivery.term().await?,
         }
     }
     Ok(())
 }
-
-fn handle(_payload: &[u8]) -> Result<(), bool> { Ok(()) }
 ```
 
 `ack_confirmed()` waits for the broker to confirm the ack;
@@ -141,19 +149,20 @@ build the config with `*_with_credentials`:
 
 ```rust
 use std::time::Duration;
+use secrecy::SecretString;
 use reallyme_nats_kit::config::{
     JetStreamCredentials, JetStreamPublisherConfig, JetStreamPublisherConfigInput,
     JetStreamTlsPolicy,
 };
 use reallyme_nats_kit::error::JetStreamError;
 
-fn secure_config(token: String) -> Result<JetStreamPublisherConfig, JetStreamError> {
+fn secure_config(token: SecretString) -> Result<JetStreamPublisherConfig, JetStreamError> {
     JetStreamPublisherConfig::new_with_credentials(
         JetStreamPublisherConfigInput {
             enabled: true,
             nats_url: "tls://nats.internal:4222",
-            stream_name: "REALLYME_SPIDER",
-            subject: "reallyme.spider.requests.v1",
+            stream_name: "EXAMPLE_JOBS",
+            subject: "example.jobs.requests.v1",
             publish_timeout: Duration::from_secs(5),
             max_payload_bytes: 64 * 1024,
             tls_policy: JetStreamTlsPolicy::Required,
@@ -164,10 +173,13 @@ fn secure_config(token: String) -> Result<JetStreamPublisherConfig, JetStreamErr
 ```
 
 `JetStreamCredentials` supports `None`, `Token`, `Jwt { jwt, nkey_seed }`,
-`NKey`, and `CredentialsFile(PathBuf)`. `JetStreamTlsPolicy::Required` rejects
-non-TLS URLs; `Disabled` allows cleartext for local/test; `Optional` (default)
-is derived from the URL scheme by `JetStreamPublisherConfig::new`. Credentials
-and the URL userinfo are redacted from `Debug`.
+`NKey`, and `CredentialsFile(PathBuf)`. Token, JWT, and NKey material use
+`secrecy::SecretString`. `JetStreamTlsPolicy` defaults to `Required`;
+`Optional` is a compatibility spelling that also requires TLS. `Disabled`
+allows explicit plaintext local development connections. The publisher's
+convenience constructor selects `Disabled` for loopback plaintext endpoints
+and `Required` for TLS or non-loopback endpoints. Credentials and URL userinfo
+are redacted from `Debug`.
 
 The default connector uses operating-system certificate roots, falling back
 to bundled public roots only if the host store is empty. For a private CA,
@@ -178,17 +190,23 @@ or `JetStreamPullConsumer::from_client` with the validated config.
 
 ## Testing
 
-`testing.rs` provides in-memory backends so app and queue-consumer tests need no
-broker. Inject them with `new_with_backend`:
+Enable the `testing` feature to use in-memory backends without a broker. Inject
+them with `new_with_backend`:
 
 ```rust
+use reallyme_nats_kit::config::JetStreamPublisherConfig;
+use reallyme_nats_kit::error::JetStreamError;
 use reallyme_nats_kit::publisher::JetStreamPublisher;
 use reallyme_nats_kit::testing::FakeJetStreamPublisherBackend;
 
-let backend = FakeJetStreamPublisherBackend::default();
-backend.push_success_ack("REALLYME_SPIDER", 1, false).unwrap();
-let publisher = JetStreamPublisher::new_with_backend(config, backend);
-// ... assert on backend.calls()
+async fn publish_with_fake(config: JetStreamPublisherConfig) -> Result<(), JetStreamError> {
+    let backend = FakeJetStreamPublisherBackend::default();
+    backend.push_success_ack("EXAMPLE_JOBS", 1, false)?;
+    let publisher = JetStreamPublisher::new_with_backend(config, backend);
+    let ack = publisher.publish_bytes(vec![1_u8], Some("request-42")).await?;
+    assert_eq!(ack.sequence(), 1);
+    Ok(())
+}
 ```
 
 `FakeJetStreamConsumerBackend` accepts queued `FakeJetStreamDelivery` values and
@@ -198,9 +216,9 @@ error rather than a synthetic success.
 
 ## Integration tests
 
-Unit tests always run. The JetStream round-trip test
-`real_publish_consume_and_ack_round_trip` is gated behind
-`REALLYME_RUN_NATS_INTEGRATION=1` and fails fast if the server is unreachable.
+The JetStream round-trip test `real_publish_consume_and_ack_round_trip` is
+ignored by ordinary test runs. It requires both `REALLYME_RUN_NATS_INTEGRATION=1`
+and explicit ignored-test selection, and fails if the server is unreachable.
 
 Start a local NATS server with JetStream enabled:
 
@@ -211,7 +229,8 @@ nats-server --jetstream --port 4222
 Then run the integration-enabled suite:
 
 ```console
-REALLYME_RUN_NATS_INTEGRATION=1 cargo test -p reallyme-nats-kit
+REALLYME_RUN_NATS_INTEGRATION=1 cargo test -p reallyme-nats-kit --features testing --lib \
+  consumer::tests::real_publish_consume_and_ack_round_trip -- --ignored --exact
 ```
 
 ## Observability

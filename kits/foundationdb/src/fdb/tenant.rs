@@ -96,12 +96,9 @@ impl TenantHandle {
 
     /// Returns the underlying FoundationDB tenant handle.
     ///
-    /// This is an explicit and reviewed escape hatch for admin-only flows where
-    /// tenant scoping is intentionally bypassed. Keep production call-sites on
-    /// [`Self::transact_boxed`] and [`Self::transact_boxed_arc`].
-    ///
-    /// Audit note: current approved callsites are confined to admin-oriented
-    /// workflows and tests that require direct tenant handle access.
+    /// Restricted to kit-internal administration and tests because the raw handle
+    /// bypasses the application data-key validation boundary. Application paths
+    /// use [`Self::transact_boxed`] and [`Self::transact_boxed_arc`].
     #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &FdbTenant {
         &self.inner

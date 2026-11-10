@@ -37,12 +37,9 @@ const REQUIRED_PUBLISH_ORDER_EDGES = Object.freeze([
   ["reallyme-typesense-kit", "reallyme-platform"],
   ["reallyme-valkey-kit", "reallyme-platform"],
 ]);
-// These crates were published from clean commit
-// 7de3d0e1b94c8553e90afe83a50b51a63f364c96 before the remaining 0.1.0 release
-// was completed. Cargo embeds the packaging commit in every archive, so a later
-// clean commit cannot reproduce their archive bytes.
-// Pinning the immutable crates.io checksums confines source-payload comparison
-// to this known partial release rather than accepting an arbitrary prior upload.
+// Cargo provenance makes these immutable 0.1.0 archives byte-distinct from
+// repackaged matching source. Permit source-payload comparison only for the
+// exact registry checksums below; every other existing upload must match bytes.
 const KNOWN_PARTIAL_RELEASE_ARCHIVES = Object.freeze({
   "reallyme-app-kit@0.1.0":
     "b8ac30887a265bd250e5f59fe6f3e4326855d9745c3b64bffa53c1b563a9e39d",

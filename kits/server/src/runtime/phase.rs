@@ -7,9 +7,9 @@ use tokio::sync::{broadcast, watch};
 
 /// Observable lifecycle phase for a [`crate::runtime::ServerRuntime`].
 ///
-/// These phases are deliberately low-cardinality and service-agnostic. They
-/// exist so tests, operators, and future supervision code can reason about the
-/// runtime lifecycle without scraping logs or relying on timing sleeps.
+/// These phases are deliberately low-cardinality and service-agnostic. Tests
+/// and operators observe the runtime lifecycle without scraping logs or relying
+/// on timing sleeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerRuntimePhase {
@@ -118,8 +118,8 @@ impl ServerRuntimePhaseWatcher {
 ///
 /// The reporter is cloneable so it can be passed through runtime construction,
 /// but only `reallyme-server-kit` should publish transitions. App crates
-/// should subscribe to the returned watch receiver for tests or future
-/// supervision rather than mutating runtime state themselves.
+/// subscribe to the returned receiver to observe lifecycle changes without
+/// mutating runtime state themselves.
 #[derive(Debug, Clone)]
 pub struct ServerRuntimePhaseReporter {
     current_sender: watch::Sender<ServerRuntimePhase>,
