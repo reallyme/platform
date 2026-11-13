@@ -23,7 +23,7 @@ resolver = "2"
 [workspace.package]
 version = "0.3.5"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/reallyme/platform"
 

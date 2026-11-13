@@ -39,7 +39,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.99.1
+          toolchain: 1.100.0
           components: clippy,rustfmt
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
 
@@ -134,8 +134,8 @@ jobs:
 
       - name: Verify minimum supported Rust version
         run: |
-          rustup toolchain install 1.99.1 --profile minimal
-          cargo +1.99.1 check --locked --workspace --all-features
+          rustup toolchain install 1.100.0 --profile minimal
+          cargo +1.100.0 check --locked --workspace --all-features
 
       - name: Cargo test
         run: cargo test --locked --workspace --all-features
@@ -212,7 +212,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.99.1
+          toolchain: 1.100.0
           components: clippy,rustfmt
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
 

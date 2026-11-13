@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Align the workspace MSRV, stable toolchain, CI checks, and example server
+  Docker builder on Rust 1.100.0.
+
 ## 0.3.5
 
 - Validate the Platform kits against NATS 2.15.2, PostgreSQL 18, Typesense
