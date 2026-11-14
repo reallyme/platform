@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Formal methods
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify path policy and tenant deletion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      KANI_VERSION: "0.68.0"
+      TLA_TOOLS_VERSION: "1.7.4"
+      TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Kani
+        run: |
+          cargo +stable install kani-verifier --locked --version "$KANI_VERSION"
+          cargo +stable kani setup
+
+      - name: Install TLA+ tools
+        run: |
+          jar="$RUNNER_TEMP/tla2tools.jar"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors --output "$jar" \
+            "https://github.com/tlaplus/tlaplus/releases/download/v${TLA_TOOLS_VERSION}/tla2tools.jar"
+          printf '%s  %s\n' "$TLA_TOOLS_SHA256" "$jar" | sha256sum --check --strict
+          printf 'TLA2TOOLS_JAR=%s\n' "$jar" >> "$GITHUB_ENV"
+
+      - name: Run formal verification
+        run: |
+          export PATH="$JAVA_HOME_21_X64/bin:$PATH"
+          bash scripts/conformance/verify-formal-methods.sh

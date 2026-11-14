@@ -61,6 +61,10 @@ async fn ambiguous_paths_cannot_bypass_private_visibility_rules() {
         "/files/public/../private/key.pem",
         "/files/%2e%2e/private/key.pem",
         "/files/%25%32%46private/key.pem",
+        "/files/%00",
+        "/files/%a",
+        "/files/%g0",
+        "/files/%ff",
     ] {
         let response = service
             .ready()

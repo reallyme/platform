@@ -17,16 +17,10 @@ pub(super) fn canonical_policy_path(path: &str) -> Option<Cow<'_, str>> {
         while offset < source.len() {
             if source[offset] == b'%' {
                 let end = offset.checked_add(3)?;
-                let hex = source.get(offset.checked_add(1)?..end)?;
-                let high = hex_value(hex[0])?;
-                let low = hex_value(hex[1])?;
-                let byte = high.checked_mul(16)?.checked_add(low)?;
-                // A second decode, separator normalization, or NUL handling
-                // must never change which route policy was selected.
-                if matches!(byte, b'/' | b'\\' | b'%' | b'\0') {
+                let [high, low] = source.get(offset.checked_add(1)?..end)? else {
                     return None;
-                }
-                decoded.push(byte);
+                };
+                decoded.push(decode_policy_escape(*high, *low)?);
                 offset = end;
             } else {
                 decoded.push(source[offset]);
@@ -46,6 +40,15 @@ pub(super) fn canonical_policy_path(path: &str) -> Option<Cow<'_, str>> {
         return None;
     }
     Some(canonical)
+}
+
+pub(super) fn decode_policy_escape(high: u8, low: u8) -> Option<u8> {
+    let byte = hex_value(high)?
+        .checked_mul(16)?
+        .checked_add(hex_value(low)?)?;
+    // A second decode, separator normalization, or NUL handling must never
+    // change which route policy was selected.
+    (!matches!(byte, b'/' | b'\\' | b'%' | b'\0')).then_some(byte)
 }
 
 const fn hex_value(byte: u8) -> Option<u8> {
