@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   verify:
-    name: Verify path policy and tenant deletion
+    name: Verify path policy and tenant lifecycle
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:

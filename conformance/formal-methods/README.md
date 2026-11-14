@@ -42,7 +42,7 @@ exact wins at equal length. The [policy tests](../../kits/server/src/http/visibi
 exercise segment boundaries and verify that a denied winner blocks admission
 even when a less specific rule and the default would both allow the listener.
 
-## FoundationDB tenant deletion and recovery
+## FoundationDB tenant deletion
 
 [The TLA+ model](TenantDeletion.tla) follows the
 [tenant admin operations](../../kits/foundationdb/src/fdb/tenant/admin.rs).
@@ -58,8 +58,42 @@ read conflicts with writes before the metadata clear, and that FoundationDB
 checks tenant emptiness at deletion. Each uncertain commit resolves before
 the model advances to lookup or restoration. The model represents the
 automatic restoration attempts by their final outcome. It checks safety for
-a single deletion and operator recovery with a matching recorded ID. Further
-verification needs to track late commits, tenant name reuse, stale handles
-across recreation, metadata values, and retry progress.
+a single deletion and operator recovery with a matching recorded ID. The
+model abstracts metadata values and retry progress.
 Use the FoundationDB integration suite to validate the production adapter
 against the database.
+
+## FoundationDB recovery after name reuse
+
+[TenantRecovery.tla](TenantRecovery.tla) starts after an interrupted delete
+has cleared the kit metadata. It models one recovery attempt, one tenant
+name, and two tenant IDs. The name can disappear and then resolve to the
+replacement ID. The model separates the management lookup, opening by name,
+and resolving the keyspace for the recovery transaction. It also covers
+concurrent population of the reserved metadata namespace and a commit that
+may complete after the caller times out.
+
+[The lookup-only configuration](TenantRecoveryLookupOnly.cfg) represents the ID
+check in [recover_interrupted_delete](../../kits/foundationdb/src/fdb/tenant/admin.rs).
+The lookup can accept the recorded ID and the later name-based open can
+resolve to the replacement. If its metadata namespace is empty, recovery
+can initialize the replacement. The runner requires TLC to report precisely
+that invariant violation.
+
+[The bound-ID configuration](TenantRecovery.cfg) models a prospective
+protocol that checks the same resolved ID used by the recovery transaction.
+It checks that committed writes target only the recorded tenant, success
+requires a commit, and recovery writes both kit keys only when the namespace
+is empty. The model assumes that a bound transaction cannot be retargeted,
+that deletion invalidates writes to its old ID, and that the non-snapshot
+metadata read conflicts with concurrent population. The model omits
+cross-cluster identity, retries, and repeated name reuse. The Rust adapter
+still uses the lookup-only check.
+
+FoundationDB assigns IDs and keyspaces at tenant creation. In the 7.3.77
+client, a name-based tenant object has its own asynchronous ID lookup
+and supplies that tenant object to transactions. A binding change should
+validate the ID of the same handle used for the write.
+[Tenant documentation](https://apple.github.io/foundationdb/tenants.html),
+[native client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/NativeAPI.actor.cpp#L2735-L2746),
+[thread-safe client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/ThreadSafeTransaction.cpp#L227-L243)
