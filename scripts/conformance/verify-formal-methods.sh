@@ -34,6 +34,8 @@ cp "$repo_root/$model_dir/"{TenantRecovery.tla,TenantRecovery.cfg,TenantRecovery
 cp "$repo_root/$model_dir/"{TenantRestoration.tla,TenantRestoration.cfg} "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantRestorationByName.cfg,TenantRestorationSkipWrite.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantMapDeletion.tla,TenantMapDeletion.cfg,TenantMapDeletionSkipRetryId.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
@@ -65,3 +67,5 @@ expect_invariant_violation TenantRecovery TenantRecoveryLookupOnly RecoveryWrite
 run_tlc TenantRestoration
 expect_invariant_violation TenantRestoration TenantRestorationByName RestoreWritesOnlyOriginal
 expect_invariant_violation TenantRestoration TenantRestorationSkipWrite AcknowledgedRestoreSurvives
+run_tlc TenantMapDeletion
+expect_invariant_violation TenantMapDeletion TenantMapDeletionSkipRetryId ReplacementSurvives
