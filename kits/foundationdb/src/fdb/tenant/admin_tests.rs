@@ -5,10 +5,10 @@ use crate::fdb::tenant_name::FoundationDbTenantName;
 
 use super::metadata_keys;
 use super::{
-    TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, TenantHandle, clear_metadata_if_empty,
-    delete_tenant, ensure_tenant, finish_delete_after_clear, read_tenant_metadata,
-    recover_interrupted_delete, repair_absent_tenant_metadata, repair_tenant_metadata,
-    restore_metadata, tenant_id,
+    TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, administration_failed, delete_tenant,
+    ensure_tenant, finish_delete_after_clear, open_delete_tenant, recover_interrupted_delete,
+    repair_absent_tenant_metadata, repair_tenant_metadata, restore_metadata_with_retries,
+    stage_metadata_clear, tenant_id,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
@@ -41,6 +41,12 @@ async fn tenant_delete_recovery_live_cases() {
     )
     .await
     .expect("name reuse fixture completed");
+    tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT * 5,
+        automatic_restore_does_not_write_to_a_replacement(&connector),
+    )
+    .await
+    .expect("automatic restore fixture completed");
     restore_write_conflicts_with_in_flight_clear(&connector).await;
     interrupted_creation_requires_explicit_empty_tenant_repair(&connector).await;
 }
@@ -55,9 +61,6 @@ async fn recovery_stays_bound_when_a_tenant_name_is_reused(connector: &Foundatio
         .await
         .expect("look up original tenant ID")
         .expect("original tenant exists");
-    clear_metadata_if_empty(connector.database(), tenant, &mut Vec::new())
-        .await
-        .expect("complete the first phase of deletion");
     let verified_original = tokio::time::timeout(
         TENANT_ADMIN_TIMEOUT,
         connector
@@ -69,6 +72,13 @@ async fn recovery_stays_bound_when_a_tenant_name_is_reused(connector: &Foundatio
     .await
     .expect("resolve original handle ID within deadline")
     .expect("original handle matches recorded ID");
+    let (transaction, _) = stage_metadata_clear(&verified_original)
+        .await
+        .expect("stage the first phase of deletion");
+    transaction
+        .commit()
+        .await
+        .expect("complete the first phase of deletion");
 
     TenantManagement::delete_tenant(connector.database(), tenant.as_bytes())
         .await
@@ -178,35 +188,22 @@ async fn restore_write_conflicts_with_in_flight_clear(connector: &FoundationDbCo
     ensure_tenant(connector, tenant)
         .await
         .expect("provision race fixture");
-    let inner = connector
-        .database()
-        .open_tenant(tenant.as_bytes())
-        .expect("open race fixture");
-    let transaction = inner.create_trx().expect("create clear transaction");
-    let keys = metadata_keys(tenant).expect("metadata keys");
-    let mut metadata = Vec::new();
-    for key in &keys {
-        let value = transaction
-            .get(key, false)
-            .await
-            .expect("read metadata in clear transaction")
-            .expect("metadata present");
-        metadata.push((key.to_vec(), value.to_vec()));
-        transaction.clear(key);
-    }
+    let handle = open_delete_tenant(connector, tenant)
+        .await
+        .expect("verified tenant");
+    let (transaction, snapshot) = stage_metadata_clear(&handle)
+        .await
+        .expect("stage metadata clear");
 
-    restore_metadata(connector.database(), tenant, &metadata)
+    restore_metadata_with_retries(connector, &snapshot)
         .await
         .expect("repair write must commit");
     assert!(
         transaction.commit().await.is_err(),
         "clear must conflict with the repair write that committed first"
     );
-    let reopened = connector
-        .database()
-        .open_tenant(tenant.as_bytes())
-        .expect("open surviving tenant");
-    read_tenant_metadata(&TenantHandle::new(tenant, reopened))
+    connector
+        .open_tenant(tenant)
         .await
         .expect("metadata remains after conflicting clear");
     delete_tenant(connector, tenant)
@@ -221,11 +218,14 @@ async fn failed_second_delete_phase_restores_metadata_after_concurrent_write(
     ensure_tenant(connector, tenant)
         .await
         .expect("provision tenant");
-    let mut metadata = Vec::new();
-    clear_metadata_if_empty(connector.database(), tenant, &mut metadata)
+    let handle = open_delete_tenant(connector, tenant)
         .await
-        .expect("clear metadata phase");
-    assert_eq!(metadata.len(), 2);
+        .expect("verified tenant");
+    let (transaction, snapshot) = stage_metadata_clear(&handle)
+        .await
+        .expect("stage metadata clear");
+    transaction.commit().await.expect("clear metadata phase");
+    assert_eq!(snapshot.entries.len(), 2);
     let raw_tenant = connector
         .database()
         .open_tenant(tenant.as_bytes())
@@ -234,7 +234,7 @@ async fn failed_second_delete_phase_restores_metadata_after_concurrent_write(
     transaction.set(b"application/data", b"value");
     transaction.commit().await.expect("concurrent write");
     assert!(matches!(
-        finish_delete_after_clear(connector.database(), tenant, &metadata).await,
+        finish_delete_after_clear(connector, &snapshot).await,
         Err(FdbError::Tenant {
             reason: TenantErrorReason::RepairRequiresEmptyTenant { .. },
         })
@@ -247,6 +247,75 @@ async fn failed_second_delete_phase_restores_metadata_after_concurrent_write(
     delete_tenant(connector, tenant)
         .await
         .expect("delete empty tenant");
+}
+
+async fn automatic_restore_does_not_write_to_a_replacement(connector: &FoundationDbConnector) {
+    let tenant = FoundationDbTenantName::new("kit-reused-restore-test").expect("fixed tenant name");
+    ensure_tenant(connector, tenant)
+        .await
+        .expect("provision original");
+    let original = open_delete_tenant(connector, tenant)
+        .await
+        .expect("verified original");
+    let (transaction, snapshot) = stage_metadata_clear(&original)
+        .await
+        .expect("snapshot original metadata");
+    transaction.commit().await.expect("clear original metadata");
+    assert_eq!(snapshot.entries.len(), 2);
+
+    // Commit the tenant-map delete without delivering its result to the
+    // restore path, then reuse the name before any restore attempt opens it.
+    let database = connector.database();
+    TenantManagement::delete_tenant(database, tenant.as_bytes())
+        .await
+        .expect("commit original tenant deletion");
+    TenantManagement::create_tenant(database, tenant.as_bytes())
+        .await
+        .expect("recreate the same name");
+    let replacement_id = tenant_id(connector, tenant)
+        .await
+        .expect("lookup succeeds")
+        .expect("replacement exists");
+    assert_ne!(replacement_id, snapshot.original_id);
+    let replacement = database
+        .open_tenant(tenant.as_bytes())
+        .expect("open replacement");
+    let [schema, created_at] = metadata_keys(tenant).expect("metadata keys");
+    let marker = 9_u32.to_le_bytes();
+    let transaction = replacement
+        .create_trx()
+        .expect("replacement fixture transaction");
+    transaction.set(&schema, &marker);
+    transaction
+        .commit()
+        .await
+        .expect("write replacement metadata");
+
+    assert_eq!(
+        restore_metadata_with_retries(connector, &snapshot).await,
+        Err(administration_failed(tenant)),
+        "every retry must reject the replacement ID",
+    );
+    let transaction = replacement
+        .create_trx()
+        .expect("verify replacement metadata");
+    let schema_value = transaction
+        .get(&schema, false)
+        .await
+        .expect("read schema key")
+        .expect("replacement schema key remains");
+    assert_eq!(schema_value.as_ref(), &marker);
+    assert!(
+        transaction
+            .get(&created_at, false)
+            .await
+            .expect("read creation time")
+            .is_none()
+    );
+    drop(transaction);
+    delete_tenant(connector, tenant)
+        .await
+        .expect("clean up replacement");
 }
 
 async fn interrupted_delete_recovery_restores_metadata_even_with_application_data(

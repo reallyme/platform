@@ -130,16 +130,20 @@ If provisioning was interrupted after tenant creation, an operator may run
 `repair` after verifying the intended tenant name; it writes metadata only
 when the tenant is empty. `delete` first checks that no application data remains,
 then clears only the kit metadata keys in a tenant transaction. It deletes the
-empty tenant in a second operation and attempts metadata restoration if that
-operation fails. Between those two commits, concurrent opens fail closed and a
-concurrent writer can leave data in the tenant. If an outage prevents automatic
-restoration, `recover-delete <tenant> <expected-tenant-id>` recreates both
-metadata keys only when the entire reserved metadata namespace is absent. It
-permits application data but requires a trusted tenant ID recorded before the
-interrupted deletion. Recovery checks the resolved ID on the same tenant
-handle that creates the metadata transaction, so reusing the name does not
-redirect that transaction to a replacement tenant. This recovery records a
-new metadata creation time.
+empty tenant in a second operation and attempts metadata restoration after an
+unconfirmed clear or a failed delete. Each restore attempt verifies the handle
+used for its write against the original tenant ID saved with the metadata. It
+always writes the saved values so a pending clear conflicts if it tries to
+commit afterward, even when the values already match. Between the two phases,
+concurrent opens fail closed and a concurrent writer can leave data in the
+tenant. If an outage prevents automatic restoration,
+`recover-delete <tenant> <expected-tenant-id>`
+recreates both metadata keys only when the entire reserved metadata namespace
+is absent. It permits application data and requires a trusted tenant ID
+recorded before the interrupted deletion. Recovery checks the resolved ID on
+the same tenant handle that creates the metadata transaction. Name reuse
+cannot redirect that transaction to a replacement tenant. This recovery
+records a new metadata creation time.
 Application data present before deletion produces a typed empty-tenant error
 without clearing metadata.
 

@@ -99,7 +99,10 @@ impl<'db> RecoveryTenant<'db> {
         if actual_id != expected_id {
             return Err(recovery_failed(self.name));
         }
-        Ok(VerifiedRecoveryTenant(self))
+        Ok(VerifiedRecoveryTenant {
+            tenant: self,
+            id: actual_id,
+        })
     }
 }
 
@@ -110,11 +113,18 @@ impl Drop for RecoveryTenant<'_> {
     }
 }
 
-pub(super) struct VerifiedRecoveryTenant<'db>(RecoveryTenant<'db>);
+pub(super) struct VerifiedRecoveryTenant<'db> {
+    tenant: RecoveryTenant<'db>,
+    id: i64,
+}
 
 impl VerifiedRecoveryTenant<'_> {
     pub(super) const fn name(&self) -> FoundationDbTenantName {
-        self.0.name
+        self.tenant.name
+    }
+
+    pub(super) const fn id(&self) -> i64 {
+        self.id
     }
 
     pub(super) fn create_transaction(
@@ -124,15 +134,16 @@ impl VerifiedRecoveryTenant<'_> {
         let mut transaction = ptr::null_mut();
         // SAFETY: The verified tenant is live and the out pointer is writable.
         // The C client uses this tenant object's resolved ID for transactions.
-        if unsafe { sys::fdb_tenant_create_transaction(self.0.handle.as_ptr(), &mut transaction) }
-            != 0
+        if unsafe {
+            sys::fdb_tenant_create_transaction(self.tenant.handle.as_ptr(), &mut transaction)
+        } != 0
         {
-            return Err(recovery_failed(self.0.name));
+            return Err(recovery_failed(self.name()));
         }
         let transaction = RecoveryTransaction {
-            handle: NonNull::new(transaction).ok_or_else(|| recovery_failed(self.0.name))?,
-            name: self.0.name,
-            _tenant: &self.0,
+            handle: NonNull::new(transaction).ok_or_else(|| recovery_failed(self.name()))?,
+            name: self.name(),
+            _tenant: &self.tenant,
         };
         transaction.set_timeout(timeout_millis)?;
         Ok(transaction)
@@ -170,10 +181,24 @@ impl RecoveryTransaction<'_> {
     }
 
     pub(super) async fn range_is_empty(&mut self, begin: &[u8], end: &[u8]) -> FdbResult<bool> {
+        let values = self.read_range(begin, end, 1).await?;
+        Ok(values.is_empty() && !values.more())
+    }
+
+    pub(super) async fn read_range(
+        &mut self,
+        begin: &[u8],
+        end: &[u8],
+        limit: i32,
+    ) -> FdbResult<FdbValues> {
+        // The C API treats a zero limit as unbounded.
+        if limit <= 0 {
+            return Err(recovery_failed(self.name));
+        }
         let begin_len = i32::try_from(begin.len()).map_err(|_| recovery_failed(self.name))?;
         let end_len = i32::try_from(end.len()).map_err(|_| recovery_failed(self.name))?;
-        // First-greater-or-equal selectors give [begin, end). Reading one
-        // entry suffices, and the non-snapshot read protects the empty range.
+        // First-greater-or-equal selectors give [begin, end). A non-snapshot
+        // read makes a subsequent commit conflict with writes to that range.
         // SAFETY: Both slices and the transaction are live for the C call.
         let future = unsafe {
             sys::fdb_transaction_get_range(
@@ -186,7 +211,7 @@ impl RecoveryTransaction<'_> {
                 end_len,
                 0,
                 1,
-                1,
+                limit,
                 0,
                 sys::FDBStreamingMode_FDB_STREAMING_MODE_EXACT,
                 1,
@@ -194,10 +219,17 @@ impl RecoveryTransaction<'_> {
                 0,
             )
         };
-        let values = recovery_future::<FdbValues>(future, self.name)?
+        recovery_future::<FdbValues>(future, self.name)?
             .await
-            .map_err(|_| recovery_failed(self.name))?;
-        Ok(values.is_empty() && !values.more())
+            .map_err(|_| recovery_failed(self.name))
+    }
+
+    pub(super) fn clear(&mut self, key: &[u8]) -> FdbResult<()> {
+        let len = i32::try_from(key.len()).map_err(|_| recovery_failed(self.name))?;
+        // SAFETY: The C API copies the key during the call. The transaction
+        // is live and deferred errors surface on commit.
+        unsafe { sys::fdb_transaction_clear(self.handle.as_ptr(), key.as_ptr(), len) };
+        Ok(())
     }
 
     pub(super) fn set(&mut self, key: &[u8], value: &[u8]) -> FdbResult<()> {

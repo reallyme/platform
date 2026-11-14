@@ -6,13 +6,14 @@
 use std::time::Duration;
 
 use crate::fdb::tenant_name::FoundationDbTenantName;
-use foundationdb::{Database, RangeOption, options::TransactionOption, tenant::TenantManagement};
+use foundationdb::tenant::TenantManagement;
 
 use super::TenantHandle;
 use super::metadata::{
     read_tenant_metadata, repair_absent_tenant_metadata, repair_empty_tenant_metadata,
     write_tenant_metadata,
 };
+use super::recovery_handle::{RecoveryTransaction, VerifiedRecoveryTenant};
 use crate::fdb::connector::FoundationDbConnector;
 use crate::fdb::error::{FdbError, FdbResult, TenantErrorReason};
 use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, codec::KeyEncoder};
@@ -20,6 +21,8 @@ use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, co
 const TENANT_ADMIN_TIMEOUT_MILLIS: i32 = 5_000;
 const TENANT_ADMIN_TIMEOUT: Duration = Duration::from_millis(5_000);
 const MAX_METADATA_VALUE_BYTES: usize = 64;
+// At most two kit keys are allowed. Reading a third detects application data.
+const DELETE_SCAN_LIMIT: i32 = 3;
 const FDB_TENANT_NOT_EMPTY_CODE: i32 = 2133;
 const METADATA_RESTORE_ATTEMPTS: usize = 3;
 
@@ -112,33 +115,53 @@ pub async fn recover_interrupted_delete(
 /// Deletes a tenant containing only the kit's own metadata keys.
 ///
 /// FoundationDB checks emptiness before applying a tenant-map deletion, so
-/// metadata must be cleared in a committed tenant transaction first. A failed
-/// second phase restores those keys when the tenant still exists.
+/// metadata must be cleared in a committed tenant transaction first. An
+/// unconfirmed clear or failed second phase can restore the saved keys only
+/// to the original tenant.
 pub async fn delete_tenant(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
 ) -> FdbResult<()> {
-    let database = connector.database();
-    let mut metadata = Vec::with_capacity(2);
+    let handle = open_delete_tenant(connector, tenant).await?;
+    let (transaction, snapshot) = stage_metadata_clear(&handle).await?;
     // The transaction has its own FoundationDB timeout. Do not cancel a
     // possibly in-flight phase-one commit with a Rust future timeout.
-    let cleared = clear_metadata_if_empty(database, tenant, &mut metadata).await;
-    match cleared {
-        Ok(()) => {}
-        Err(error) if metadata.is_empty() => return Err(error),
-        Err(error) => {
-            restore_metadata_with_retries(database, tenant, &metadata).await?;
-            return Err(error);
+    if let Err(error) = transaction.commit().await {
+        if !snapshot.entries.is_empty() {
+            restore_metadata_with_retries(connector, &snapshot).await?;
         }
+        return Err(error);
     }
-    finish_delete_after_clear(database, tenant, &metadata).await
+    finish_delete_after_clear(connector, &snapshot).await
+}
+
+async fn open_delete_tenant(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+) -> FdbResult<VerifiedRecoveryTenant<'_>> {
+    let original_id = tenant_id(connector, tenant)
+        .await
+        .map_err(|_| administration_failed(tenant))?
+        .ok_or(FdbError::Tenant {
+            reason: TenantErrorReason::NotProvisioned { tenant },
+        })?;
+    tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        connector
+            .recovery_database()
+            .open_tenant(tenant)?
+            .verify(original_id),
+    )
+    .await
+    .map_err(|_| administration_failed(tenant))?
 }
 
 async fn finish_delete_after_clear(
-    database: &Database,
-    tenant: FoundationDbTenantName,
-    metadata: &[(Vec<u8>, Vec<u8>)],
+    connector: &FoundationDbConnector,
+    snapshot: &TenantMetadataSnapshot,
 ) -> FdbResult<()> {
+    let tenant = snapshot.tenant;
+    let database = connector.database();
     let deletion = tokio::time::timeout(
         TENANT_ADMIN_TIMEOUT,
         TenantManagement::delete_tenant(database, tenant.as_bytes()),
@@ -160,13 +183,19 @@ async fn finish_delete_after_clear(
     }
     // Even if the lookup is unavailable, attempt to restore before returning.
     // A transient failure must not strand a surviving tenant without metadata.
-    restore_metadata_with_retries(database, tenant, metadata).await?;
+    restore_metadata_with_retries(connector, snapshot).await?;
     match deletion {
         Ok(Err(error)) if error.code() == FDB_TENANT_NOT_EMPTY_CODE => Err(FdbError::Tenant {
             reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
         }),
         _ => Err(administration_failed(tenant)),
     }
+}
+
+struct TenantMetadataSnapshot {
+    tenant: FoundationDbTenantName,
+    original_id: i64,
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 fn metadata_keys(tenant: FoundationDbTenantName) -> FdbResult<[bytes::Bytes; 2]> {
@@ -180,46 +209,21 @@ fn metadata_keys(tenant: FoundationDbTenantName) -> FdbResult<[bytes::Bytes; 2]>
     ])
 }
 
-async fn clear_metadata_if_empty(
-    database: &Database,
-    tenant: FoundationDbTenantName,
-    metadata_out: &mut Vec<(Vec<u8>, Vec<u8>)>,
-) -> FdbResult<()> {
-    if tokio::time::timeout(
-        TENANT_ADMIN_TIMEOUT,
-        TenantManagement::get_tenant(database, tenant.as_bytes()),
-    )
-    .await
-    .map_err(|_| administration_failed(tenant))?
-    .map_err(|_| administration_failed(tenant))?
-    .is_none()
-    {
-        return Err(FdbError::Tenant {
-            reason: TenantErrorReason::NotProvisioned { tenant },
-        });
-    }
-    let handle = database
-        .open_tenant(tenant.as_bytes())
-        .map_err(|_| administration_failed(tenant))?;
-    let transaction = handle
-        .create_trx()
-        .map_err(|_| administration_failed(tenant))?;
-    transaction
-        .set_option(TransactionOption::Timeout(TENANT_ADMIN_TIMEOUT_MILLIS))
-        .map_err(|_| administration_failed(tenant))?;
+async fn stage_metadata_clear<'handle>(
+    handle: &'handle VerifiedRecoveryTenant<'_>,
+) -> FdbResult<(RecoveryTransaction<'handle>, TenantMetadataSnapshot)> {
+    let tenant = handle.name();
+    let mut transaction = handle.create_transaction(i64::from(TENANT_ADMIN_TIMEOUT_MILLIS))?;
     let keys = metadata_keys(tenant)?;
-    let mut range = RangeOption::from((b"".as_slice(), b"\xff".as_slice()));
-    range.limit = Some(3);
     let existing = transaction
-        .get_range(&range, 1, false)
-        .await
-        .map_err(|_| administration_failed(tenant))?;
-    let mut metadata = Vec::with_capacity(2);
+        .read_range(b"", b"\xff", DELETE_SCAN_LIMIT)
+        .await?;
     if existing.more() || existing.len() > keys.len() {
         return Err(FdbError::Tenant {
             reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
         });
     }
+    let mut entries = Vec::with_capacity(keys.len());
     for entry in &existing {
         if entry.key() != keys[0].as_ref() && entry.key() != keys[1].as_ref() {
             return Err(FdbError::Tenant {
@@ -229,62 +233,54 @@ async fn clear_metadata_if_empty(
         if entry.value().len() > MAX_METADATA_VALUE_BYTES {
             return Err(administration_failed(tenant));
         }
-        metadata.push((entry.key().to_vec(), entry.value().to_vec()));
+        entries.push((entry.key().to_vec(), entry.value().to_vec()));
     }
     for entry in &existing {
-        transaction.clear(entry.key());
+        transaction.clear(entry.key())?;
     }
-    // Keep an owned recovery snapshot before awaiting an uncertain commit.
-    metadata_out.extend(metadata);
-    transaction
-        .commit()
-        .await
-        .map_err(|_| administration_failed(tenant))?;
-    Ok(())
+    // Capture the identity of the handle that read and staged the clear,
+    // so restoration can target the same tenant even after an uncertain commit.
+    let snapshot = TenantMetadataSnapshot {
+        tenant,
+        original_id: handle.id(),
+        entries,
+    };
+    Ok((transaction, snapshot))
 }
 
 async fn restore_metadata_with_retries(
-    database: &Database,
-    tenant: FoundationDbTenantName,
-    metadata: &[(Vec<u8>, Vec<u8>)],
+    connector: &FoundationDbConnector,
+    snapshot: &TenantMetadataSnapshot,
 ) -> FdbResult<()> {
     for _ in 0..METADATA_RESTORE_ATTEMPTS {
-        if matches!(
-            tokio::time::timeout(
-                TENANT_ADMIN_TIMEOUT,
-                restore_metadata(database, tenant, metadata),
-            )
-            .await,
-            Ok(Ok(()))
-        ) {
+        if let Ok(Ok(())) =
+            tokio::time::timeout(TENANT_ADMIN_TIMEOUT, restore_metadata(connector, snapshot)).await
+        {
             return Ok(());
         }
     }
-    Err(administration_failed(tenant))
+    Err(administration_failed(snapshot.tenant))
 }
 
 async fn restore_metadata(
-    database: &Database,
-    tenant: FoundationDbTenantName,
-    metadata: &[(Vec<u8>, Vec<u8>)],
+    connector: &FoundationDbConnector,
+    snapshot: &TenantMetadataSnapshot,
 ) -> FdbResult<()> {
-    let handle = database
-        .open_tenant(tenant.as_bytes())
-        .map_err(|_| administration_failed(tenant))?;
-    let transaction = handle
-        .create_trx()
-        .map_err(|_| administration_failed(tenant))?;
-    for (key, value) in metadata {
+    // A retry opens a fresh handle. The name can resolve to a replacement
+    // between attempts, so verify every handle before staging any writes.
+    let handle = connector
+        .recovery_database()
+        .open_tenant(snapshot.tenant)?
+        .verify(snapshot.original_id)
+        .await?;
+    let mut transaction = handle.create_transaction(i64::from(TENANT_ADMIN_TIMEOUT_MILLIS))?;
+    for (key, value) in &snapshot.entries {
         // Always stage the repair write. An earlier read could observe the
         // old metadata before a pending phase-one clear commits; skipping the
         // write would then allow that clear to strand a surviving tenant.
-        transaction.set(key, value);
+        transaction.set(key, value)?;
     }
-    transaction
-        .commit()
-        .await
-        .map(|_| ())
-        .map_err(|_| administration_failed(tenant))
+    transaction.commit().await
 }
 
 fn administration_failed(tenant: FoundationDbTenantName) -> FdbError {

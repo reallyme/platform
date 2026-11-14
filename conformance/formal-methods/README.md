@@ -79,12 +79,12 @@ operator, and one reuse of the original tenant name.
 | [Restore by name](TenantRestorationByName.cfg) | The runner requires a counterexample in which the second phase commits after a timeout, the name is reused, and automatic restoration writes into the replacement. The replacement can be empty or hold its own metadata. |
 | [Skip the write if values already match](TenantRestorationSkipWrite.cfg) | The runner requires a counterexample in which an older clear commits after the restore observes matching values. A real restore write adds the conflict that prevents the clear from committing afterward. |
 
-The current [automatic restore](../../kits/foundationdb/src/fdb/tenant/admin.rs)
-opens by name on every attempt and always writes the snapshot. The
-identity-bound configuration models a prospective change to carry the
-snapshot owner's ID into each attempt and verify the handle used to write.
-The [live conflict regression](../../kits/foundationdb/src/fdb/tenant/admin_tests.rs)
-exercises the existing unconditional write against an in-flight clear.
+The adapter saves the ID of the handle that reads and clears the metadata.
+Every [automatic restore](../../kits/foundationdb/src/fdb/tenant/admin.rs)
+attempt checks the newly opened handle against that ID before writing the
+snapshot unconditionally. The [live regressions](../../kits/foundationdb/src/fdb/tenant/admin_tests.rs)
+exercise name reuse after a delete commits and the conflict between a restore
+write and an in-flight clear.
 
 The model distinguishes a reported timeout from a server-side abort. It
 assumes a non-snapshot clear conflicts with subsequent writes to its read
