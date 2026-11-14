@@ -36,6 +36,9 @@ cp "$repo_root/$model_dir/"{TenantRestorationByName.cfg,TenantRestorationSkipWri
   "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantMapDeletion.tla,TenantMapDeletion.cfg,TenantMapDeletionSkipRetryId.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantDeleteRecovery.tla,TenantDeleteRecovery.cfg} "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantDeleteRecoveryExhaustion.cfg,TenantDeleteRecoveryLateDelete.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
@@ -69,3 +72,6 @@ expect_invariant_violation TenantRestoration TenantRestorationByName RestoreWrit
 expect_invariant_violation TenantRestoration TenantRestorationSkipWrite AcknowledgedRestoreSurvives
 run_tlc TenantMapDeletion
 expect_invariant_violation TenantMapDeletion TenantMapDeletionSkipRetryId ReplacementSurvives
+run_tlc TenantDeleteRecovery
+expect_invariant_violation TenantDeleteRecovery TenantDeleteRecoveryExhaustion ExhaustionPreservesMetadata
+expect_invariant_violation TenantDeleteRecovery TenantDeleteRecoveryLateDelete NoDeleteCommitAfterExhaustion

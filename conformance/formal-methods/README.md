@@ -121,6 +121,26 @@ metadata edits, and recovery after retry exhaustion are outside the
 restoration model.
 [FoundationDB transaction timeouts and conflict rules](https://apple.github.io/foundationdb/developer-guide.html#non-retryable-errors)
 
+## Delete retries and restoration together
+
+[TenantDeleteRecovery.tla](TenantDeleteRecovery.tla) starts after the
+metadata clear is submitted, with a nonempty snapshot of the original
+tenant's metadata. It reuses the tenant-map retry model and adds the adapter's
+reconciliation lookup and restoration. After a delete error, a successful
+lookup that finds the original absent completes the delete. An unavailable
+lookup or one that finds the original leads to restoration. Each restore
+attempt verifies a handle again. Submitted clears, deletes, and restores
+can settle after the caller stops waiting, including after the final error.
+The model checks three delete attempts and three restore attempts. It
+represents saved metadata with one marker and does not model external
+metadata edits, tenant renames, or process restarts.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Combined safety checks](TenantDeleteRecovery.cfg) | A replacement survives and never receives the snapshot. Application data survives, and delete success requires the original mapping to be absent. A committed restore preserves the original and its saved metadata by conflicting with a pending clear and making the tenant nonempty for a pending delete. |
+| [Retry exhaustion](TenantDeleteRecoveryExhaustion.cfg) | The delete budget is exhausted, the lookup is unavailable, and all restores fail. The original survives without its metadata. The runner requires `ExhaustionPreservesMetadata` to fail. |
+| [Late delete](TenantDeleteRecoveryLateDelete.cfg) | The delete deadline expires with a commit in flight. The lookup is unavailable and the caller returns after exhausting restore attempts. The pending delete then commits against the empty original. The runner requires `NoDeleteCommitAfterExhaustion` to fail. |
+
 ## FoundationDB recovery after name reuse
 
 [TenantRecovery.tla](TenantRecovery.tla) starts after an interrupted delete
