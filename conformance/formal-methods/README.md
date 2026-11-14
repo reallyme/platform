@@ -181,3 +181,37 @@ multiversion client can reopen a tenant by name on a client switch.
 [native client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/NativeAPI.actor.cpp#L2735-L2746),
 [thread-safe client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/ThreadSafeTransaction.cpp#L227-L243),
 [multiversion client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/MultiVersionTransaction.actor.cpp#L1853-L1881)
+
+## Durable deletion record
+
+[TenantDeletionRecord.tla](TenantDeletionRecord.tla) models a proposed
+operator protocol. It persists an intent with the original tenant ID before
+submitting the metadata clear. A crash discards the worker's progress while
+the record and submitted commits survive. A restarted worker reconciles a
+pending record by ID. A missing mapping or a different ID completes the
+record as `original-absent`. An unavailable lookup leaves it pending.
+
+If the original ID still matches, the worker verifies the handle used for the
+repair transaction. The transaction initializes an empty reserved metadata
+namespace and preserves compatible metadata. When metadata is already
+compatible, it commits a write that conflicts with any older pending clear.
+The worker records `metadata-safe` only after it acknowledges that commit.
+A pending tenant-map delete still requires emptiness, so repaired metadata
+also protects the original from that delete. Incompatible metadata leaves the
+record pending for operator review. An unacknowledged repair can commit after
+a crash and be confirmed by a later worker.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Durable record](TenantDeletionRecord.cfg) | Destructive work requires a durable intent. Completed records stay stable and accurate. Repairs stay on the recorded ID and preserve existing metadata, application data, and any replacement. |
+| [Trust the lookup alone](TenantDeletionRecordLookupOnly.cfg) | The original is present during lookup, then its name is reused before repair opens the handle. The runner requires a replacement write to violate `RepairTargetsRecordedId`. |
+| [Accept compatible metadata without a conflicting write](TenantDeletionRecordSkipFence.cfg) | A restarted worker records `metadata-safe` and an older clear commits afterward. The runner requires `SafeMetadataRecordIsAccurate` to fail. |
+
+The model checks safety for one cluster, one record, one name reuse, and up
+to two repair submissions across repeated restarts. It assumes atomic durable
+record updates, non-reused tenant IDs, transactional metadata conflict checks,
+and no new destructive operation after reconciliation begins. The delete
+commit abstracts the tenant-map retry loop checked in [TenantMapDeletion.tla](TenantMapDeletion.tla).
+The proposed durable record and the write for already-compatible metadata
+would extend the kit's current operator recovery command, which repairs an
+empty reserved namespace using a caller-supplied ID.
