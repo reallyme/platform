@@ -3785,6 +3785,7 @@ version = "0.3.5"
 dependencies = [
  "bytes",
  "foundationdb",
+ "foundationdb-sys",
  "metrics",
  "temp-env",
  "thiserror",

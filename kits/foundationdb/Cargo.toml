@@ -19,6 +19,9 @@ autobins = false
 [dependencies]
 bytes = { workspace = true }
 foundationdb = { workspace = true, features = ["embedded-fdb-include", "fdb-7_3", "tenant-experimental"] }
+# Keep the C API version aligned with the Rust binding. Recovery needs the
+# resolved ID of an opened tenant, which the Rust binding does not expose.
+foundationdb-sys = { workspace = true, optional = true, features = ["embedded-fdb-include", "fdb-7_3"] }
 metrics = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -31,7 +34,7 @@ default = []
 metrics = ["dep:metrics"]
 # Exposes tenant provisioning helpers (create/delete/list). Off by default;
 # enable only in operator/admin tooling.
-tenant-admin = []
+tenant-admin = ["dep:foundationdb-sys"]
 
 [[bin]]
 name = "fdb-tenant-admin"

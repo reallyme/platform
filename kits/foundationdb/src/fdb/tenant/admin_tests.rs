@@ -5,9 +5,10 @@ use crate::fdb::tenant_name::FoundationDbTenantName;
 
 use super::metadata_keys;
 use super::{
-    TenantHandle, clear_metadata_if_empty, delete_tenant, ensure_tenant, finish_delete_after_clear,
-    read_tenant_metadata, recover_interrupted_delete, repair_tenant_metadata, restore_metadata,
-    tenant_id,
+    TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, TenantHandle, clear_metadata_if_empty,
+    delete_tenant, ensure_tenant, finish_delete_after_clear, read_tenant_metadata,
+    recover_interrupted_delete, repair_absent_tenant_metadata, repair_tenant_metadata,
+    restore_metadata, tenant_id,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
@@ -34,8 +35,92 @@ async fn tenant_delete_recovery_live_cases() {
     let connector = unsafe { FoundationDbConnector::connect(&config) }.expect("live FDB connector");
     failed_second_delete_phase_restores_metadata_after_concurrent_write(&connector).await;
     interrupted_delete_recovery_restores_metadata_even_with_application_data(&connector).await;
+    tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT * 4,
+        recovery_stays_bound_when_a_tenant_name_is_reused(&connector),
+    )
+    .await
+    .expect("name reuse fixture completed");
     restore_write_conflicts_with_in_flight_clear(&connector).await;
     interrupted_creation_requires_explicit_empty_tenant_repair(&connector).await;
+}
+
+async fn recovery_stays_bound_when_a_tenant_name_is_reused(connector: &FoundationDbConnector) {
+    let tenant =
+        FoundationDbTenantName::new("kit-reused-recovery-test").expect("fixed tenant name");
+    ensure_tenant(connector, tenant)
+        .await
+        .expect("provision original");
+    let recorded_id = tenant_id(connector, tenant)
+        .await
+        .expect("look up original tenant ID")
+        .expect("original tenant exists");
+    clear_metadata_if_empty(connector.database(), tenant, &mut Vec::new())
+        .await
+        .expect("complete the first phase of deletion");
+    let verified_original = tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT,
+        connector
+            .recovery_database()
+            .open_tenant(tenant)
+            .expect("open original recovery handle")
+            .verify(recorded_id),
+    )
+    .await
+    .expect("resolve original handle ID within deadline")
+    .expect("original handle matches recorded ID");
+
+    TenantManagement::delete_tenant(connector.database(), tenant.as_bytes())
+        .await
+        .expect("delete original after recovery verified its handle");
+    TenantManagement::create_tenant(connector.database(), tenant.as_bytes())
+        .await
+        .expect("recreate name before recovery attempts its write");
+    let replacement_id = tenant_id(connector, tenant)
+        .await
+        .expect("look up replacement tenant ID")
+        .expect("replacement tenant exists");
+    assert_ne!(recorded_id, replacement_id);
+    let replacement = connector
+        .database()
+        .open_tenant(tenant.as_bytes())
+        .expect("open replacement tenant");
+
+    assert!(
+        repair_absent_tenant_metadata(&verified_original, i64::from(TENANT_ADMIN_TIMEOUT_MILLIS))
+            .await
+            .is_err(),
+        "a transaction from the verified handle must fail after that tenant is deleted"
+    );
+    assert!(matches!(
+        recover_interrupted_delete(connector, tenant, recorded_id).await,
+        Err(FdbError::Tenant {
+            reason: TenantErrorReason::AdministrationFailed { .. }
+        })
+    ));
+    let transaction = replacement.create_trx().expect("create replacement read");
+    for key in metadata_keys(tenant).expect("metadata keys") {
+        assert!(
+            transaction
+                .get(&key, false)
+                .await
+                .expect("read replacement metadata")
+                .is_none(),
+            "neither stale recovery path may initialize the replacement"
+        );
+    }
+    drop(transaction);
+
+    recover_interrupted_delete(connector, tenant, replacement_id)
+        .await
+        .expect("the current recorded ID can recover its own tenant");
+    connector
+        .open_tenant(tenant)
+        .await
+        .expect("recovered metadata is compatible");
+    delete_tenant(connector, tenant)
+        .await
+        .expect("clean up replacement");
 }
 
 async fn interrupted_creation_requires_explicit_empty_tenant_repair(

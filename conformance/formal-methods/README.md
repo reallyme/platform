@@ -73,27 +73,33 @@ and resolving the keyspace for the recovery transaction. It also covers
 concurrent population of the reserved metadata namespace and a commit that
 may complete after the caller times out.
 
-[The lookup-only configuration](TenantRecoveryLookupOnly.cfg) represents the ID
-check in [recover_interrupted_delete](../../kits/foundationdb/src/fdb/tenant/admin.rs).
+[The lookup-only configuration](TenantRecoveryLookupOnly.cfg) represents a
+management-lookup-only check for recovery.
 The lookup can accept the recorded ID and the later name-based open can
 resolve to the replacement. If its metadata namespace is empty, recovery
 can initialize the replacement. The runner requires TLC to report precisely
 that invariant violation.
 
-[The bound-ID configuration](TenantRecovery.cfg) models a prospective
-protocol that checks the same resolved ID used by the recovery transaction.
+[The bound-ID configuration](TenantRecovery.cfg) models the ID check in
+[recover_interrupted_delete](../../kits/foundationdb/src/fdb/tenant/admin.rs).
+The adapter checks the resolved ID of the opened handle and creates its
+transaction from that handle without a separate management lookup.
 It checks that committed writes target only the recorded tenant, success
 requires a commit, and recovery writes both kit keys only when the namespace
 is empty. The model assumes that a bound transaction cannot be retargeted,
 that deletion invalidates writes to its old ID, and that the non-snapshot
 metadata read conflicts with concurrent population. The model omits
-cross-cluster identity, retries, and repeated name reuse. The Rust adapter
-still uses the lookup-only check.
+cross-cluster identity, retries, and repeated name reuse. The
+[live regression](../../kits/foundationdb/src/fdb/tenant/admin_tests.rs)
+checks that a verified handle stays bound to the deleted tenant when the
+name is reused and that the replacement remains untouched.
 
 FoundationDB assigns IDs and keyspaces at tenant creation. In the 7.3.77
 client, a name-based tenant object has its own asynchronous ID lookup
-and supplies that tenant object to transactions. A binding change should
-validate the ID of the same handle used for the write.
+and supplies that tenant object to transactions.
+The operator connector uses the native client directly because the
+multiversion client can reopen a tenant by name on a client switch.
 [Tenant documentation](https://apple.github.io/foundationdb/tenants.html),
 [native client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/NativeAPI.actor.cpp#L2735-L2746),
-[thread-safe client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/ThreadSafeTransaction.cpp#L227-L243)
+[thread-safe client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/ThreadSafeTransaction.cpp#L227-L243),
+[multiversion client](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/MultiVersionTransaction.actor.cpp#L1853-L1881)

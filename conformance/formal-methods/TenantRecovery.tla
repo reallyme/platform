@@ -15,7 +15,7 @@ vars == <<nameId, metadata, phase, boundId, writtenId, outcome>>
 TenantIds == {RecordedId, ReplacementId}
 KitMetadata == {"schema", "createdAt"}
 MetadataKeys == KitMetadata \cup {"foreign"}
-PreBinding == {"start", "checked", "opened"}
+BeforeWrite == {"start", "checked", "opened", "bound"}
 InFlight == {"prepared", "timed-out"}
 
 Init ==
@@ -49,28 +49,35 @@ PopulateMetadata ==
 
 CheckRecordedId ==
     /\ phase = "start"
+    /\ ~CheckBoundId
     /\ nameId = RecordedId
     /\ phase' = "checked"
     /\ UNCHANGED <<nameId, metadata, boundId, writtenId, outcome>>
 
 \* Opening by name does not convey the result of the management lookup.
-\* Resolve the transaction's keyspace separately, at its metadata read.
+\* Resolve the handle separately before using it to read metadata.
 OpenByName ==
-    /\ phase = "checked"
+    /\ phase = (IF CheckBoundId THEN "start" ELSE "checked")
     /\ phase' = "opened"
     /\ UNCHANGED <<nameId, metadata, boundId, writtenId, outcome>>
 
-ReadEmptyMetadata ==
+BindTenantHandle ==
     /\ phase = "opened"
     /\ nameId \in TenantIds
-    /\ metadata = {}
     /\ (~CheckBoundId \/ nameId = RecordedId)
     /\ boundId' = nameId
-    /\ phase' = "prepared"
+    /\ phase' = "bound"
     /\ UNCHANGED <<nameId, metadata, writtenId, outcome>>
 
+ReadEmptyMetadata ==
+    /\ phase = "bound"
+    /\ boundId = nameId
+    /\ metadata = {}
+    /\ phase' = "prepared"
+    /\ UNCHANGED <<nameId, metadata, boundId, writtenId, outcome>>
+
 RejectBeforeWrite ==
-    /\ phase \in PreBinding
+    /\ phase \in BeforeWrite
     /\ phase' = "done"
     /\ outcome' = "rejected"
     /\ UNCHANGED <<nameId, metadata, boundId, writtenId>>
@@ -107,6 +114,7 @@ Next ==
     \/ PopulateMetadata
     \/ CheckRecordedId
     \/ OpenByName
+    \/ BindTenantHandle
     \/ ReadEmptyMetadata
     \/ RejectBeforeWrite
     \/ ReportTimeout
@@ -119,7 +127,7 @@ Spec == Init /\ [][Next]_vars
 TypeOK ==
     /\ nameId \in TenantIds \cup {NoTenant}
     /\ metadata \in SUBSET MetadataKeys
-    /\ phase \in PreBinding \cup InFlight \cup {"done"}
+    /\ phase \in BeforeWrite \cup InFlight \cup {"done"}
     /\ boundId \in TenantIds \cup {NoTenant}
     /\ writtenId \in TenantIds \cup {NoTenant}
     /\ outcome \in {"pending", "rejected", "timeout", "success"}

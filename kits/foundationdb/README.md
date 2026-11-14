@@ -136,13 +136,20 @@ concurrent writer can leave data in the tenant. If an outage prevents automatic
 restoration, `recover-delete <tenant> <expected-tenant-id>` recreates both
 metadata keys only when the entire reserved metadata namespace is absent. It
 permits application data but requires a trusted tenant ID recorded before the
-interrupted deletion. This recovery records a new metadata creation time.
+interrupted deletion. Recovery checks the resolved ID on the same tenant
+handle that creates the metadata transaction, so reusing the name does not
+redirect that transaction to a replacement tenant. This recovery records a
+new metadata creation time.
 Application data present before deletion produces a typed empty-tenant error
 without clearing metadata.
 
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
 selected tenant.
+With this feature the connector uses the native FoundationDB client directly.
+Multi-version client switching can reopen a tenant by name, which would
+invalidate the identity verified by recovery. Use a client library compatible
+with the target cluster for operator tooling.
 
 ## Transaction policy
 

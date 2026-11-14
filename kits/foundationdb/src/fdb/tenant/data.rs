@@ -13,8 +13,8 @@ use foundationdb::{
 };
 use thiserror::Error;
 
-const RESERVED_METADATA_START: &[u8] = b"__meta";
-const RESERVED_METADATA_END: &[u8] = b"__metb";
+pub(super) const RESERVED_METADATA_START: &[u8] = b"__meta";
+pub(super) const RESERVED_METADATA_END: &[u8] = b"__metb";
 const MAX_TENANT_KEY_BYTES: usize = 10_000;
 const MAX_TENANT_VALUE_BYTES: usize = 100_000;
 const MAX_RANGE_RESULTS: usize = 64;

@@ -12,6 +12,10 @@ use bytes::Bytes;
 use foundationdb::FdbError as FdbBindingError;
 
 use super::TenantHandle;
+#[cfg(feature = "tenant-admin")]
+use super::data::{RESERVED_METADATA_END, RESERVED_METADATA_START};
+#[cfg(feature = "tenant-admin")]
+use super::recovery_handle::VerifiedRecoveryTenant;
 use crate::fdb::error::{
     FdbError, FdbQueryErrorReason, FdbResult, TenantErrorReason, TenantMetadataField,
 };
@@ -245,29 +249,19 @@ pub(super) async fn repair_empty_tenant_metadata(
 /// an interrupted admin deletion. Application data may still be present.
 #[cfg(feature = "tenant-admin")]
 pub(super) async fn repair_absent_tenant_metadata(
-    tenant_handle: &TenantHandle,
-    tenant: FoundationDbTenantName,
+    tenant_handle: &VerifiedRecoveryTenant<'_>,
+    timeout_millis: i64,
 ) -> FdbResult<()> {
+    let tenant = tenant_handle.name();
     let keys = TenantMetadataKeys::current()?;
     let (schema_version, created_at) = tenant_metadata_now(tenant)?;
-    let transaction = tenant_handle
-        .inner()
-        .create_trx()
-        .map_err(|_| FdbError::Tenant {
-            reason: TenantErrorReason::AdministrationFailed { tenant },
-        })?;
+    let mut transaction = tenant_handle.create_transaction(timeout_millis)?;
     // No metadata key may exist, including keys from a foreign application or
     // a newer kit schema. The range read conflicts with concurrent writes.
-    let mut metadata_range =
-        foundationdb::RangeOption::from((b"__meta".as_slice(), b"__metb".as_slice()));
-    metadata_range.limit = Some(1);
-    let existing = transaction
-        .get_range(&metadata_range, 1, false)
-        .await
-        .map_err(|_| FdbError::Tenant {
-            reason: TenantErrorReason::AdministrationFailed { tenant },
-        })?;
-    if !existing.is_empty() {
+    if !transaction
+        .range_is_empty(RESERVED_METADATA_START, RESERVED_METADATA_END)
+        .await?
+    {
         return Err(FdbError::Tenant {
             reason: TenantErrorReason::AdministrationFailed { tenant },
         });
@@ -275,15 +269,9 @@ pub(super) async fn repair_absent_tenant_metadata(
     transaction.set(
         &keys.schema_version_key,
         schema_version.to_le_bytes().as_ref(),
-    );
-    transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref());
-    transaction
-        .commit()
-        .await
-        .map(|_| ())
-        .map_err(|_| FdbError::Tenant {
-            reason: TenantErrorReason::AdministrationFailed { tenant },
-        })
+    )?;
+    transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref())?;
+    transaction.commit().await
 }
 
 #[cfg(test)]

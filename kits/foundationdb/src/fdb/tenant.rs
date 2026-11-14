@@ -21,6 +21,8 @@ use crate::fdb::transaction::TenantTransactionPolicy;
 mod data;
 mod data_transact;
 mod metadata;
+#[cfg(feature = "tenant-admin")]
+pub(super) mod recovery_handle;
 mod transact;
 pub use data::{
     TenantDataAccessErrorReason, TenantDataKey, TenantDataRange, TenantDataRangeLimit,

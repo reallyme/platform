@@ -9,7 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "metrics")]
 use std::time::Instant;
 
+#[cfg(feature = "tenant-admin")]
+use crate::fdb::tenant::recovery_handle::RecoveryDatabase;
 use crate::fdb::tenant_name::FoundationDbTenantName;
+#[cfg(feature = "tenant-admin")]
+use foundationdb::options::NetworkOption;
 use foundationdb::{Database, api::NetworkAutoStop, options::TransactionOption};
 
 use crate::fdb::{
@@ -43,7 +47,9 @@ struct FdbConnectorInner {
     // This guard must outlive every database and tenant handle. Keeping it in
     // the same Arc as the database makes cloned connectors lifecycle-safe.
     database: Database,
-    // Fields drop in declaration order: destroy the database before stopping C I/O.
+    #[cfg(feature = "tenant-admin")]
+    recovery_database: RecoveryDatabase,
+    // Destroy both database handles before stopping the client network.
     _network: NetworkAutoStop,
     api_version: i32,
     health_check_timeout: std::time::Duration,
@@ -97,6 +103,16 @@ impl FoundationDbConnector {
             reason: FdbSetupErrorReason::ApiVersionUnsupported,
         })?;
 
+        // The multiversion client can reopen a tenant by name after a
+        // client switch. Operator recovery requires a native handle whose
+        // resolved ID cannot change between verification and transaction creation.
+        #[cfg(feature = "tenant-admin")]
+        let network_builder = network_builder
+            .set_option(NetworkOption::DisableMultiVersionClientApi)
+            .map_err(|_| FdbError::Setup {
+                reason: FdbSetupErrorReason::NetworkBootFailed,
+            })?;
+
         // The caller accepts the process-exit obligation above. Within that
         // obligation, the inner owner destroys the database before the guard.
         #[allow(unsafe_code)]
@@ -115,11 +131,17 @@ impl FoundationDbConnector {
         .map_err(|_| FdbError::Setup {
             reason: FdbSetupErrorReason::DatabaseOpenFailed,
         })?;
+        #[cfg(feature = "tenant-admin")]
+        // Resolve the same cluster configuration at connector startup. Later
+        // recovery must not resolve a new default from the process environment.
+        let recovery_database = RecoveryDatabase::open(config.fdb_cluster_file())?;
 
         Ok(Self {
             inner: Arc::new(FdbConnectorInner {
                 _network: network,
                 database,
+                #[cfg(feature = "tenant-admin")]
+                recovery_database,
                 api_version: config.fdb_api_version(),
                 health_check_timeout: config.health_check_timeout(),
             }),
@@ -225,6 +247,11 @@ impl FoundationDbConnector {
     #[cfg(feature = "tenant-admin")]
     pub(crate) fn database(&self) -> &Database {
         &self.inner.database
+    }
+
+    #[cfg(feature = "tenant-admin")]
+    pub(super) fn recovery_database(&self) -> &RecoveryDatabase {
+        &self.inner.recovery_database
     }
 }
 

@@ -91,33 +91,20 @@ pub async fn repair_tenant_metadata(
 /// absent. Unlike initial provisioning repair, application data may be present.
 /// This reinitializes the metadata creation time. The expected tenant ID must
 /// come from a trusted record captured before the interrupted deletion.
+/// Recovery verifies the resolved ID of the handle used for the write.
 pub async fn recover_interrupted_delete(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
     expected_tenant_id: i64,
 ) -> FdbResult<()> {
-    let identity = tokio::time::timeout(
-        TENANT_ADMIN_TIMEOUT,
-        TenantManagement::get_tenant(connector.database(), tenant.as_bytes()),
-    )
-    .await
-    .map_err(|_| administration_failed(tenant))?
-    .map_err(|_| administration_failed(tenant))?;
-    if !identity
-        .and_then(Result::ok)
-        .is_some_and(|info| info.id == expected_tenant_id)
-    {
-        return Err(administration_failed(tenant));
-    }
-    let inner = connector
-        .database()
-        .open_tenant(tenant.as_bytes())
-        .map_err(|_| administration_failed(tenant))?;
-    let handle = TenantHandle::new(tenant, inner);
-    tokio::time::timeout(
-        TENANT_ADMIN_TIMEOUT,
-        repair_absent_tenant_metadata(&handle, tenant),
-    )
+    tokio::time::timeout(TENANT_ADMIN_TIMEOUT, async {
+        let handle = connector
+            .recovery_database()
+            .open_tenant(tenant)?
+            .verify(expected_tenant_id)
+            .await?;
+        repair_absent_tenant_metadata(&handle, i64::from(TENANT_ADMIN_TIMEOUT_MILLIS)).await
+    })
     .await
     .map_err(|_| administration_failed(tenant))?
 }
