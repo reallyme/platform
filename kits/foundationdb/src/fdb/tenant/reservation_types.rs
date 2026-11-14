@@ -27,6 +27,9 @@ pub enum ReservationErrorReason {
     /// There is no active reservation for a takeover by name.
     #[error("no active reservation for the tenant")]
     Missing,
+    /// The operation has no completed cluster record to compact.
+    #[error("reservation has no completed outcome to prune")]
+    PruneNotCompleted,
     /// The epoch or owner changed before the mutation could commit.
     #[error("reservation ownership changed; reconcile the recorded delete")]
     Stale,

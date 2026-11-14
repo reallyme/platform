@@ -207,6 +207,24 @@ Keep the dedicated control tenant and its reservation history available to
 operators. This workflow coordinates commands that use the control tenant on
 the same standalone cluster.
 
+### Prune completed reservations
+
+After updating the operator binaries that share the control tenant, compact
+a completed cluster record using its recorded delete path.
+
+```sh
+fdb-tenant-admin prune-delete /var/lib/fdb-operator/example-delete.intent
+```
+
+The command prints the saved outcome and leaves the local file intact. It
+also accepts a pending local file if the cluster has already recorded
+completion. The adapter replaces the full record with a tombstone at the
+same key. The tombstone keeps the original tenant ID and outcome and allows
+retries to return that outcome after a lost reply or tenant name reuse.
+Active and missing reservations are rejected. Keep the tombstones in the
+control tenant so a stale local file can still distinguish a completed
+operation from one that never acquired a reservation.
+
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
 selected tenant.

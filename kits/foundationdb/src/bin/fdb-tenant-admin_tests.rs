@@ -52,6 +52,8 @@ fn parses_recorded_delete_and_resume_without_changing_existing_commands() {
     );
     assert!(matches!(parse(&["resume-delete", "a path"]),
         Ok(Command::ResumeDelete(path)) if path == std::path::Path::new("a path")));
+    assert!(matches!(parse(&["prune-delete", "a path"]),
+        Ok(Command::PruneDelete(path)) if path == std::path::Path::new("a path")));
     assert!(matches!(
         parse(&["takeover-delete", "catalog"]),
         Ok(Command::TakeoverDelete(_))
@@ -61,6 +63,8 @@ fn parses_recorded_delete_and_resume_without_changing_existing_commands() {
         &["delete", "catalog", "--wrong", "path"],
         &["resume-delete"],
         &["resume-delete", "path", "unexpected"],
+        &["prune-delete"],
+        &["prune-delete", "path", "unexpected"],
     ] {
         assert!(matches!(parse(args), Err(AdminToolError::Usage)));
     }

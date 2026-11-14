@@ -10,6 +10,7 @@
 //! - `delete <tenant-name>`
 //! - `delete <tenant-name> --record <path>`
 //! - `resume-delete <path>`
+//! - `prune-delete <path>`
 //! - `takeover-delete <tenant-name>`
 //! - `exists <tenant-name>`
 //! - `id <tenant-name>`
@@ -36,7 +37,7 @@ use delete_record::{
     DeleteRecord, DeleteRecordError, DeleteRecordState, DeleteReservation, LockedDeleteRecord,
 };
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete> <tenant> | delete <tenant> --record <path> | resume-delete <path> | recover-delete <tenant> <expected-tenant-id>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete> <tenant> | delete <tenant> --record <path> | <resume-delete|prune-delete> <path> | recover-delete <tenant> <expected-tenant-id>";
 const CONTROL_TENANT_ENV: &str = "FDB_TENANT_ADMIN_CONTROL_TENANT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -98,6 +99,7 @@ enum Command {
     Delete(FoundationDbTenantName),
     RecordedDelete(FoundationDbTenantName, PathBuf),
     ResumeDelete(PathBuf),
+    PruneDelete(PathBuf),
     TakeoverDelete(FoundationDbTenantName),
     Exists(FoundationDbTenantName),
     Id(FoundationDbTenantName),
@@ -108,6 +110,8 @@ fn parse_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, Ad
     let operand = args.next().ok_or(AdminToolError::Usage)?;
     let parsed = if command == "resume-delete" {
         Command::ResumeDelete(PathBuf::from(operand))
+    } else if command == "prune-delete" {
+        Command::PruneDelete(PathBuf::from(operand))
     } else {
         let tenant = parse_tenant(
             operand
@@ -175,6 +179,10 @@ async fn run(command: Command) -> Result<(), AdminToolError> {
         Command::RecordedDelete(tenant, path) => recorded_delete(&context, tenant, &path).await,
         Command::ResumeDelete(path) => {
             let state = resume_delete(&context, &path).await?;
+            write_output(state.as_str())
+        }
+        Command::PruneDelete(path) => {
+            let state = prune_delete(&context, &path).await?;
             write_output(state.as_str())
         }
         Command::TakeoverDelete(tenant) => {
@@ -265,13 +273,7 @@ async fn resume_delete(
     path: &Path,
 ) -> Result<DeleteRecordState, AdminToolError> {
     let file = LockedDeleteRecord::open(path)?;
-    let record = file.load()?;
-    let cluster = admin::tenant_admin_cluster_id(context)
-        .await
-        .map_err(|_| AdminToolError::ClusterIdentityUnavailable)?;
-    if cluster != record.cluster {
-        return Err(AdminToolError::ClusterMismatch);
-    }
+    let record = load_verified_record(context, &file).await?;
     if record.state != DeleteRecordState::Pending {
         // A previous process may have renamed the completed record and then
         // failed before synchronizing its directory entry.
@@ -280,9 +282,7 @@ async fn resume_delete(
     }
     let configured_control = configured_control_tenant()?;
     let outcome = if let Some(reservation) = record.reservation {
-        if configured_control.is_some_and(|name| name != reservation.control.name()) {
-            return Err(AdminToolError::ControlTenantMismatch);
-        }
+        check_configured_control(configured_control, reservation.control)?;
         ReservationStore::new(context, reservation.control)
             .resume(intent(record, reservation))
             .await?
@@ -297,6 +297,44 @@ async fn resume_delete(
     let state = record_state(outcome);
     file.complete(record, state)?;
     Ok(state)
+}
+
+async fn prune_delete(
+    context: &FdbContext,
+    path: &Path,
+) -> Result<DeleteRecordState, AdminToolError> {
+    let file = LockedDeleteRecord::open(path)?;
+    let record = load_verified_record(context, &file).await?;
+    let reservation = record.reservation.ok_or(AdminToolError::LegacyRecord)?;
+    check_configured_control(configured_control_tenant()?, reservation.control)?;
+    let outcome = ReservationStore::new(context, reservation.control)
+        .prune_completed(intent(record, reservation))
+        .await?;
+    Ok(record_state(outcome))
+}
+
+async fn load_verified_record(
+    context: &FdbContext,
+    file: &LockedDeleteRecord,
+) -> Result<DeleteRecord, AdminToolError> {
+    let record = file.load()?;
+    let cluster = admin::tenant_admin_cluster_id(context)
+        .await
+        .map_err(|_| AdminToolError::ClusterIdentityUnavailable)?;
+    if cluster != record.cluster {
+        return Err(AdminToolError::ClusterMismatch);
+    }
+    Ok(record)
+}
+
+fn check_configured_control(
+    configured: Option<FoundationDbTenantName>,
+    recorded: ReservationControlTenant,
+) -> Result<(), AdminToolError> {
+    if configured.is_some_and(|name| name != recorded.name()) {
+        return Err(AdminToolError::ControlTenantMismatch);
+    }
+    Ok(())
 }
 
 fn configured_control_tenant() -> Result<Option<FoundationDbTenantName>, AdminToolError> {

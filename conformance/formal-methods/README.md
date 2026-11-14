@@ -278,9 +278,9 @@ exercises independent record paths and takeover without a local record.
 ## Pruning completed reservations
 
 [TenantReservationPruning.tla](TenantReservationPruning.tla) follows two
-operation IDs across two lifecycles of a tenant name. The current adapter
-keeps each full completion record. The model replaces a completed record
-with a tombstone at the same operation key in one conditional transaction.
+operation IDs across two lifecycles of a tenant name. The model replaces a
+completed record with a tombstone at the same operation key in one
+conditional transaction.
 The tombstone keeps the tenant ID and outcome and discards the grant. The
 transaction leaves the active pointer alone so a newer operation can own it.
 Acquisition and resume read the operation key in their transaction before
@@ -305,3 +305,11 @@ effect and bounds takeover to one transfer per operation. The reservation
 model covers their separate commit and epoch checks. Tombstones remain
 durable for as long as an old local file could be resumed, so this design
 reduces record size and retains one key per operation.
+
+The [reservation adapter](../../kits/foundationdb/src/fdb/tenant/reservation_pruning.rs)
+reads existing full records and compacts them through `prune-delete`. The
+[live pruning test](../../kits/foundationdb/src/fdb/tenant/reservation_recovery_tests.rs)
+commits a prune through a second FoundationDB handle and injects the
+unknown-result error into the first handle's retry loop. It checks that
+the retry leaves the tombstone intact, that an old intent replays its saved
+outcome, and that a replacement keeps its active grant.

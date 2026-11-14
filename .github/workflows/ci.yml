@@ -427,6 +427,11 @@ jobs:
             | rg -Fx "$atomic_recovery_test: test"
           cargo test --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --lib "$atomic_recovery_test" -- --ignored --exact
+          prune_test=fdb::tenant::admin::reservations::tests::prune_retries_after_lost_reply_and_fences_stale_resumes
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$prune_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$prune_test" -- --ignored --exact
           cargo build --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --bin fdb-tenant-admin
           FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \

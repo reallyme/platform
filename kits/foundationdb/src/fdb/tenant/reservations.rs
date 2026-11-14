@@ -15,7 +15,10 @@ pub use types::{
 
 #[path = "reservation_record.rs"]
 mod record;
-use record::{Phase, StoredReservation};
+use record::{CompletionTombstone, Phase, ReservationRecord, StoredReservation};
+
+#[path = "reservation_pruning.rs"]
+mod pruning;
 
 #[path = "reservation_transactions.rs"]
 mod transactions;
@@ -123,10 +126,14 @@ impl<'a> ReservationStore<'a> {
                     .active_id(transaction, tenant)
                     .await?
                     .ok_or(ReservationErrorReason::Missing)?;
-                let stored = self
-                    .read_record(transaction, tenant, operation)
-                    .await?
-                    .ok_or(ReservationErrorReason::InvalidRecord)?;
+                let Some(ReservationRecord::Full(stored)) =
+                    self.read_record(transaction, tenant, operation).await?
+                else {
+                    return Err(ReservationErrorReason::InvalidRecord.into());
+                };
+                if matches!(stored.phase, Phase::Complete(_)) {
+                    return Err(ReservationErrorReason::InvalidRecord.into());
+                }
                 Ok(ReservationIntent {
                     tenant,
                     original_id: stored.original_id,
@@ -141,13 +148,14 @@ impl<'a> ReservationStore<'a> {
         self.validate_intent(intent)?;
         self.transact(async |transaction| {
             let active = self.active_id(transaction, intent.tenant).await?;
-            if let Some(stored) = self
+            if let Some(record) = self
                 .read_record(transaction, intent.tenant, intent.operation)
                 .await?
             {
                 // Replay after an ambiguous acquisition may observe just this
                 // grant. It cannot reset a transferred or completed record.
-                if active == Some(intent.operation)
+                if let ReservationRecord::Full(stored) = record
+                    && active == Some(intent.operation)
                     && stored.original_id == intent.original_id
                     && stored.phase == Phase::Deleting
                     && stored.claimant == intent.operation
@@ -188,7 +196,11 @@ impl<'a> ReservationStore<'a> {
                 .read_record(transaction, intent.tenant, intent.operation)
                 .await?
             {
-                Some(stored) => {
+                Some(ReservationRecord::Tombstone(completion)) => {
+                    return Self::completed_outcome(active, intent, completion)
+                        .map(Claim::Complete);
+                }
+                Some(ReservationRecord::Full(stored)) => {
                     if stored.original_id != intent.original_id {
                         return Err(ReservationErrorReason::InvalidRecord.into());
                     }
@@ -237,6 +249,17 @@ impl<'a> ReservationStore<'a> {
         .await
     }
 
+    fn completed_outcome(
+        active: Option<ReservationId>,
+        intent: ReservationIntent,
+        completion: CompletionTombstone,
+    ) -> AttemptResult<TenantDeleteResolution> {
+        if completion.original_id != intent.original_id || active == Some(intent.operation) {
+            return Err(ReservationErrorReason::InvalidRecord.into());
+        }
+        Ok(completion.outcome)
+    }
+
     async fn finish(&self, grant: Grant) -> ReservationResult<TenantDeleteResolution> {
         self.transact(async |transaction| self.stage_finish(transaction, grant).await)
             .await
@@ -248,10 +271,14 @@ impl<'a> ReservationStore<'a> {
         grant: Grant,
     ) -> AttemptResult<TenantDeleteResolution> {
         let intent = grant.intent;
-        let mut stored = self
+        // A compacted row has no grant to authenticate. The caller can use
+        // resume to read that outcome with the durable operation identity.
+        let Some(ReservationRecord::Full(mut stored)) = self
             .read_record(transaction, intent.tenant, intent.operation)
             .await?
-            .ok_or(ReservationErrorReason::Stale)?;
+        else {
+            return Err(ReservationErrorReason::Stale.into());
+        };
         Self::check_epoch(stored, grant)?;
         if let Phase::Complete(outcome) = stored.phase {
             return Ok(outcome);
@@ -294,10 +321,12 @@ impl<'a> ReservationStore<'a> {
 
     async fn check_grant(&self, transaction: &Transaction, grant: Grant) -> AttemptResult<()> {
         let intent = grant.intent;
-        let stored = self
+        let Some(ReservationRecord::Full(stored)) = self
             .read_record(transaction, intent.tenant, intent.operation)
             .await?
-            .ok_or(ReservationErrorReason::Stale)?;
+        else {
+            return Err(ReservationErrorReason::Stale.into());
+        };
         Self::check_epoch(stored, grant)?;
         self.check_active(transaction, stored, grant).await
     }
@@ -406,11 +435,11 @@ impl<'a> ReservationStore<'a> {
         transaction: &Transaction,
         tenant: FoundationDbTenantName,
         operation: ReservationId,
-    ) -> AttemptResult<Option<StoredReservation>> {
+    ) -> AttemptResult<Option<ReservationRecord>> {
         Ok(transaction
             .get(&self.record_key(tenant, operation), false)
             .await?
-            .map(|value| StoredReservation::decode(value.as_ref()))
+            .map(|value| ReservationRecord::decode(value.as_ref()))
             .transpose()?)
     }
 

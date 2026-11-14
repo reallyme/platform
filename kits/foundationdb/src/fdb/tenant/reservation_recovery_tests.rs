@@ -3,18 +3,21 @@
 
 use std::cell::Cell;
 
-use foundationdb::tenant::TenantManagement;
+use foundationdb::{Database, tenant::TenantManagement};
 
 use super::{
-    Claim, Grant, Phase, ReservationControlTenant, ReservationErrorReason, ReservationId,
-    ReservationIntent, ReservationStore, StoredReservation, TENANT_ADMIN_TIMEOUT,
-    TenantDeleteResolution, configure_transaction, mapping_matches, stage_clear, stage_delete,
+    Claim, CompletionTombstone, DriverError, Grant, Phase, ReservationControlTenant,
+    ReservationErrorReason, ReservationId, ReservationIntent, ReservationRecord, ReservationStore,
+    StoredReservation, TENANT_ADMIN_TIMEOUT, TenantDeleteResolution, configure_transaction,
+    mapping_matches, stage_clear, stage_delete,
 };
 use crate::fdb::tenant::{
     FDB_NOT_COMMITTED_ERROR_CODE,
     admin::{delete_tenant, ensure_tenant, metadata_keys, tenant_id},
 };
 use crate::{FdbConfig, FoundationDbConnector, FoundationDbTenantName};
+
+const FDB_COMMIT_UNKNOWN_RESULT: i32 = 1021;
 
 #[test]
 fn rejects_corrupt_reservation_rows() {
@@ -61,6 +64,67 @@ fn rejects_corrupt_reservation_rows() {
             StoredReservation::decode(&corrupt),
             Err(ReservationErrorReason::InvalidRecord)
         ));
+    }
+}
+
+#[test]
+fn decodes_legacy_completions_and_rejects_malformed_tombstones() {
+    for (tag, outcome) in [
+        (3, TenantDeleteResolution::OriginalAbsent),
+        (4, TenantDeleteResolution::MetadataSafe),
+    ] {
+        // A fixed v1 fixture guards the wire representation independently of
+        // the current encoder. Its terminal record still contains a grant.
+        let mut legacy = [0; 42];
+        legacy[0] = 1;
+        legacy[1] = tag;
+        legacy[9] = 42;
+        legacy[17] = 1;
+        legacy[41] = 1;
+        assert!(matches!(
+            ReservationRecord::decode(&legacy),
+            Ok(ReservationRecord::Full(StoredReservation {
+                original_id: 42,
+                phase: Phase::Complete(saved),
+                ..
+            })) if saved == outcome
+        ));
+        let compact = CompletionTombstone {
+            original_id: 42,
+            outcome,
+        }
+        .encode();
+        assert_eq!(compact, [2, tag, 0, 0, 0, 0, 0, 0, 0, 42]);
+        assert!(matches!(
+            ReservationRecord::decode(&compact),
+            Ok(ReservationRecord::Tombstone(CompletionTombstone {
+                original_id: 42,
+                outcome: saved,
+            })) if saved == outcome
+        ));
+        for length in 0..compact.len() {
+            assert!(matches!(
+                ReservationRecord::decode(&compact[..length]),
+                Err(ReservationErrorReason::InvalidRecord)
+            ));
+        }
+        let mut negative_id = compact;
+        negative_id[2] = u8::MAX;
+        let mut active_tag = compact;
+        active_tag[1] = 1;
+        let mut unknown_version = compact;
+        unknown_version[0] = u8::MAX;
+        for malformed in [
+            negative_id.to_vec(),
+            active_tag.to_vec(),
+            unknown_version.to_vec(),
+            [compact.as_slice(), &[0]].concat(),
+        ] {
+            assert!(matches!(
+                ReservationRecord::decode(&malformed),
+                Err(ReservationErrorReason::InvalidRecord)
+            ));
+        }
     }
 }
 
@@ -245,15 +309,203 @@ async fn verify_live_recovery() {
         .expect("delete control fixture");
 }
 
+#[tokio::test]
+#[ignore = "requires a live throwaway FoundationDB cluster"]
+async fn prune_retries_after_lost_reply_and_fences_stale_resumes() {
+    tokio::time::timeout(TENANT_ADMIN_TIMEOUT * 6, verify_live_pruning())
+        .await
+        .expect("bounded reservation pruning test");
+}
+
+async fn verify_live_pruning() {
+    let config = FdbConfig::from_env().expect("live configuration");
+    // SAFETY: The connector owns the native client for the entire fixture.
+    // The second database handle is dropped before the client shuts down.
+    #[allow(unsafe_code)]
+    let connector =
+        unsafe { FoundationDbConnector::connect(&config) }.expect("connect live cluster");
+    let peer_database = Database::new(config.fdb_cluster_file()).expect("second client");
+    let tenant = FoundationDbTenantName::new("kit-prune-reservation").expect("fixture name");
+    let control_name =
+        FoundationDbTenantName::new("kit-prune-reservation-control").expect("control name");
+    for name in [tenant, control_name] {
+        assert_eq!(
+            tenant_id(&connector, name).await.expect("fixture lookup"),
+            None
+        );
+        ensure_tenant(&connector, name)
+            .await
+            .expect("provision fixture");
+    }
+    let control = ReservationControlTenant::lookup(&connector, control_name)
+        .await
+        .expect("control ID");
+    let store = ReservationStore::new(&connector, control);
+    let peer = ReservationStore {
+        database: &peer_database,
+        control,
+    };
+    let old = ReservationIntent {
+        tenant,
+        original_id: tenant_id(&connector, tenant)
+            .await
+            .expect("target lookup")
+            .expect("target ID"),
+        operation: ReservationId::generate().expect("old operation ID"),
+    };
+    let absent = TenantDeleteResolution::OriginalAbsent;
+    assert_eq!(
+        store.prune_completed(old).await,
+        Err(ReservationErrorReason::PruneNotCompleted)
+    );
+    assert_eq!(store.delete(old).await, Ok(absent));
+
+    TenantManagement::create_tenant(&peer_database, tenant.as_bytes())
+        .await
+        .expect("reuse the name for an empty replacement");
+    let replacement = ReservationIntent {
+        tenant,
+        original_id: tenant_id(&connector, tenant)
+            .await
+            .expect("replacement lookup")
+            .expect("replacement ID"),
+        operation: ReservationId::generate().expect("replacement operation ID"),
+    };
+    assert_ne!(old.original_id, replacement.original_id);
+    let newer_grant = peer
+        .acquire(replacement)
+        .await
+        .expect("grant for replacement");
+    assert_eq!(
+        store.prune_completed(replacement).await,
+        Err(ReservationErrorReason::PruneNotCompleted)
+    );
+    let wrong_id = ReservationIntent {
+        original_id: replacement.original_id,
+        ..old
+    };
+    assert_eq!(
+        store.prune_completed(wrong_id).await,
+        Err(ReservationErrorReason::InvalidRecord)
+    );
+
+    let row = store.record_key(tenant, old.operation);
+    let attempts = Cell::new(0_u8);
+    let retried = store
+        .transact(async |transaction| {
+            attempts.set(attempts.get().checked_add(1).expect("count prune attempts"));
+            let outcome = store.stage_prune(transaction, old).await?;
+            if attempts.get() == 1 {
+                peer.transact(async |independent| {
+                    peer.check_grant(independent, newer_grant).await?;
+                    let value = independent
+                        .get(&row, false)
+                        .await?
+                        .expect("full completion row");
+                    assert_eq!(value.len(), 42);
+                    Ok(())
+                })
+                .await
+                .expect("the staged prune is invisible");
+                // Commit the staged operation through a second client, then
+                // deliver an unknown-result error to the first client's retry loop.
+                assert_eq!(peer.prune_completed(old).await, Ok(absent));
+                return Err(DriverError::from_code(FDB_COMMIT_UNKNOWN_RESULT).into());
+            }
+            Ok(outcome)
+        })
+        .await;
+    assert_eq!(retried, Ok(absent));
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(
+        store.prune_completed(wrong_id).await,
+        Err(ReservationErrorReason::InvalidRecord)
+    );
+    assert_eq!(
+        store.resume(wrong_id).await,
+        Err(ReservationErrorReason::InvalidRecord)
+    );
+
+    let reader = peer_database
+        .create_trx()
+        .expect("create tombstone observer");
+    configure_transaction(&reader).expect("configure tombstone observer");
+    let compact = reader
+        .get(&row, false)
+        .await
+        .expect("read completion")
+        .expect("same operation key");
+    assert_eq!(compact.len(), 10);
+    assert!(matches!(
+        ReservationRecord::decode(compact.as_ref()),
+        Ok(ReservationRecord::Tombstone(CompletionTombstone { original_id, outcome }))
+            if original_id == old.original_id && outcome == absent
+    ));
+    assert_eq!(store.prune_completed(old).await, Ok(absent));
+    assert_eq!(store.resume(old).await, Ok(absent));
+    assert!(matches!(
+        store.acquire(old).await,
+        Err(ReservationErrorReason::Stale)
+    ));
+    // A write gives the observer's non-snapshot read a commit-time conflict
+    // check. It would fail if any retry had rewritten the tombstone.
+    let probe = [
+        control.id().to_be_bytes().as_slice(),
+        b"prune-read-conflict-probe",
+    ]
+    .concat();
+    reader.set(&probe, b"observed");
+    reader
+        .commit()
+        .await
+        .expect("terminal replay leaves the row unchanged");
+    assert_observed(&peer, replacement, newer_grant, Phase::Deleting, false).await;
+
+    expire(&peer, replacement).await;
+    assert_eq!(
+        peer.resume(replacement).await,
+        Ok(TenantDeleteResolution::MetadataSafe)
+    );
+    assert_eq!(store.resume(old).await, Ok(absent));
+    store
+        .transact(async |transaction| {
+            assert!(store.active_id(transaction, tenant).await?.is_none());
+            assert!(mapping_matches(transaction, tenant, replacement.original_id).await?);
+            assert!(matches!(
+                store
+                    .read_record(transaction, tenant, replacement.operation)
+                    .await?,
+                Some(ReservationRecord::Full(StoredReservation {
+                    phase: Phase::Complete(TenantDeleteResolution::MetadataSafe),
+                    ..
+                }))
+            ));
+            transaction.clear(&row);
+            transaction.clear(&store.record_key(tenant, replacement.operation));
+            transaction.clear(&probe);
+            Ok(())
+        })
+        .await
+        .expect("verify replacement and clear fixture history");
+    delete_tenant(&connector, tenant)
+        .await
+        .expect("delete replacement fixture");
+    delete_tenant(&connector, control_name)
+        .await
+        .expect("delete control fixture");
+}
+
 async fn expire(store: &ReservationStore<'_>, intent: ReservationIntent) {
     // Move only the fixture lease deadline, using the current database read
     // version rather than waiting for a wall clock in this transaction test.
     store
         .transact(async |transaction| {
-            let mut record = store
+            let Some(ReservationRecord::Full(mut record)) = store
                 .read_record(transaction, intent.tenant, intent.operation)
                 .await?
-                .expect("observed reservation");
+            else {
+                return Err(ReservationErrorReason::InvalidRecord.into());
+            };
             record.expires_at = transaction.get_read_version().await?;
             transaction.set(
                 &store.record_key(intent.tenant, intent.operation),
@@ -290,10 +542,12 @@ async fn assert_observed(
     // Observe the control row and the target metadata in one transaction.
     store
         .transact(async |transaction| {
-            let record = store
+            let Some(ReservationRecord::Full(record)) = store
                 .read_record(transaction, intent.tenant, intent.operation)
                 .await?
-                .expect("fixture record");
+            else {
+                return Err(ReservationErrorReason::InvalidRecord.into());
+            };
             assert_eq!(record.epoch, grant.epoch);
             assert_eq!(record.phase, phase);
             assert!(record.claimant == grant.claimant);

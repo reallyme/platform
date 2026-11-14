@@ -220,6 +220,13 @@ async fn reserved_delete_reconciles_across_processes() {
     let competing = cli_with_control(&delete, Some(&contender), control).await;
     assert!(!competing.status.success());
     assert!(String::from_utf8_lossy(&competing.stderr).contains("another operation holds"));
+    for path in [&intent, &contender] {
+        let rejected = cli(&["prune-delete"], Some(path)).await;
+        assert!(!rejected.status.success());
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains("no completed outcome to prune")
+        );
+    }
 
     let takeover = ["takeover-delete", RESERVATION_TENANT];
     let first_attempt = cli_with_control(&takeover, None, control).await;
@@ -249,6 +256,18 @@ async fn reserved_delete_reconciles_across_processes() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
+    }
+    let wrong_control =
+        cli_with_control(&["prune-delete"], Some(&intent), Some("other-control")).await;
+    assert!(!wrong_control.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong_control.stderr).contains("differs from the delete record")
+    );
+    expect_cli(&["prune-delete"], Some(&intent), b"metadata-safe\n").await;
+    expect_cli(&["prune-delete"], Some(&intent), b"metadata-safe\n").await;
+    {
+        let file = LockedDeleteRecord::open(&intent).expect("lock original record");
+        assert!(file.load().expect("read original record").state == DeleteRecordState::Pending);
     }
     expect_cli(&["resume-delete"], Some(&intent), b"metadata-safe\n").await;
     let transaction = handle.create_trx().expect("verify reconciled tenant");
@@ -288,6 +307,7 @@ async fn reserved_delete_reconciles_across_processes() {
         .expect("replacement lookup")
         .expect("replacement ID");
     assert_ne!(replacement_id, initial_id);
+    expect_cli(&["prune-delete"], Some(&completed), b"original-absent\n").await;
     expect_cli(&["resume-delete"], Some(&completed), b"original-absent\n").await;
     expect_cli(&["resume-delete"], Some(&intent), b"metadata-safe\n").await;
     assert_eq!(
