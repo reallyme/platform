@@ -19,6 +19,8 @@ const CREATED_AT: &[u8] = b"__meta/v1/created_at";
 const TIMEOUT: Duration = Duration::from_secs(20);
 const CHILD_TEST: &str = "tests::live::crash_fixture_process";
 const FDB_NOT_COMMITTED: i32 = 1020;
+const RESERVATION_TENANT: &str = "kit-reserved-cli-target";
+const CONTROL_TENANT: &str = "kit-reserved-cli-control";
 
 fn connect() -> FdbContext {
     let config = FdbConfig::from_env().expect("live FoundationDB config");
@@ -56,7 +58,7 @@ async fn crash_fixture_process() {
     let ready = std::env::var_os("TEST_DELETE_READY").expect("fixture readiness file");
     let connector = connect();
     let file = LockedDeleteRecord::open(Path::new(&path)).expect("lock record");
-    let record = persist_delete_intent(&connector, tenant_name(), &file)
+    let record = persist_delete_intent(&connector, tenant_name(), &file, None)
         .await
         .expect("persist real CLI intent");
     if phase == "clear" {
@@ -111,6 +113,10 @@ async fn crash_after(path: &Path, phase: &str, ready: &Path) {
 }
 
 async fn cli(args: &[&str], path: Option<&Path>) -> Output {
+    cli_with_control(args, path, None).await
+}
+
+async fn cli_with_control(args: &[&str], path: Option<&Path>, control: Option<&str>) -> Output {
     let executable =
         std::env::var_os("FDB_TENANT_ADMIN_TEST_BIN").expect("path to built operator CLI");
     let mut command = Process::new(executable);
@@ -118,6 +124,11 @@ async fn cli(args: &[&str], path: Option<&Path>) -> Output {
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(control) = control {
+        command.env(crate::CONTROL_TENANT_ENV, control);
+    } else {
+        command.env_remove(crate::CONTROL_TENANT_ENV);
+    }
     if let Some(path) = path {
         command.arg(path);
     }
@@ -161,6 +172,146 @@ async fn expect_cli(args: &[&str], path: Option<&Path>, stdout: &[u8]) {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(result.stdout, stdout);
+}
+
+#[tokio::test]
+#[ignore = "requires a live throwaway FoundationDB cluster and the built operator CLI"]
+async fn reserved_delete_reconciles_across_processes() {
+    let connector = connect();
+    let database = raw_database();
+    let tenant = FoundationDbTenantName::new(RESERVATION_TENANT).expect("fixture tenant");
+    let control = FoundationDbTenantName::new(CONTROL_TENANT).expect("fixture control");
+    for name in [tenant, control] {
+        assert_eq!(
+            admin::tenant_id(&connector, name)
+                .await
+                .expect("fixture lookup"),
+            None
+        );
+        admin::ensure_tenant(&connector, name)
+            .await
+            .expect("provision fixture");
+    }
+    let initial_id = admin::tenant_id(&connector, tenant)
+        .await
+        .expect("original lookup")
+        .expect("original ID");
+    let handle = database
+        .open_tenant(tenant.as_bytes())
+        .expect("fixture handle");
+    let data = b"application/example";
+    let transaction = handle.create_trx().expect("stage application data");
+    let created_at = transaction
+        .get(CREATED_AT, false)
+        .await
+        .expect("read metadata")
+        .expect("created-at value");
+    transaction.set(data, b"preserve");
+    transaction.commit().await.expect("write application data");
+
+    let records = tempfile::tempdir().expect("local record directory");
+    let intent = records.path().join("initiator");
+    let contender = records.path().join("contender");
+    let control = Some(CONTROL_TENANT);
+    let delete = ["delete", RESERVATION_TENANT, "--record"];
+    let refused = cli_with_control(&delete, Some(&intent), control).await;
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("tenant contents prevent"));
+    let competing = cli_with_control(&delete, Some(&contender), control).await;
+    assert!(!competing.status.success());
+    assert!(String::from_utf8_lossy(&competing.stderr).contains("another operation holds"));
+
+    let takeover = ["takeover-delete", RESERVATION_TENANT];
+    let first_attempt = cli_with_control(&takeover, None, control).await;
+    assert!(!first_attempt.status.success());
+    assert!(String::from_utf8_lossy(&first_attempt.stderr).contains("reservation is still active"));
+    // The takeover process has no local record. Wait for the database-version
+    // lease to expire, keeping commits active on the throwaway cluster.
+    let deadline = Instant::now()
+        .checked_add(TIMEOUT + TIMEOUT)
+        .expect("takeover deadline");
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "reservation never became eligible for takeover"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let pulse = handle.create_trx().expect("advance fixture read versions");
+        pulse.set(data, b"preserve");
+        pulse.commit().await.expect("commit fixture heartbeat");
+        let result = cli_with_control(&takeover, None, control).await;
+        if result.status.success() {
+            assert_eq!(result.stdout, b"metadata-safe\n");
+            break;
+        }
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("reservation is still active"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    expect_cli(&["resume-delete"], Some(&intent), b"metadata-safe\n").await;
+    let transaction = handle.create_trx().expect("verify reconciled tenant");
+    assert_eq!(
+        transaction
+            .get(CREATED_AT, false)
+            .await
+            .expect("read metadata")
+            .expect("created-at remains")
+            .as_ref(),
+        created_at.as_ref()
+    );
+    assert_eq!(
+        transaction
+            .get(data, false)
+            .await
+            .expect("read data")
+            .expect("application data remains")
+            .as_ref(),
+        b"preserve"
+    );
+    transaction.clear(data);
+    transaction.commit().await.expect("remove fixture data");
+
+    let completed = records.path().join("completed");
+    let deleted = cli_with_control(&delete, Some(&completed), control).await;
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+    TenantManagement::create_tenant(&database, tenant.as_bytes())
+        .await
+        .expect("reuse target name");
+    let replacement_id = admin::tenant_id(&connector, tenant)
+        .await
+        .expect("replacement lookup")
+        .expect("replacement ID");
+    assert_ne!(replacement_id, initial_id);
+    expect_cli(&["resume-delete"], Some(&completed), b"original-absent\n").await;
+    expect_cli(&["resume-delete"], Some(&intent), b"metadata-safe\n").await;
+    assert_eq!(
+        admin::tenant_id(&connector, tenant)
+            .await
+            .expect("replacement survives"),
+        Some(replacement_id)
+    );
+    admin::delete_tenant(&connector, tenant)
+        .await
+        .expect("delete empty replacement fixture");
+    let control = FoundationDbTenantName::new(CONTROL_TENANT).expect("fixture control");
+    let control_handle = database
+        .open_tenant(control.as_bytes())
+        .expect("open control fixture");
+    let transaction = control_handle.create_trx().expect("clear control fixture");
+    transaction.clear_range(b"", b"\xff");
+    transaction
+        .commit()
+        .await
+        .expect("commit control fixture cleanup");
+    admin::delete_tenant(&connector, control)
+        .await
+        .expect("delete control fixture");
 }
 
 #[tokio::test]
@@ -271,6 +422,7 @@ async fn durable_delete_survives_crashes_late_clear_and_name_reuse() {
             tenant,
             original_id: replacement_id.expect("replacement ID"),
             state: DeleteRecordState::Pending,
+            reservation: None,
         })
         .expect("persist record scoped to another cluster");
     drop(locked);

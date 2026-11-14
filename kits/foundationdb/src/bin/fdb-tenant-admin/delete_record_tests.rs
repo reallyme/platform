@@ -3,9 +3,14 @@
 
 use std::fs;
 
+use reallyme_foundationdb_kit::fdb::tenant::admin::reservations::{
+    ReservationControlTenant, ReservationId,
+};
 use reallyme_foundationdb_kit::{FoundationDbTenantName, fdb::tenant::admin::TenantAdminClusterId};
 
-use super::{DeleteRecord, DeleteRecordError, DeleteRecordState, LockedDeleteRecord};
+use super::{
+    DeleteRecord, DeleteRecordError, DeleteRecordState, DeleteReservation, LockedDeleteRecord,
+};
 
 fn fixture_record() -> DeleteRecord {
     DeleteRecord {
@@ -14,6 +19,7 @@ fn fixture_record() -> DeleteRecord {
         tenant: FoundationDbTenantName::new("catalog").expect("tenant fixture"),
         original_id: 42,
         state: DeleteRecordState::Pending,
+        reservation: None,
     }
 }
 
@@ -64,9 +70,35 @@ fn rejects_invalid_or_oversized_records() {
         b"fdb-tenant-delete-v1\n0123456789abcdef0123456789abcdef\ncatalog\n-1\npending\n",
         b"fdb-tenant-delete-v1\n0123456789abcdef0123456789abcdef\ncatalog\n42\nunknown\n",
         b"fdb-tenant-delete-v1\n0123456789abcdef0123456789abcdef\ncatalog\n42\npending",
-        &[b'a'; 257],
+        &[b'a'; 321],
     ] {
         fs::write(&path, contents).expect("write invalid fixture");
         assert!(matches!(file.load(), Err(DeleteRecordError::InvalidRecord)));
     }
+}
+
+#[test]
+fn reserved_record_round_trips_control_identity_and_operation() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let file = LockedDeleteRecord::open(&directory.path().join("intent")).expect("lock record");
+    let control_name =
+        FoundationDbTenantName::new("operator-control").expect("fixture control name");
+    let record = DeleteRecord {
+        reservation: Some(DeleteReservation {
+            control: ReservationControlTenant::new(control_name, 11).expect("fixture control ID"),
+            operation: ReservationId::from_bytes([0xab; 16]),
+        }),
+        ..fixture_record()
+    };
+    file.create(record).expect("write reserved record");
+    assert!(file.load().expect("read reserved record") == record);
+    file.complete(record, DeleteRecordState::MetadataSafe)
+        .expect("complete reserved record");
+    assert!(
+        file.load().expect("read completed record")
+            == DeleteRecord {
+                state: DeleteRecordState::MetadataSafe,
+                ..record
+            }
+    );
 }

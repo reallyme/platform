@@ -422,12 +422,23 @@ jobs:
             | rg -Fx "$reservation_test: test"
           cargo test --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --lib "$reservation_test" -- --ignored --exact
+          atomic_recovery_test=fdb::tenant::admin::reservations::tests::takeover_fences_retries_and_recovery_completes_atomically
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$atomic_recovery_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$atomic_recovery_test" -- --ignored --exact
           cargo build --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --bin fdb-tenant-admin
           FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \
             cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin \
               --bin fdb-tenant-admin tests::live::durable_delete_survives_crashes_late_clear_and_name_reuse \
               -- --ignored --exact
+          reserved_cli_test=tests::live::reserved_delete_reconciles_across_processes
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --bin fdb-tenant-admin -- --list | rg -Fx "$reserved_cli_test: test"
+          FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \
+            cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin \
+              --bin fdb-tenant-admin "$reserved_cli_test" -- --ignored --exact
 
       - name: Start Typesense
         shell: bash

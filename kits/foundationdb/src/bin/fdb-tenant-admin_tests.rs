@@ -52,6 +52,10 @@ fn parses_recorded_delete_and_resume_without_changing_existing_commands() {
     );
     assert!(matches!(parse(&["resume-delete", "a path"]),
         Ok(Command::ResumeDelete(path)) if path == std::path::Path::new("a path")));
+    assert!(matches!(
+        parse(&["takeover-delete", "catalog"]),
+        Ok(Command::TakeoverDelete(_))
+    ));
     for args in [
         &["delete", "catalog", "--record"][..],
         &["delete", "catalog", "--wrong", "path"],

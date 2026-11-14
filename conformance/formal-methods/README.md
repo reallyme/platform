@@ -245,8 +245,7 @@ reuse of the tenant name. It assumes transactional checks on the reservation
 and tenant ID, the tenant-map emptiness check, and compatible or empty kit
 metadata. Recovery is modeled as one transaction that verifies the grant and
 records the outcome with any metadata write. The model abstracts lease timing
-and repeated delete attempts within an epoch. The current CLI uses local
-record locks.
+and repeated delete attempts within an epoch.
 
 The [live transaction test](../../kits/foundationdb/src/fdb/tenant/reservation_tests.rs)
 checks the transaction layout with native FoundationDB clients in
@@ -260,3 +259,18 @@ key in the conflicting range. It also commits both operations at the current
 epoch to verify that each transaction layout can succeed. [FoundationDB conflict ranges](https://apple.github.io/foundationdb/developer-guide.html#conflict-ranges),
 [FoundationDB tenant transaction scope](https://apple.github.io/foundationdb/tenants.html#raw-access),
 [FoundationDB 7.3.77 tenant prefix](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/NativeAPI.actor.cpp#L2747-L2753)
+
+The [reservation adapter](../../kits/foundationdb/src/fdb/tenant/reservations.rs)
+implements acquisition and takeover for the operator CLI. It keeps the
+per-name active reservation and completed operation records in the control
+tenant. Every guarded attempt verifies the control ID and the current epoch.
+An expired reservation can be transferred using FoundationDB read versions.
+Recovery commits the outcome with any metadata write. The tenant-map delete
+observes the reservation in its transaction and finalizes in a later one
+because required tenant mode rejects combining a tenant-map mutation with
+ordinary data writes. The [live recovery test](../../kits/foundationdb/src/fdb/tenant/reservation_recovery_tests.rs)
+checks that a stale delete retry stops, a superseded recovery leaves both
+the metadata and outcome unchanged, and the current recovery commits both.
+The [CLI test](../../kits/foundationdb/src/bin/fdb-tenant-admin/live_tests.rs)
+exercises independent record paths and takeover without a local record.
+[FoundationDB 7.3.77 transaction validation](https://github.com/apple/foundationdb/blob/7.3.77/fdbserver/CommitProxyServer.actor.cpp#L1301-L1311)

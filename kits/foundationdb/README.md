@@ -174,6 +174,39 @@ or partial metadata and unavailable lookups leave the record pending for
 review or another resume. A different cluster UID causes resume to fail.
 Completed records return their saved outcome on subsequent resumes.
 
+### Coordinate deletes across hosts
+
+Provision a dedicated control tenant once on the same FoundationDB cluster.
+Configure the same control tenant for every operator that deletes tenants on
+that cluster.
+
+```sh
+fdb-tenant-admin ensure operator-control
+export FDB_TENANT_ADMIN_CONTROL_TENANT=operator-control
+fdb-tenant-admin delete example --record /var/lib/fdb-operator/example-delete.intent
+fdb-tenant-admin resume-delete /var/lib/fdb-operator/example-delete.intent
+# On another host with the same control tenant configured and no local record:
+fdb-tenant-admin takeover-delete example
+```
+
+With the control tenant configured, `delete` requires `--record`. Resume a
+pending legacy record with the setting unset before enabling coordination.
+New records include the control tenant ID and operation ID, so they can be
+resumed without the setting and cannot be redirected to a recreated control
+tenant.
+
+Only one recorded operation can hold the reservation for a tenant name. If an
+operation errors or is interrupted, resume it or take it over after expiry.
+The lease uses FoundationDB read versions and allows takeover after 15 million
+versions, about 15 seconds during normal version advancement. Takeover advances
+the epoch and reconciles the original ID. A stale epoch cannot commit a
+metadata clear, tenant-map delete, or recovery. Recovery commits the metadata
+and recorded outcome together, or records `original-absent` when the original
+ID no longer owns the name. The local record can later read the saved outcome.
+Keep the dedicated control tenant and its reservation history available to
+operators. This workflow coordinates commands that use the control tenant on
+the same standalone cluster.
+
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
 selected tenant.

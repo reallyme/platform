@@ -7,12 +7,19 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use reallyme_foundationdb_kit::{FoundationDbTenantName, fdb::tenant::admin::TenantAdminClusterId};
+use reallyme_foundationdb_kit::{
+    FoundationDbTenantName,
+    fdb::tenant::admin::{
+        TenantAdminClusterId,
+        reservations::{ReservationControlTenant, ReservationId},
+    },
+};
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
-const RECORD_VERSION: &str = "fdb-tenant-delete-v1";
-const MAX_RECORD_BYTES: u64 = 256;
+const LOCAL_RECORD: &str = "fdb-tenant-delete-v1";
+const RESERVED_RECORD: &str = "fdb-tenant-delete-v2";
+const MAX_RECORD_BYTES: u64 = 320;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(super) enum DeleteRecordError {
@@ -59,6 +66,13 @@ pub(super) struct DeleteRecord {
     pub(super) tenant: FoundationDbTenantName,
     pub(super) original_id: i64,
     pub(super) state: DeleteRecordState,
+    pub(super) reservation: Option<DeleteReservation>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct DeleteReservation {
+    pub(super) control: ReservationControlTenant,
+    pub(super) operation: ReservationId,
 }
 
 impl DeleteRecord {
@@ -66,23 +80,33 @@ impl DeleteRecord {
         let invalid = DeleteRecordError::InvalidRecord;
         let text = std::str::from_utf8(bytes).map_err(|_| invalid)?;
         let mut fields = text.strip_suffix('\n').ok_or(invalid)?.split('\n');
-        if fields.next() != Some(RECORD_VERSION) {
+        let version = fields.next().ok_or(invalid)?;
+        if version != LOCAL_RECORD && version != RESERVED_RECORD {
             return Err(invalid);
         }
         let cluster = TenantAdminClusterId::from_bytes(fields.next().ok_or(invalid)?.as_bytes())
             .ok_or(invalid)?;
         let tenant =
             FoundationDbTenantName::new(fields.next().ok_or(invalid)?).map_err(|_| invalid)?;
-        let id = fields.next().ok_or(invalid)?;
-        if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(invalid);
-        }
-        let original_id = id.parse::<i64>().map_err(|_| invalid)?;
+        let original_id = parse_id(fields.next().ok_or(invalid)?)?;
         let state = match fields.next() {
             Some("pending") => DeleteRecordState::Pending,
             Some("original-absent") => DeleteRecordState::OriginalAbsent,
             Some("metadata-safe") => DeleteRecordState::MetadataSafe,
             _ => return Err(invalid),
+        };
+        let reservation = if version == RESERVED_RECORD {
+            let control =
+                FoundationDbTenantName::new(fields.next().ok_or(invalid)?).map_err(|_| invalid)?;
+            let id = parse_id(fields.next().ok_or(invalid)?)?;
+            if control == tenant || id == original_id {
+                return Err(invalid);
+            }
+            let control = ReservationControlTenant::new(control, id).map_err(|_| invalid)?;
+            let operation = parse_operation(fields.next().ok_or(invalid)?)?;
+            Some(DeleteReservation { control, operation })
+        } else {
+            None
         };
         if fields.next().is_some() {
             return Err(invalid);
@@ -92,23 +116,69 @@ impl DeleteRecord {
             tenant,
             original_id,
             state,
+            reservation,
         })
     }
 
     fn write(self, file: &mut File) -> Result<(), DeleteRecordError> {
         let uid = std::str::from_utf8(self.cluster.as_bytes())
             .map_err(|_| DeleteRecordError::InvalidRecord)?;
+        let version = if self.reservation.is_some() {
+            RESERVED_RECORD
+        } else {
+            LOCAL_RECORD
+        };
         writeln!(
             file,
             "{}\n{}\n{}\n{}\n{}",
-            RECORD_VERSION,
+            version,
             uid,
             self.tenant,
             self.original_id,
             self.state.as_str()
         )
-        .map_err(|_| DeleteRecordError::PersistFailed)
+        .map_err(|_| DeleteRecordError::PersistFailed)?;
+        if let Some(reservation) = self.reservation {
+            write!(
+                file,
+                "{}\n{}\n",
+                reservation.control.name(),
+                reservation.control.id()
+            )
+            .map_err(|_| DeleteRecordError::PersistFailed)?;
+            for byte in reservation.operation.as_bytes() {
+                write!(file, "{byte:02x}").map_err(|_| DeleteRecordError::PersistFailed)?;
+            }
+            writeln!(file).map_err(|_| DeleteRecordError::PersistFailed)?;
+        }
+        Ok(())
     }
+}
+
+fn parse_id(value: &str) -> Result<i64, DeleteRecordError> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(DeleteRecordError::InvalidRecord);
+    }
+    value
+        .parse::<i64>()
+        .map_err(|_| DeleteRecordError::InvalidRecord)
+}
+
+fn parse_operation(value: &str) -> Result<ReservationId, DeleteRecordError> {
+    let invalid = DeleteRecordError::InvalidRecord;
+    let mut id = [0; 16];
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty()
+        || pairs.len() != id.len()
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid);
+    }
+    for (output, pair) in id.iter_mut().zip(pairs) {
+        let encoded = std::str::from_utf8(pair).map_err(|_| invalid)?;
+        *output = u8::from_str_radix(encoded, 16).map_err(|_| invalid)?;
+    }
+    Ok(ReservationId::from_bytes(id))
 }
 
 pub(super) struct LockedDeleteRecord {

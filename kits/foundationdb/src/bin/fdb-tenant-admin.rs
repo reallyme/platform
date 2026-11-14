@@ -10,6 +10,7 @@
 //! - `delete <tenant-name>`
 //! - `delete <tenant-name> --record <path>`
 //! - `resume-delete <path>`
+//! - `takeover-delete <tenant-name>`
 //! - `exists <tenant-name>`
 //! - `id <tenant-name>`
 
@@ -21,15 +22,22 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use admin::reservations::{
+    ReservationControlTenant, ReservationErrorReason, ReservationId, ReservationIntent,
+    ReservationStore,
+};
 use reallyme_foundationdb_kit::FoundationDbTenantName;
 use reallyme_foundationdb_kit::{FdbConfig, FdbContext, fdb::tenant::admin};
 use thiserror::Error;
 
 #[path = "fdb-tenant-admin/delete_record.rs"]
 mod delete_record;
-use delete_record::{DeleteRecord, DeleteRecordError, DeleteRecordState, LockedDeleteRecord};
+use delete_record::{
+    DeleteRecord, DeleteRecordError, DeleteRecordState, DeleteReservation, LockedDeleteRecord,
+};
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id> <tenant> | delete <tenant> --record <path> | resume-delete <path> | recover-delete <tenant> <expected-tenant-id>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete> <tenant> | delete <tenant> --record <path> | resume-delete <path> | recover-delete <tenant> <expected-tenant-id>";
+const CONTROL_TENANT_ENV: &str = "FDB_TENANT_ADMIN_CONTROL_TENANT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 enum AdminToolError {
@@ -69,6 +77,18 @@ enum AdminToolError {
     OutputFailed,
     #[error(transparent)]
     Record(#[from] DeleteRecordError),
+    #[error(transparent)]
+    Reservation(#[from] ReservationErrorReason),
+    #[error("invalid reservation control tenant configuration")]
+    InvalidControlTenant,
+    #[error("takeover-delete requires FDB_TENANT_ADMIN_CONTROL_TENANT")]
+    ControlTenantRequired,
+    #[error("configured control tenant differs from the delete record")]
+    ControlTenantMismatch,
+    #[error("this delete record predates control-tenant coordination")]
+    LegacyRecord,
+    #[error("delete requires --record when a control tenant is configured")]
+    RecordRequired,
 }
 
 enum Command {
@@ -78,6 +98,7 @@ enum Command {
     Delete(FoundationDbTenantName),
     RecordedDelete(FoundationDbTenantName, PathBuf),
     ResumeDelete(PathBuf),
+    TakeoverDelete(FoundationDbTenantName),
     Exists(FoundationDbTenantName),
     Id(FoundationDbTenantName),
 }
@@ -114,6 +135,7 @@ fn parse_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, Ad
             },
             Some("exists") => Command::Exists(tenant),
             Some("id") => Command::Id(tenant),
+            Some("takeover-delete") => Command::TakeoverDelete(tenant),
             _ => return Err(AdminToolError::Usage),
         }
     };
@@ -142,13 +164,27 @@ async fn run(command: Command) -> Result<(), AdminToolError> {
                 .await
                 .map_err(|_| AdminToolError::RecoverDeleteFailed)
         }
-        Command::Delete(tenant) => admin::delete_tenant(&context, tenant)
-            .await
-            .map_err(|_| AdminToolError::DeleteFailed),
+        Command::Delete(tenant) => {
+            if configured_control_tenant()?.is_some() {
+                return Err(AdminToolError::RecordRequired);
+            }
+            admin::delete_tenant(&context, tenant)
+                .await
+                .map_err(|_| AdminToolError::DeleteFailed)
+        }
         Command::RecordedDelete(tenant, path) => recorded_delete(&context, tenant, &path).await,
         Command::ResumeDelete(path) => {
             let state = resume_delete(&context, &path).await?;
             write_output(state.as_str())
+        }
+        Command::TakeoverDelete(tenant) => {
+            let control =
+                configured_control_tenant()?.ok_or(AdminToolError::ControlTenantRequired)?;
+            let control = ReservationControlTenant::lookup(&context, control).await?;
+            let outcome = ReservationStore::new(&context, control)
+                .takeover(tenant)
+                .await?;
+            write_output(record_state(outcome).as_str())
         }
         Command::Exists(tenant) => {
             let exists = admin::tenant_exists(&context, tenant)
@@ -172,11 +208,28 @@ async fn recorded_delete(
     path: &Path,
 ) -> Result<(), AdminToolError> {
     let file = LockedDeleteRecord::open(path)?;
-    let record = persist_delete_intent(context, tenant, &file).await?;
-    admin::delete_recorded_tenant(context, tenant, record.original_id)
-        .await
-        .map_err(|_| AdminToolError::RecordedDeleteFailed)?;
-    file.complete(record, DeleteRecordState::OriginalAbsent)?;
+    let reservation = if let Some(control) = configured_control_tenant()? {
+        if control == tenant {
+            return Err(ReservationErrorReason::ControlTenantTarget.into());
+        }
+        let control = ReservationControlTenant::lookup(context, control).await?;
+        let operation = ReservationId::generate()?;
+        Some(DeleteReservation { control, operation })
+    } else {
+        None
+    };
+    let record = persist_delete_intent(context, tenant, &file, reservation).await?;
+    let outcome = if let Some(reservation) = record.reservation {
+        ReservationStore::new(context, reservation.control)
+            .delete(intent(record, reservation))
+            .await?
+    } else {
+        admin::delete_recorded_tenant(context, tenant, record.original_id)
+            .await
+            .map_err(|_| AdminToolError::RecordedDeleteFailed)?;
+        admin::TenantDeleteResolution::OriginalAbsent
+    };
+    file.complete(record, record_state(outcome))?;
     Ok(())
 }
 
@@ -184,6 +237,7 @@ async fn persist_delete_intent(
     context: &FdbContext,
     tenant: FoundationDbTenantName,
     file: &LockedDeleteRecord,
+    reservation: Option<DeleteReservation>,
 ) -> Result<DeleteRecord, AdminToolError> {
     let cluster = admin::tenant_admin_cluster_id(context)
         .await
@@ -198,6 +252,7 @@ async fn persist_delete_intent(
         tenant,
         original_id,
         state: DeleteRecordState::Pending,
+        reservation,
     };
     // Keep the lock from durable creation through the final database result.
     // A resumed worker can only race transactions already submitted by this one.
@@ -223,15 +278,50 @@ async fn resume_delete(
         file.sync_directory()?;
         return Ok(record.state);
     }
-    let state = match admin::reconcile_recorded_delete(context, record.tenant, record.original_id)
-        .await
-        .map_err(|_| AdminToolError::ResumeFailed)?
-    {
-        admin::TenantDeleteResolution::OriginalAbsent => DeleteRecordState::OriginalAbsent,
-        admin::TenantDeleteResolution::MetadataSafe => DeleteRecordState::MetadataSafe,
+    let configured_control = configured_control_tenant()?;
+    let outcome = if let Some(reservation) = record.reservation {
+        if configured_control.is_some_and(|name| name != reservation.control.name()) {
+            return Err(AdminToolError::ControlTenantMismatch);
+        }
+        ReservationStore::new(context, reservation.control)
+            .resume(intent(record, reservation))
+            .await?
+    } else {
+        if configured_control.is_some() {
+            return Err(AdminToolError::LegacyRecord);
+        }
+        admin::reconcile_recorded_delete(context, record.tenant, record.original_id)
+            .await
+            .map_err(|_| AdminToolError::ResumeFailed)?
     };
+    let state = record_state(outcome);
     file.complete(record, state)?;
     Ok(state)
+}
+
+fn configured_control_tenant() -> Result<Option<FoundationDbTenantName>, AdminToolError> {
+    match env::var(CONTROL_TENANT_ENV) {
+        Ok(value) => FoundationDbTenantName::new(&value)
+            .map(Some)
+            .map_err(|_| AdminToolError::InvalidControlTenant),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(AdminToolError::InvalidControlTenant),
+    }
+}
+
+fn intent(record: DeleteRecord, reservation: DeleteReservation) -> ReservationIntent {
+    ReservationIntent {
+        tenant: record.tenant,
+        original_id: record.original_id,
+        operation: reservation.operation,
+    }
+}
+
+const fn record_state(outcome: admin::TenantDeleteResolution) -> DeleteRecordState {
+    match outcome {
+        admin::TenantDeleteResolution::OriginalAbsent => DeleteRecordState::OriginalAbsent,
+        admin::TenantDeleteResolution::MetadataSafe => DeleteRecordState::MetadataSafe,
+    }
 }
 
 fn write_output(value: impl std::fmt::Display) -> Result<(), AdminToolError> {

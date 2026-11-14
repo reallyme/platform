@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::fdb::tenant_name::FoundationDbTenantName;
 use bytes::Bytes;
 use foundationdb::FdbError as FdbBindingError;
+#[cfg(feature = "tenant-admin")]
+use foundationdb::future::FdbValues;
 
 use super::TenantHandle;
 #[cfg(feature = "tenant-admin")]
@@ -28,7 +30,7 @@ const TENANT_METADATA_SCHEMA_KEY_LENGTH: usize = 4;
 const TENANT_METADATA_CREATED_AT_LENGTH: usize = 8;
 const CURRENT_TENANT_SCHEMA_VERSION: u32 = 1;
 #[cfg(feature = "tenant-admin")]
-const RECONCILE_METADATA_SCAN_LIMIT: i32 = 3;
+pub(super) const RECONCILE_METADATA_SCAN_LIMIT: i32 = 3;
 
 pub(super) struct TenantMetadataRead {
     schema_version: u32,
@@ -283,9 +285,6 @@ pub(super) async fn confirm_or_repair_tenant_metadata(
 ) -> FdbResult<()> {
     let tenant = tenant_handle.name();
     let keys = TenantMetadataKeys::current()?;
-    let failed = FdbError::Tenant {
-        reason: TenantErrorReason::AdministrationFailed { tenant },
-    };
     let mut transaction = tenant_handle.create_transaction(timeout_millis)?;
     let entries = transaction
         .read_range(
@@ -294,6 +293,32 @@ pub(super) async fn confirm_or_repair_tenant_metadata(
             RECONCILE_METADATA_SCAN_LIMIT,
         )
         .await?;
+    let (schema, created_at) = reconciliation_metadata(
+        tenant,
+        &entries,
+        &keys.schema_version_key,
+        &keys.created_at_key,
+    )?;
+    // Write even when both values match. The write conflicts with a clear
+    // that read the metadata before the operator restarted.
+    transaction.set(&keys.schema_version_key, &schema)?;
+    transaction.set(&keys.created_at_key, &created_at)?;
+    transaction.commit().await
+}
+
+#[cfg(feature = "tenant-admin")]
+pub(super) fn reconciliation_metadata(
+    tenant: FoundationDbTenantName,
+    entries: &FdbValues,
+    schema_key: &[u8],
+    created_at_key: &[u8],
+) -> FdbResult<(
+    [u8; TENANT_METADATA_SCHEMA_KEY_LENGTH],
+    [u8; TENANT_METADATA_CREATED_AT_LENGTH],
+)> {
+    let failed = FdbError::Tenant {
+        reason: TenantErrorReason::AdministrationFailed { tenant },
+    };
     if entries.more() {
         return Err(failed);
     }
@@ -307,11 +332,11 @@ pub(super) async fn confirm_or_repair_tenant_metadata(
         }
         let schema = entries
             .iter()
-            .find(|entry| entry.key() == keys.schema_version_key.as_ref())
+            .find(|entry| entry.key() == schema_key)
             .ok_or(failed)?;
         let created = entries
             .iter()
-            .find(|entry| entry.key() == keys.created_at_key.as_ref())
+            .find(|entry| entry.key() == created_at_key)
             .ok_or(failed)?;
         let metadata = TenantMetadataRead {
             schema_version: parse_schema_version(tenant, schema.value())?,
@@ -320,11 +345,7 @@ pub(super) async fn confirm_or_repair_tenant_metadata(
         metadata.ensure_compatible(tenant)?;
         (metadata.schema_version, metadata.created_at)
     };
-    // Write even when both values match. The write conflicts with a clear
-    // that read the metadata before the operator restarted.
-    transaction.set(&keys.schema_version_key, &schema_version.to_le_bytes())?;
-    transaction.set(&keys.created_at_key, &created_at.to_le_bytes())?;
-    transaction.commit().await
+    Ok((schema_version.to_le_bytes(), created_at.to_le_bytes()))
 }
 
 #[cfg(test)]

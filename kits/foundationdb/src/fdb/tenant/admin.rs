@@ -40,6 +40,10 @@ pub use recorded_delete::{
     tenant_admin_cluster_id,
 };
 
+/// Cluster-side reservations for recorded operator deletes.
+#[path = "reservations.rs"]
+pub mod reservations;
+
 /// Creates a tenant if absent and validates its versioned metadata.
 ///
 /// Existing tenants are never modified implicitly. If an existing tenant has
