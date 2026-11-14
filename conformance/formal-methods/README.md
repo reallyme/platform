@@ -63,6 +63,38 @@ model abstracts metadata values and retry progress.
 Use the FoundationDB integration suite to validate the production adapter
 against the database.
 
+## Automatic metadata restoration after a delete failure
+
+[TenantRestoration.tla](TenantRestoration.tla) starts with a submitted
+metadata clear and a saved copy of its values. It separates each database
+commit from the caller's observation. A clear, tenant-map delete, or restore
+attempt can settle after a timeout. The model explores three restore
+attempts, including attempts that settle after a retry or after the caller
+returns, as well as a concurrent application write, deletion by another
+operator, and one reuse of the original tenant name.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [ID-bound restore](TenantRestoration.cfg) | Only the original tenant receives the saved metadata. An acknowledged restore preserves the snapshot while the original exists. Delete success requires the original to be absent. |
+| [Restore by name](TenantRestorationByName.cfg) | The runner requires a counterexample in which the second phase commits after a timeout, the name is reused, and automatic restoration writes into the replacement. The replacement can be empty or hold its own metadata. |
+| [Skip the write if values already match](TenantRestorationSkipWrite.cfg) | The runner requires a counterexample in which an older clear commits after the restore observes matching values. A real restore write adds the conflict that prevents the clear from committing afterward. |
+
+The current [automatic restore](../../kits/foundationdb/src/fdb/tenant/admin.rs)
+opens by name on every attempt and always writes the snapshot. The
+identity-bound configuration models a prospective change to carry the
+snapshot owner's ID into each attempt and verify the handle used to write.
+The [live conflict regression](../../kits/foundationdb/src/fdb/tenant/admin_tests.rs)
+exercises the existing unconditional write against an in-flight clear.
+
+The model distinguishes a reported timeout from a server-side abort. It
+assumes a non-snapshot clear conflicts with subsequent writes to its read
+range, and a delete commits only against an empty original tenant. It
+tracks an individual submitted delete against the original ID. It does not
+verify the binding's internal retries of the name-based tenant-map delete,
+which may start another transaction. Metadata bytes, arbitrary third-party
+metadata edits, and recovery after retry exhaustion are outside this model.
+[FoundationDB transaction timeouts and conflict rules](https://apple.github.io/foundationdb/developer-guide.html#non-retryable-errors)
+
 ## FoundationDB recovery after name reuse
 
 [TenantRecovery.tla](TenantRecovery.tla) starts after an interrupted delete

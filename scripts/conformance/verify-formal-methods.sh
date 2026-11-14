@@ -31,6 +31,9 @@ cp "$repo_root/$model_dir/"{policy_path.rs,route_admission.rs,route_selection.rs
 cp "$repo_root/$model_dir/"{TenantDeletion.tla,TenantDeletion.cfg} "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantRecovery.tla,TenantRecovery.cfg,TenantRecoveryLookupOnly.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantRestoration.tla,TenantRestoration.cfg} "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantRestorationByName.cfg,TenantRestorationSkipWrite.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
@@ -41,18 +44,24 @@ run_tlc() {
   java -Xmx512m -XX:+UseParallelGC -cp "$jar_path" tlc2.TLC -workers 1 "$@"
 }
 
+expect_invariant_violation() {
+  local module="$1" config="$2" invariant="$3"
+  local log="$scratch/$config.log" result=0
+
+  # Require both the safety-violation exit code and the named invariant.
+  # Parser and tool failures must never satisfy a counterexample check.
+  run_tlc -config "$config.cfg" "$module" >"$log" 2>&1 || result=$?
+  cat "$log"
+  if [[ "$result" -ne 12 ]] ||
+    ! grep -Fxq "Error: Invariant $invariant is violated." "$log"; then
+    printf '%s must violate %s.\n' "$config" "$invariant" >&2
+    return 1
+  fi
+}
+
 run_tlc TenantDeletion
 run_tlc TenantRecovery
-
-# The lookup-only protocol must produce the named invariant violation.
-# A parser failure, tool failure, or missing counterexample fails this check.
-lookup_only_log="$scratch/tenant-recovery-lookup-only.log"
-lookup_only_status=0
-run_tlc -config TenantRecoveryLookupOnly.cfg TenantRecovery >"$lookup_only_log" 2>&1 \
-  || lookup_only_status=$?
-cat "$lookup_only_log"
-if [[ "$lookup_only_status" -ne 12 ]] ||
-  ! grep -Fxq 'Error: Invariant RecoveryWritesOnlyRecordedTenant is violated.' "$lookup_only_log"; then
-  printf 'Expected the lookup-only recovery model to violate tenant identity binding.\n' >&2
-  exit 1
-fi
+expect_invariant_violation TenantRecovery TenantRecoveryLookupOnly RecoveryWritesOnlyRecordedTenant
+run_tlc TenantRestoration
+expect_invariant_violation TenantRestoration TenantRestorationByName RestoreWritesOnlyOriginal
+expect_invariant_violation TenantRestoration TenantRestorationSkipWrite AcknowledgedRestoreSurvives
