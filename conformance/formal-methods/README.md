@@ -313,3 +313,36 @@ commits a prune through a second FoundationDB handle and injects the
 unknown-result error into the first handle's retry loop. It checks that
 the retry leaves the tombstone intact, that an old intent replays its saved
 outcome, and that a replacement keeps its active grant.
+
+## Reclaiming reservation tombstones
+
+[TenantReservationCutoff.tla](TenantReservationCutoff.tla) models a durable
+admission generation for each tenant name, scoped to the recorded control
+tenant. New local intents capture the current generation with the tenant ID.
+The file keeps that generation even if it is persisted after the cutoff
+moves. Existing records without a generation start at zero. An admission
+generation applies to the operation's whole lifecycle. The reservation epoch
+still identifies its current grant.
+
+With the active slot empty, an operator can commit an advance to a fixed
+generation. A retry for the same target observes that generation or a later
+one without advancing again. The claim transaction and each retry read the
+cutoff alongside the active key and operation record. A collector clears a
+tombstone only after comparing its stored generation with the durable cutoff
+inside that transaction. This lets an advance commit once and reclamation
+proceed in later transactions.
+
+Retained completions remain readable across an advance. Once the key is
+gone, a pending file below the cutoff is expired and has no cluster outcome
+to replay. A locally saved outcome is still available to that file. The
+model assumes all writers enforce the generation and abstracts the lease
+and tenant mutations already covered by the earlier reservation models.
+It bounds the search to two operation IDs, two advances, and one reuse of
+the tenant name. An uncommitted attempt can stutter.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Durable cutoff](TenantReservationCutoff.cfg) | The cutoff is monotone, a captured generation is immutable, an older or completed intent cannot hold a grant, and retained outcomes remain accurate. |
+| [Preflight-only admission](TenantReservationCutoffPreflight.cfg) | A prepared resume retakes the slot after an unacknowledged cutoff advance, tombstone reclamation, and a completed operation for the replacement tenant. The runner requires `NoStaleClaimAfterNameReuse` to fail. |
+| [Reclamation before the cutoff](TenantReservationCutoffEarlyReclaim.cfg) | A lost reclaim reply leaves the old operation key missing while its local file is still eligible to claim. The runner requires `NoSameGenerationClaimAfterReclaim` to fail. |
+| [Progress after the cutoff](TenantReservationCutoffProgress.cfg) | The runner requires a witness where a retry observes a later advance, an old reclaim is retried, the stale file expires, and a current-generation operation completes for the replacement. It checks for `NoProgressAfterCutoff` to fail. |

@@ -47,6 +47,8 @@ cp "$repo_root/$model_dir/"{TenantReservationPreflightOnly.cfg,TenantReservation
   "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"TenantReservationPruning{.tla,.cfg,Ambiguous.cfg,NameReuse.cfg,Replay.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"TenantReservationCutoff{.tla,.cfg,Preflight.cfg,EarlyReclaim.cfg,Progress.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
@@ -93,3 +95,7 @@ run_tlc TenantReservationPruning
 expect_invariant_violation TenantReservationPruning TenantReservationPruningAmbiguous NoReacquisitionAfterAmbiguousCommits
 expect_invariant_violation TenantReservationPruning TenantReservationPruningNameReuse NoReacquisitionAfterNameReuse
 expect_invariant_violation TenantReservationPruning TenantReservationPruningReplay NoRetiredReplayDuringNewReservation
+run_tlc TenantReservationCutoff
+expect_invariant_violation TenantReservationCutoff TenantReservationCutoffPreflight NoStaleClaimAfterNameReuse
+expect_invariant_violation TenantReservationCutoff TenantReservationCutoffEarlyReclaim NoSameGenerationClaimAfterReclaim
+expect_invariant_violation TenantReservationCutoff TenantReservationCutoffProgress NoProgressAfterCutoff
