@@ -7,6 +7,7 @@ mod admission;
 mod error;
 mod name;
 mod route;
+mod selection;
 mod validation;
 
 #[cfg(test)]
@@ -19,6 +20,6 @@ pub use name::{
     HttpRateLimitTierName, HttpVisibilityClass,
 };
 pub use route::{
-    HttpRouteMatchKind, HttpRoutePrefix, HttpRouteVisibility, HttpRouteVisibilityPolicy,
-    HttpRouteVisibilityRule,
+    HttpRoutePrefix, HttpRouteVisibility, HttpRouteVisibilityPolicy, HttpRouteVisibilityRule,
 };
+pub use selection::HttpRouteMatchKind;

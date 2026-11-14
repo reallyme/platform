@@ -3,7 +3,7 @@
 
 use super::{
     HttpListenerName, HttpListenerVisibility, HttpRoutePrefix, HttpRouteVisibility,
-    HttpRouteVisibilityPolicy, HttpRouteVisibilityRule,
+    HttpRouteVisibilityPolicy, HttpRouteVisibilityRule, RouteAdmission,
 };
 
 #[test]
@@ -50,6 +50,44 @@ fn exact_rules_override_less_specific_prefix_rules() {
             .map(HttpRouteVisibilityRule::visibility),
         Some(&HttpRouteVisibility::PrivateOnly)
     );
+}
+
+#[test]
+fn denied_winner_blocks_admission_even_with_an_allowed_prefix_and_default() {
+    let policy = HttpRouteVisibilityPolicy::allow_by_default(vec![
+        HttpRouteVisibilityRule::new(
+            HttpRoutePrefix::new("/api/status").expect("valid route prefix"),
+            HttpRouteVisibility::PrivateOnly,
+        ),
+        HttpRouteVisibilityRule::exact(
+            HttpRoutePrefix::new("/api/status").expect("valid exact route"),
+            HttpRouteVisibility::InternalOnly,
+        ),
+        HttpRouteVisibilityRule::new(
+            HttpRoutePrefix::new("/api").expect("valid broader prefix"),
+            HttpRouteVisibility::All,
+        ),
+    ])
+    .expect("unique route rules");
+    let listener = HttpListenerName::new("test-ingress").expect("valid listener name");
+
+    for (path, expected) in [
+        ("/api/status", None),
+        ("/api/status/history", Some("/api/status")),
+        ("/api/status-check", Some("/api")),
+    ] {
+        let decision =
+            policy.route_admission(&listener, &HttpListenerVisibility::Private, path, path);
+        match expected {
+            Some(prefix) => {
+                let RouteAdmission::AllowedByRule(rule) = decision else {
+                    panic!("expected the selected route to allow the listener");
+                };
+                assert_eq!(rule.prefix().as_str(), prefix);
+            }
+            None => assert_eq!(decision, RouteAdmission::Blocked),
+        }
+    }
 }
 
 #[test]

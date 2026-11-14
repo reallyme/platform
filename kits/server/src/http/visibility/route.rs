@@ -7,6 +7,7 @@ use super::name::{
     HttpAuthPolicyName, HttpListenerName, HttpListenerVisibility, HttpRateLimitTierName,
     HttpVisibilityClass,
 };
+use super::selection::{HttpRouteMatchKind, select_route_rule};
 use super::validation::MAX_HTTP_ROUTE_PREFIX_BYTES;
 use crate::config::RequestBodyLimitBytes;
 
@@ -90,25 +91,6 @@ impl HttpRoutePrefix {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
-
-    pub(crate) fn matches_path(&self, path: &str) -> bool {
-        if self.0 == "/" || path == self.0 {
-            return true;
-        }
-
-        path.strip_prefix(self.0.as_str())
-            .map(|suffix| suffix.starts_with('/'))
-            .unwrap_or(false)
-    }
-}
-
-/// How a route visibility rule matches a request target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpRouteMatchKind {
-    /// Match the exact request path or RPC method path.
-    Exact,
-    /// Match this path and any child path below it.
-    Prefix,
 }
 
 /// One listener-visibility rule for a stable route prefix.
@@ -240,19 +222,6 @@ impl HttpRouteVisibilityRule {
 
         explicitly_allowed && self.visibility.allows_listener(listener_visibility)
     }
-
-    fn match_score(&self, path: &str) -> Option<(usize, u8)> {
-        match self.match_kind {
-            HttpRouteMatchKind::Exact if path == self.route.as_str() => {
-                Some((self.route.as_str().len(), 1))
-            }
-            HttpRouteMatchKind::Exact => None,
-            HttpRouteMatchKind::Prefix if self.route.matches_path(path) => {
-                Some((self.route.as_str().len(), 0))
-            }
-            HttpRouteMatchKind::Prefix => None,
-        }
-    }
 }
 
 /// Immutable route visibility policy evaluated before app handlers run.
@@ -322,11 +291,12 @@ impl HttpRouteVisibilityPolicy {
 
     /// Returns the matching visibility rule for a path, if configured.
     pub fn rule_for_path(&self, path: &str) -> Option<&HttpRouteVisibilityRule> {
-        self.rules
-            .iter()
-            .filter_map(|rule| rule.match_score(path).map(|score| (score, rule)))
-            .max_by_key(|(score, _rule)| *score)
-            .map(|(_score, rule)| rule)
+        select_route_rule(
+            self.rules
+                .iter()
+                .map(|rule| (rule, rule.prefix().as_str(), rule.match_kind())),
+            path,
+        )
     }
 
     /// Returns the validated rules for listener composition checks.

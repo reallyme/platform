@@ -34,6 +34,14 @@ only two unmatched paths. The proof quantifies over the classifications,
 the default, and rule equality. Rule matching and listener restrictions
 are exercised through the [middleware tests](../../kits/server/src/http/layers/route_visibility/encoded_carve_out_tests.rs).
 
+The [route selection harness](route_selection.rs) checks the production
+[ranking function](../../kits/server/src/http/visibility/selection.rs) with
+zero, one, or two matching candidates. For two candidates it quantifies over
+all representable lengths and both match kinds. The longer match wins and
+exact wins at equal length. The [policy tests](../../kits/server/src/http/visibility/tests.rs)
+exercise segment boundaries and verify that a denied winner blocks admission
+even when a less specific rule and the default would both allow the listener.
+
 ## FoundationDB tenant deletion and recovery
 
 [The TLA+ model](TenantDeletion.tla) follows the
