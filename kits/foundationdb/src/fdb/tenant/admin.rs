@@ -33,6 +33,13 @@ const METADATA_RESTORE_ATTEMPTS: usize = 3;
 const TENANT_MAP_PREFIX: &[u8] = b"\xff\xff/management/tenant/map/";
 const TENANT_MAP_DELETE_RETRIES: i32 = 2;
 
+#[path = "recorded_delete.rs"]
+mod recorded_delete;
+pub use recorded_delete::{
+    TenantAdminClusterId, TenantDeleteResolution, reconcile_recorded_delete,
+    tenant_admin_cluster_id,
+};
+
 /// Creates a tenant if absent and validates its versioned metadata.
 ///
 /// Existing tenants are never modified implicitly. If an existing tenant has
@@ -131,7 +138,20 @@ pub async fn delete_tenant(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
 ) -> FdbResult<()> {
-    let handle = open_delete_tenant(connector, tenant).await?;
+    let original_id = lookup_delete_id(connector, tenant).await?;
+    delete_recorded_tenant(connector, tenant, original_id).await
+}
+
+/// Deletes only the tenant with the supplied ID, including across retries.
+///
+/// Operator tooling calls this after persisting the intent. The caller must
+/// validate the record's cluster identity before using the recorded ID.
+pub async fn delete_recorded_tenant(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+    original_id: i64,
+) -> FdbResult<()> {
+    let handle = open_delete_tenant(connector, tenant, original_id).await?;
     let (transaction, snapshot) = stage_metadata_clear(&handle).await?;
     // The transaction has its own FoundationDB timeout. Do not cancel a
     // possibly in-flight phase-one commit with a Rust future timeout.
@@ -144,16 +164,23 @@ pub async fn delete_tenant(
     finish_delete_after_clear(connector, &snapshot).await
 }
 
-async fn open_delete_tenant(
+async fn lookup_delete_id(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
-) -> FdbResult<VerifiedRecoveryTenant<'_>> {
-    let original_id = tenant_id(connector, tenant)
+) -> FdbResult<i64> {
+    tenant_id(connector, tenant)
         .await
         .map_err(|_| administration_failed(tenant))?
         .ok_or(FdbError::Tenant {
             reason: TenantErrorReason::NotProvisioned { tenant },
-        })?;
+        })
+}
+
+async fn open_delete_tenant(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+    original_id: i64,
+) -> FdbResult<VerifiedRecoveryTenant<'_>> {
     tokio::time::timeout(
         TENANT_ADMIN_TIMEOUT,
         connector

@@ -8,19 +8,28 @@
 //! - `repair <tenant-name>`
 //! - `recover-delete <tenant-name> <expected-tenant-id>`
 //! - `delete <tenant-name>`
+//! - `delete <tenant-name> --record <path>`
+//! - `resume-delete <path>`
 //! - `exists <tenant-name>`
 //! - `id <tenant-name>`
 
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
 use std::env;
+use std::ffi::OsString;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use reallyme_foundationdb_kit::FoundationDbTenantName;
 use reallyme_foundationdb_kit::{FdbConfig, FdbContext, fdb::tenant::admin};
 use thiserror::Error;
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id> <tenant> | recover-delete <tenant> <expected-tenant-id>";
+#[path = "fdb-tenant-admin/delete_record.rs"]
+mod delete_record;
+use delete_record::{DeleteRecord, DeleteRecordError, DeleteRecordState, LockedDeleteRecord};
+
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id> <tenant> | delete <tenant> --record <path> | resume-delete <path> | recover-delete <tenant> <expected-tenant-id>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 enum AdminToolError {
@@ -48,73 +57,185 @@ enum AdminToolError {
     IdLookupFailed,
     #[error("tenant does not exist")]
     TenantMissing,
+    #[error("could not verify the FoundationDB cluster identity")]
+    ClusterIdentityUnavailable,
+    #[error("delete record belongs to a different FoundationDB cluster")]
+    ClusterMismatch,
+    #[error("recorded delete failed; use resume-delete to reconcile its outcome")]
+    RecordedDeleteFailed,
+    #[error("delete reconciliation failed; the record remains pending")]
+    ResumeFailed,
+    #[error("could not write command output")]
+    OutputFailed,
+    #[error(transparent)]
+    Record(#[from] DeleteRecordError),
 }
 
-async fn run() -> Result<(), AdminToolError> {
-    let mut args = env::args().skip(1);
+enum Command {
+    Ensure(FoundationDbTenantName),
+    Repair(FoundationDbTenantName),
+    RecoverDelete(FoundationDbTenantName, i64),
+    Delete(FoundationDbTenantName),
+    RecordedDelete(FoundationDbTenantName, PathBuf),
+    ResumeDelete(PathBuf),
+    Exists(FoundationDbTenantName),
+    Id(FoundationDbTenantName),
+}
+
+fn parse_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, AdminToolError> {
     let command = args.next().ok_or(AdminToolError::Usage)?;
-    let tenant = args.next().ok_or(AdminToolError::Usage)?;
-    let expected_tenant_id = if command == "recover-delete" {
-        Some(parse_expected_tenant_id(
-            args.next().ok_or(AdminToolError::Usage)?,
-        )?)
+    let operand = args.next().ok_or(AdminToolError::Usage)?;
+    let parsed = if command == "resume-delete" {
+        Command::ResumeDelete(PathBuf::from(operand))
     } else {
-        None
+        let tenant = parse_tenant(
+            operand
+                .into_string()
+                .map_err(|_| AdminToolError::InvalidTenant)?,
+        )?;
+        match command.to_str() {
+            Some("ensure") => Command::Ensure(tenant),
+            Some("repair") => Command::Repair(tenant),
+            Some("recover-delete") => {
+                let id = args
+                    .next()
+                    .ok_or(AdminToolError::Usage)?
+                    .into_string()
+                    .map_err(|_| AdminToolError::InvalidTenantId)?;
+                Command::RecoverDelete(tenant, parse_expected_tenant_id(id)?)
+            }
+            Some("delete") => match args.next() {
+                None => Command::Delete(tenant),
+                Some(flag) if flag == "--record" => Command::RecordedDelete(
+                    tenant,
+                    PathBuf::from(args.next().ok_or(AdminToolError::Usage)?),
+                ),
+                Some(_) => return Err(AdminToolError::Usage),
+            },
+            Some("exists") => Command::Exists(tenant),
+            Some("id") => Command::Id(tenant),
+            _ => return Err(AdminToolError::Usage),
+        }
     };
     if args.next().is_some() {
         return Err(AdminToolError::Usage);
     }
+    Ok(parsed)
+}
 
-    let tenant = parse_tenant(tenant)?;
-
+async fn run(command: Command) -> Result<(), AdminToolError> {
     let config = FdbConfig::from_env().map_err(|_| AdminToolError::InvalidConfig)?;
     // SAFETY: the one-shot CLI returns through main after all tenant handles
     // and this connector are dropped; it never calls process::exit.
     #[allow(unsafe_code)]
     let context =
         unsafe { FdbContext::connect(&config) }.map_err(|_| AdminToolError::ConnectFailed)?;
-    match command.as_str() {
-        "ensure" => admin::ensure_tenant(&context, tenant)
+    match command {
+        Command::Ensure(tenant) => admin::ensure_tenant(&context, tenant)
             .await
             .map_err(|_| AdminToolError::EnsureFailed),
-        "repair" => admin::repair_tenant_metadata(&context, tenant)
+        Command::Repair(tenant) => admin::repair_tenant_metadata(&context, tenant)
             .await
             .map_err(|_| AdminToolError::RepairFailed),
-        "recover-delete" => admin::recover_interrupted_delete(
-            &context,
-            tenant,
-            expected_tenant_id.ok_or(AdminToolError::Usage)?,
-        )
-        .await
-        .map_err(|_| AdminToolError::RecoverDeleteFailed),
-        "delete" => admin::delete_tenant(&context, tenant)
+        Command::RecoverDelete(tenant, id) => {
+            admin::recover_interrupted_delete(&context, tenant, id)
+                .await
+                .map_err(|_| AdminToolError::RecoverDeleteFailed)
+        }
+        Command::Delete(tenant) => admin::delete_tenant(&context, tenant)
             .await
             .map_err(|_| AdminToolError::DeleteFailed),
-        "exists" => {
+        Command::RecordedDelete(tenant, path) => recorded_delete(&context, tenant, &path).await,
+        Command::ResumeDelete(path) => {
+            let state = resume_delete(&context, &path).await?;
+            write_output(state.as_str())
+        }
+        Command::Exists(tenant) => {
             let exists = admin::tenant_exists(&context, tenant)
                 .await
                 .map_err(|_| AdminToolError::ExistsFailed)?;
-            // Deliberate exception: this one-shot operator CLI uses stdout as its
-            // interface contract for machine/human scripting (`true` / `false`).
-            if exists {
-                println!("true");
-            } else {
-                println!("false");
-            }
-            Ok(())
+            write_output(exists)
         }
-        "id" => {
+        Command::Id(tenant) => {
             let id = admin::tenant_id(&context, tenant)
                 .await
                 .map_err(|_| AdminToolError::IdLookupFailed)?
                 .ok_or(AdminToolError::TenantMissing)?;
-            // A machine-readable ID lets operators retain the identity needed
-            // for recovery without parsing FoundationDB's own CLI output.
-            println!("{id}");
-            Ok(())
+            write_output(id)
         }
-        _ => Err(AdminToolError::Usage),
     }
+}
+
+async fn recorded_delete(
+    context: &FdbContext,
+    tenant: FoundationDbTenantName,
+    path: &Path,
+) -> Result<(), AdminToolError> {
+    let file = LockedDeleteRecord::open(path)?;
+    let record = persist_delete_intent(context, tenant, &file).await?;
+    admin::delete_recorded_tenant(context, tenant, record.original_id)
+        .await
+        .map_err(|_| AdminToolError::RecordedDeleteFailed)?;
+    file.complete(record, DeleteRecordState::OriginalAbsent)?;
+    Ok(())
+}
+
+async fn persist_delete_intent(
+    context: &FdbContext,
+    tenant: FoundationDbTenantName,
+    file: &LockedDeleteRecord,
+) -> Result<DeleteRecord, AdminToolError> {
+    let cluster = admin::tenant_admin_cluster_id(context)
+        .await
+        .map_err(|_| AdminToolError::ClusterIdentityUnavailable)?;
+    let original_id = admin::tenant_id(context, tenant)
+        .await
+        .map_err(|_| AdminToolError::IdLookupFailed)?
+        .filter(|id| *id >= 0)
+        .ok_or(AdminToolError::TenantMissing)?;
+    let record = DeleteRecord {
+        cluster,
+        tenant,
+        original_id,
+        state: DeleteRecordState::Pending,
+    };
+    // Keep the lock from durable creation through the final database result.
+    // A resumed worker can only race transactions already submitted by this one.
+    file.create(record)?;
+    Ok(record)
+}
+
+async fn resume_delete(
+    context: &FdbContext,
+    path: &Path,
+) -> Result<DeleteRecordState, AdminToolError> {
+    let file = LockedDeleteRecord::open(path)?;
+    let record = file.load()?;
+    let cluster = admin::tenant_admin_cluster_id(context)
+        .await
+        .map_err(|_| AdminToolError::ClusterIdentityUnavailable)?;
+    if cluster != record.cluster {
+        return Err(AdminToolError::ClusterMismatch);
+    }
+    if record.state != DeleteRecordState::Pending {
+        // A previous process may have renamed the completed record and then
+        // failed before synchronizing its directory entry.
+        file.sync_directory()?;
+        return Ok(record.state);
+    }
+    let state = match admin::reconcile_recorded_delete(context, record.tenant, record.original_id)
+        .await
+        .map_err(|_| AdminToolError::ResumeFailed)?
+    {
+        admin::TenantDeleteResolution::OriginalAbsent => DeleteRecordState::OriginalAbsent,
+        admin::TenantDeleteResolution::MetadataSafe => DeleteRecordState::MetadataSafe,
+    };
+    file.complete(record, state)?;
+    Ok(state)
+}
+
+fn write_output(value: impl std::fmt::Display) -> Result<(), AdminToolError> {
+    writeln!(io::stdout().lock(), "{value}").map_err(|_| AdminToolError::OutputFailed)
 }
 
 fn parse_tenant(value: String) -> Result<FoundationDbTenantName, AdminToolError> {
@@ -131,12 +252,14 @@ fn parse_expected_tenant_id(value: String) -> Result<i64, AdminToolError> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
+    let result = match parse_command(env::args_os().skip(1)) {
+        Ok(command) => run(command).await,
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            // Deliberate exception: stderr is the operator-facing error channel
-            // for this CLI, not an application runtime log surface.
-            eprintln!("{message}");
+            let _ = writeln!(io::stderr().lock(), "{message}");
             ExitCode::FAILURE
         }
     }

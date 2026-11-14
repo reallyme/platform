@@ -7,9 +7,9 @@ use super::metadata_keys;
 use super::{
     TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, TenantMapDeleteOutcome,
     administration_failed, delete_tenant, ensure_tenant, finish_delete_after_clear,
-    open_delete_tenant, recover_interrupted_delete, repair_absent_tenant_metadata,
-    repair_tenant_metadata, restore_metadata_with_retries, stage_metadata_clear,
-    stage_tenant_map_delete, tenant_id, tenant_map_key,
+    lookup_delete_id, open_delete_tenant, recover_interrupted_delete,
+    repair_absent_tenant_metadata, repair_tenant_metadata, restore_metadata_with_retries,
+    stage_metadata_clear, stage_tenant_map_delete, tenant_id, tenant_map_key,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
@@ -197,9 +197,15 @@ async fn restore_write_conflicts_with_in_flight_clear(connector: &FoundationDbCo
     ensure_tenant(connector, tenant)
         .await
         .expect("provision race fixture");
-    let handle = open_delete_tenant(connector, tenant)
-        .await
-        .expect("verified tenant");
+    let handle = open_delete_tenant(
+        connector,
+        tenant,
+        lookup_delete_id(connector, tenant)
+            .await
+            .expect("lookup original ID"),
+    )
+    .await
+    .expect("verified tenant");
     let (transaction, snapshot) = stage_metadata_clear(&handle)
         .await
         .expect("stage metadata clear");
@@ -227,9 +233,15 @@ async fn failed_second_delete_phase_restores_metadata_after_concurrent_write(
     ensure_tenant(connector, tenant)
         .await
         .expect("provision tenant");
-    let handle = open_delete_tenant(connector, tenant)
-        .await
-        .expect("verified tenant");
+    let handle = open_delete_tenant(
+        connector,
+        tenant,
+        lookup_delete_id(connector, tenant)
+            .await
+            .expect("lookup original ID"),
+    )
+    .await
+    .expect("verified tenant");
     let (transaction, snapshot) = stage_metadata_clear(&handle)
         .await
         .expect("stage metadata clear");
@@ -263,9 +275,15 @@ async fn tenant_map_delete_preserves_an_empty_replacement(connector: &Foundation
     ensure_tenant(connector, tenant)
         .await
         .expect("provision original");
-    let original = open_delete_tenant(connector, tenant)
-        .await
-        .expect("verified original");
+    let original = open_delete_tenant(
+        connector,
+        tenant,
+        lookup_delete_id(connector, tenant)
+            .await
+            .expect("lookup original ID"),
+    )
+    .await
+    .expect("verified original");
     let (clear, snapshot) = stage_metadata_clear(&original)
         .await
         .expect("stage metadata clear");
@@ -346,9 +364,15 @@ async fn automatic_restore_does_not_write_to_a_replacement(connector: &Foundatio
     ensure_tenant(connector, tenant)
         .await
         .expect("provision original");
-    let original = open_delete_tenant(connector, tenant)
-        .await
-        .expect("verified original");
+    let original = open_delete_tenant(
+        connector,
+        tenant,
+        lookup_delete_id(connector, tenant)
+            .await
+            .expect("lookup original ID"),
+    )
+    .await
+    .expect("verified original");
     let (transaction, snapshot) = stage_metadata_clear(&original)
         .await
         .expect("snapshot original metadata");

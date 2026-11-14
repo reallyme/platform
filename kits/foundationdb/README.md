@@ -150,6 +150,30 @@ records a new metadata creation time.
 Application data present before deletion produces a typed empty-tenant error
 without clearing metadata.
 
+For crash recovery, run the operator binary with a durable record path:
+
+```sh
+fdb-tenant-admin delete example --record /var/lib/fdb-operator/example-delete.intent
+fdb-tenant-admin resume-delete /var/lib/fdb-operator/example-delete.intent
+```
+
+Use a new path per deletion in an existing operator-owned directory on a
+local filesystem that supports file locks, atomic rename, and directory
+sync. The `.lock` extension is reserved. Keep the record and its sibling lock
+file in place through reconciliation. The CLI persists the cluster UID,
+tenant name, and original tenant ID before changing metadata. A lock serializes cooperating
+processes on the same path. Use that path to resume an interrupted delete
+before starting another lifecycle operation for the same tenant.
+
+`resume-delete` prints `original-absent` if the original ID no longer owns
+the name. If the original survives, it verifies the repair handle, then
+initializes an empty metadata namespace or rewrites the two compatible
+values unchanged to conflict with a pending clear. It prints `metadata-safe`
+after that transaction commits and the record update is durable. Incompatible
+or partial metadata and unavailable lookups leave the record pending for
+review or another resume. A different cluster UID causes resume to fail.
+Completed records return their saved outcome on subsequent resumes.
+
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
 selected tenant.

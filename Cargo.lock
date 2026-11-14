@@ -3788,6 +3788,7 @@ dependencies = [
  "foundationdb-sys",
  "metrics",
  "temp-env",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

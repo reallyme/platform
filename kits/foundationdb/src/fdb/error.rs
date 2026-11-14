@@ -176,6 +176,9 @@ pub enum ConfigErrorReason {
 /// Stable FoundationDB client and database setup failure reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FdbSetupErrorReason {
+    /// FoundationDB did not provide a valid cluster UID.
+    #[error("foundationdb cluster identity unavailable")]
+    ClusterIdentityUnavailable,
     /// The process already initialized the singleton FoundationDB client.
     #[error("foundationdb client is already initialized in this process")]
     ClientAlreadyInitialized,

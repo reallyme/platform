@@ -417,6 +417,12 @@ jobs:
           cargo test --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --lib \
             fdb::tenant::admin::tests::tenant_delete_recovery_live_cases -- --ignored --exact
+          cargo build --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --bin fdb-tenant-admin
+          FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \
+            cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin \
+              --bin fdb-tenant-admin tests::live::durable_delete_survives_crashes_late_clear_and_name_reuse \
+              -- --ignored --exact
 
       - name: Start Typesense
         shell: bash

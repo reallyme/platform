@@ -27,6 +27,8 @@ use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, co
 const TENANT_METADATA_SCHEMA_KEY_LENGTH: usize = 4;
 const TENANT_METADATA_CREATED_AT_LENGTH: usize = 8;
 const CURRENT_TENANT_SCHEMA_VERSION: u32 = 1;
+#[cfg(feature = "tenant-admin")]
+const RECONCILE_METADATA_SCAN_LIMIT: i32 = 3;
 
 pub(super) struct TenantMetadataRead {
     schema_version: u32,
@@ -271,6 +273,57 @@ pub(super) async fn repair_absent_tenant_metadata(
         schema_version.to_le_bytes().as_ref(),
     )?;
     transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref())?;
+    transaction.commit().await
+}
+
+#[cfg(feature = "tenant-admin")]
+pub(super) async fn confirm_or_repair_tenant_metadata(
+    tenant_handle: &VerifiedRecoveryTenant<'_>,
+    timeout_millis: i64,
+) -> FdbResult<()> {
+    let tenant = tenant_handle.name();
+    let keys = TenantMetadataKeys::current()?;
+    let failed = FdbError::Tenant {
+        reason: TenantErrorReason::AdministrationFailed { tenant },
+    };
+    let mut transaction = tenant_handle.create_transaction(timeout_millis)?;
+    let entries = transaction
+        .read_range(
+            RESERVED_METADATA_START,
+            RESERVED_METADATA_END,
+            RECONCILE_METADATA_SCAN_LIMIT,
+        )
+        .await?;
+    if entries.more() {
+        return Err(failed);
+    }
+    let (schema_version, created_at) = if entries.is_empty() {
+        tenant_metadata_now(tenant)?
+    } else {
+        // Inspect the entire reserved namespace before confirming any values.
+        // Partial metadata or an unknown key requires manual review.
+        if entries.len() != 2 {
+            return Err(failed);
+        }
+        let schema = entries
+            .iter()
+            .find(|entry| entry.key() == keys.schema_version_key.as_ref())
+            .ok_or(failed)?;
+        let created = entries
+            .iter()
+            .find(|entry| entry.key() == keys.created_at_key.as_ref())
+            .ok_or(failed)?;
+        let metadata = TenantMetadataRead {
+            schema_version: parse_schema_version(tenant, schema.value())?,
+            created_at: parse_created_at(tenant, created.value())?,
+        };
+        metadata.ensure_compatible(tenant)?;
+        (metadata.schema_version, metadata.created_at)
+    };
+    // Write even when both values match. The write conflicts with a clear
+    // that read the metadata before the operator restarted.
+    transaction.set(&keys.schema_version_key, &schema_version.to_le_bytes())?;
+    transaction.set(&keys.created_at_key, &created_at.to_le_bytes())?;
     transaction.commit().await
 }
 

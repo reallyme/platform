@@ -184,8 +184,8 @@ multiversion client can reopen a tenant by name on a client switch.
 
 ## Durable deletion record
 
-[TenantDeletionRecord.tla](TenantDeletionRecord.tla) models a proposed
-operator protocol. It persists an intent with the original tenant ID before
+[TenantDeletionRecord.tla](TenantDeletionRecord.tla) models the operator
+protocol. It persists an intent with the original tenant ID before
 submitting the metadata clear. A crash discards the worker's progress while
 the record and submitted commits survive. A restarted worker reconciles a
 pending record by ID. A missing mapping or a different ID completes the
@@ -212,6 +212,9 @@ to two repair submissions across repeated restarts. It assumes atomic durable
 record updates, non-reused tenant IDs, transactional metadata conflict checks,
 and no new destructive operation after reconciliation begins. The delete
 commit abstracts the tenant-map retry loop checked in [TenantMapDeletion.tla](TenantMapDeletion.tla).
-The proposed durable record and the write for already-compatible metadata
-would extend the kit's current operator recovery command, which repairs an
-empty reserved namespace using a caller-supplied ID.
+The [operator CLI](../../kits/foundationdb/src/bin/fdb-tenant-admin.rs) stores
+the cluster UID alongside the tenant name and ID, and locks the record path
+across destructive work and reconciliation. The [live regression](../../kits/foundationdb/src/bin/fdb-tenant-admin/live_tests.rs)
+kills workers before and after the clear and after the delete, then runs
+`resume-delete` in a new process. It also checks that an older clear
+conflicts with the resumed write and that an empty replacement stays empty.

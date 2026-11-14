@@ -3,7 +3,11 @@
 
 use reallyme_foundationdb_kit::FoundationDbTenantName;
 
-use super::{AdminToolError, parse_expected_tenant_id, parse_tenant};
+use super::{AdminToolError, Command, parse_command, parse_expected_tenant_id, parse_tenant};
+
+#[cfg(unix)]
+#[path = "fdb-tenant-admin/live_tests.rs"]
+mod live;
 
 #[test]
 fn parses_valid_tenant() {
@@ -32,5 +36,28 @@ fn recovery_requires_a_valid_recorded_tenant_id() {
             parse_expected_tenant_id(String::from(value)),
             Err(AdminToolError::InvalidTenantId)
         );
+    }
+}
+
+#[test]
+fn parses_recorded_delete_and_resume_without_changing_existing_commands() {
+    let parse = |args: &[&str]| parse_command(args.iter().map(std::ffi::OsString::from));
+    assert!(matches!(
+        parse(&["delete", "catalog"]),
+        Ok(Command::Delete(_))
+    ));
+    assert!(
+        matches!(parse(&["delete", "catalog", "--record", "a path"]),
+        Ok(Command::RecordedDelete(_, path)) if path == std::path::Path::new("a path"))
+    );
+    assert!(matches!(parse(&["resume-delete", "a path"]),
+        Ok(Command::ResumeDelete(path)) if path == std::path::Path::new("a path")));
+    for args in [
+        &["delete", "catalog", "--record"][..],
+        &["delete", "catalog", "--wrong", "path"],
+        &["resume-delete"],
+        &["resume-delete", "path", "unexpected"],
+    ] {
+        assert!(matches!(parse(args), Err(AdminToolError::Usage)));
     }
 }
