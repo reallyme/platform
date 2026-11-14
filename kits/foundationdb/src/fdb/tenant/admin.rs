@@ -429,3 +429,7 @@ pub async fn tenant_id(
 #[cfg(test)]
 #[path = "admin_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reservation_tests.rs"]
+mod reservation_tests;

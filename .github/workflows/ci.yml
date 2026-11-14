@@ -417,6 +417,11 @@ jobs:
           cargo test --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --lib \
             fdb::tenant::admin::tests::tenant_delete_recovery_live_cases -- --ignored --exact
+          reservation_test=fdb::tenant::admin::reservation_tests::reservation_takeover_conflicts_with_clear_and_delete
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$reservation_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$reservation_test" -- --ignored --exact
           cargo build --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --bin fdb-tenant-admin
           FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \
