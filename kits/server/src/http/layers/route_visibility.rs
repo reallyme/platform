@@ -36,6 +36,7 @@ use crate::runtime::RateLimitDecision;
 use crate::runtime::{RateLimitRegistry, RateLimitSourceIdentity};
 
 use super::super::response::JsonErrorResponse;
+use super::super::visibility::RouteAdmission;
 
 #[path = "route_visibility/policy_path.rs"]
 mod policy_path;
@@ -151,47 +152,35 @@ where
             }
         };
 
-        let matching_rule = self.policy.matching_rule_for_request(
-            &self.listener_name,
-            &self.listener_visibility,
-            canonical_path.as_ref(),
-        );
         // Axum selects handlers using the raw URI. A decoded spelling may
         // select a more permissive exact rule than the handler actually uses.
-        let raw_matching_rule = self.policy.matching_rule_for_request(
+        let matching_rule = match self.policy.route_admission(
             &self.listener_name,
             &self.listener_visibility,
             request_path,
-        );
-        if raw_matching_rule != matching_rule
-            || !self.policy.allows_request(
-                &self.listener_name,
-                &self.listener_visibility,
-                request_path,
-            )
-            || !self.policy.allows_request(
-                &self.listener_name,
-                &self.listener_visibility,
-                canonical_path.as_ref(),
-            )
-        {
-            let request_id = request_id_from_headers(request.headers());
-            record_http_request_rejected_for_route_template_with_transport(
-                SharedString::from_shared(self.listener_name.clone_shared()),
-                transport_label_for_request(&request),
-                HttpMethodLabel::from_method(request.method()),
-                &route_template,
-                HttpRejectionReason::BlockedRouteVisibility,
-            );
+            canonical_path.as_ref(),
+        ) {
+            RouteAdmission::AllowedByRule(rule) => Some(rule),
+            RouteAdmission::AllowedByDefault => None,
+            RouteAdmission::Blocked => {
+                let request_id = request_id_from_headers(request.headers());
+                record_http_request_rejected_for_route_template_with_transport(
+                    SharedString::from_shared(self.listener_name.clone_shared()),
+                    transport_label_for_request(&request),
+                    HttpMethodLabel::from_method(request.method()),
+                    &route_template,
+                    HttpRejectionReason::BlockedRouteVisibility,
+                );
 
-            return RouteVisibilityResponseFuture::ready(
-                JsonErrorResponse::from_public_error(PublicHttpError::from_code(
-                    ErrorCode::Forbidden,
-                ))
-                .with_optional_request_id(request_id)
-                .into_response(),
-            );
-        }
+                return RouteVisibilityResponseFuture::ready(
+                    JsonErrorResponse::from_public_error(PublicHttpError::from_code(
+                        ErrorCode::Forbidden,
+                    ))
+                    .with_optional_request_id(request_id)
+                    .into_response(),
+                );
+            }
+        };
 
         let request_body_limit = matching_rule.and_then(|rule| rule.request_body_limit());
         if let Some((status, reason)) =

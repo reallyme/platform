@@ -13,7 +13,7 @@ The [Kani installer](https://model-checking.github.io/kani/install-guide.html)
 uses its own Rust toolchain. Download the JAR from the
 [TLA+ 1.7.4 release](https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4)
 and verify its SHA-256 against the value in the workflow. The runner builds a
-temporary copy of the harness and production module so the verifier can use its
+temporary copy of the harnesses and production modules so the verifier can use its
 own compiler without building the server kit or writing into the source tree.
 
 ## Listener route policy
@@ -25,8 +25,14 @@ policy, including mixed-case hex digits, malformed escapes, and decoded bytes
 that would introduce another escape, a separator, or NUL.
 [Middleware tests](../../kits/server/src/http/layers/route_visibility/path_canonicalization_tests.rs)
 cover whole paths, including malformed escapes and multibyte UTF-8.
-The [route visibility tests](../../kits/server/src/http/layers/route_visibility/encoded_carve_out_tests.rs)
-exercise agreement between the raw and canonical route rules.
+
+The [route admission harness](route_admission.rs) checks the production
+[admission decision](../../kits/server/src/http/visibility/admission.rs).
+An explicit rule can admit a request only when both path spellings select
+the same rule and both matches permit the listener. The default can admit
+only two unmatched paths. The proof quantifies over the classifications,
+the default, and rule equality. Rule matching and listener restrictions
+are exercised through the [middleware tests](../../kits/server/src/http/layers/route_visibility/encoded_carve_out_tests.rs).
 
 ## FoundationDB tenant deletion and recovery
 

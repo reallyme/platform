@@ -3,6 +3,7 @@
 
 //! HTTP listener identity and route visibility policy primitives.
 
+mod admission;
 mod error;
 mod name;
 mod route;
@@ -11,6 +12,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use admission::RouteAdmission;
 pub use error::{HttpRoutePolicyError, HttpRoutePolicyErrorReason};
 pub use name::{
     HttpAuthPolicyName, HttpListenerIdentity, HttpListenerName, HttpListenerVisibility,

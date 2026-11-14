@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::admission::{PathPolicy, RouteAdmission, resolve_route_admission};
 use super::error::{HttpRoutePolicyError, HttpRoutePolicyErrorReason};
 use super::name::{
     HttpAuthPolicyName, HttpListenerName, HttpListenerVisibility, HttpRateLimitTierName,
@@ -357,5 +358,27 @@ impl HttpRouteVisibilityPolicy {
             rule.allows_listener(listener_name, listener_visibility)
                 .then_some(rule)
         })
+    }
+
+    /// Evaluates both spellings before permitting the request to reach routing.
+    pub(crate) fn route_admission(
+        &self,
+        listener_name: &HttpListenerName,
+        listener_visibility: &HttpListenerVisibility,
+        raw_path: &str,
+        canonical_path: &str,
+    ) -> RouteAdmission<&HttpRouteVisibilityRule> {
+        let classify = |path: &str| match self.rule_for_path(path) {
+            Some(rule) => PathPolicy::Matched {
+                rule,
+                listener_allowed: rule.allows_listener(listener_name, listener_visibility),
+            },
+            None => PathPolicy::Unmatched,
+        };
+        resolve_route_admission(
+            classify(raw_path),
+            classify(canonical_path),
+            self.default_action.is_allow(),
+        )
     }
 }
