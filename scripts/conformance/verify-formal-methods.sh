@@ -45,6 +45,8 @@ cp "$repo_root/$model_dir/"{TenantDeletionRecordLookupOnly.cfg,TenantDeletionRec
 cp "$repo_root/$model_dir/"{TenantReservation.tla,TenantReservation.cfg} "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantReservationPreflightOnly.cfg,TenantReservationCrashRecovery.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"TenantReservationPruning{.tla,.cfg,Ambiguous.cfg,NameReuse.cfg,Replay.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
@@ -87,3 +89,7 @@ expect_invariant_violation TenantDeletionRecord TenantDeletionRecordSkipFence Sa
 run_tlc TenantReservation
 expect_invariant_violation TenantReservation TenantReservationPreflightOnly StaleTransactionsCannotCommit
 expect_invariant_violation TenantReservation TenantReservationCrashRecovery NoCrossHostCrashRecovery
+run_tlc TenantReservationPruning
+expect_invariant_violation TenantReservationPruning TenantReservationPruningAmbiguous NoReacquisitionAfterAmbiguousCommits
+expect_invariant_violation TenantReservationPruning TenantReservationPruningNameReuse NoReacquisitionAfterNameReuse
+expect_invariant_violation TenantReservationPruning TenantReservationPruningReplay NoRetiredReplayDuringNewReservation

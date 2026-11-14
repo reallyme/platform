@@ -274,3 +274,34 @@ the metadata and outcome unchanged, and the current recovery commits both.
 The [CLI test](../../kits/foundationdb/src/bin/fdb-tenant-admin/live_tests.rs)
 exercises independent record paths and takeover without a local record.
 [FoundationDB 7.3.77 transaction validation](https://github.com/apple/foundationdb/blob/7.3.77/fdbserver/CommitProxyServer.actor.cpp#L1301-L1311)
+
+## Pruning completed reservations
+
+[TenantReservationPruning.tla](TenantReservationPruning.tla) follows two
+operation IDs across two lifecycles of a tenant name. The current adapter
+keeps each full completion record. The model replaces a completed record
+with a tombstone at the same operation key in one conditional transaction.
+The tombstone keeps the tenant ID and outcome and discards the grant. The
+transaction leaves the active pointer alone so a newer operation can own it.
+Acquisition and resume read the operation key in their transaction before
+using the missing-record path. A pending local intent can read a completed
+outcome from the tombstone without acquiring a grant.
+
+The local file can still say pending after completion commits. Pruning can
+also commit while its caller loses the reply. A failed attempt that makes no
+durable change is represented by stuttering. The model assumes strictly
+serializable transactions and stable operation IDs across retries.
+[FoundationDB transactions with unknown results](https://apple.github.io/foundationdb/developer-guide.html#transactions-with-unknown-results)
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Atomic tombstone](TenantReservationPruning.cfg) | A completed intent never reacquires ownership, its recorded outcome remains replayable, and the active pointer agrees with the active operation. |
+| [Erasure after ambiguous commits](TenantReservationPruningAmbiguous.cfg) | The operation finishes while its local file stays pending. Prune erases the row and loses its reply. Resuming the stale file then reacquires the slot for the same tenant ID. The runner requires `NoReacquisitionAfterAmbiguousCommits` to fail. |
+| [Erasure across name reuse](TenantReservationPruningNameReuse.cfg) | After the replacement tenant has its own completed operation, a stale local file can reclaim the slot in recovery mode. The runner requires `NoReacquisitionAfterNameReuse` to fail. |
+| [Replay during a new reservation](TenantReservationPruningReplay.cfg) | The runner requires a witness that prunes a completed record, retries the ambiguous prune, and reads the tombstone's outcome while a new operation owns the reused name. It checks for `NoRetiredReplayDuringNewReservation` to fail. |
+
+The pruning model abstracts metadata clear and tenant-map delete into one
+effect and bounds takeover to one transfer per operation. The reservation
+model covers their separate commit and epoch checks. Tombstones remain
+durable for as long as an old local file could be resumed, so this design
+reduces record size and retains one key per operation.
