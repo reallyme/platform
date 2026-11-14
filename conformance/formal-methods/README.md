@@ -218,3 +218,35 @@ across destructive work and reconciliation. The [live regression](../../kits/fou
 kills workers before and after the clear and after the delete, then runs
 `resume-delete` in a new process. It also checks that an older clear
 conflicts with the resumed write and that an empty replacement stays empty.
+
+## Cluster-side tenant reservation
+
+[TenantReservation.tla](TenantReservation.tla) models two operators with
+distinct local records for the same tenant name in one cluster. Both can
+request a free reservation. A conditional commit grants it to one operator
+and durably records the tenant ID. Grant acknowledgement and process state
+are separate from the durable reservation.
+
+After expiry, an operator can claim a higher epoch and reconcile that same
+intent using the cluster's recorded ID. Recovery can repair the original or
+record it absent after name reuse. Every destructive transaction depends on
+the reservation epoch and phase it read. A takeover or completion conflicts
+with a pending mutation from the old epoch. The model treats expiry as
+eligibility for takeover and revokes the old grant when takeover commits.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Transactional reservation](TenantReservation.cfg) | At most one current grant, stable completion, no stale commits, and no writes to a replacement from the reserved operation. A recovery worker that keeps its grant and remains available eventually completes under weak fairness. |
+| [Preflight check only](TenantReservationPreflightOnly.cfg) | An old metadata clear commits after takeover. The runner requires `StaleTransactionsCannotCommit` to fail. |
+| [Cross-host crash recovery](TenantReservationCrashRecovery.cfg) | Two claims overlap. The winner crashes with its tenant-map delete in flight. The other operator takes over and repairs the original. The runner requires this path to violate `NoCrossHostCrashRecovery`. |
+
+The model covers one reservation lifecycle, up to three epochs, and one
+reuse of the tenant name. It assumes transactional checks on the reservation
+and tenant ID, the tenant-map emptiness check, and compatible or empty kit
+metadata. Recovery is modeled as one transaction that verifies the grant and
+records the outcome with any metadata write. The model abstracts lease timing
+and repeated delete attempts within an epoch. The current CLI uses local
+record locks. A cluster implementation still needs to verify that the
+reservation and guarded mutations can share a FoundationDB transaction.
+[FoundationDB conflict ranges](https://apple.github.io/foundationdb/developer-guide.html#conflict-ranges),
+[FoundationDB tenant transaction scope](https://apple.github.io/foundationdb/tenants.html#raw-access)

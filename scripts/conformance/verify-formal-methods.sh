@@ -42,6 +42,9 @@ cp "$repo_root/$model_dir/"{TenantDeleteRecoveryExhaustion.cfg,TenantDeleteRecov
 cp "$repo_root/$model_dir/"{TenantDeletionRecord.tla,TenantDeletionRecord.cfg} "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantDeletionRecordLookupOnly.cfg,TenantDeletionRecordSkipFence.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantReservation.tla,TenantReservation.cfg} "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{TenantReservationPreflightOnly.cfg,TenantReservationCrashRecovery.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
@@ -81,3 +84,6 @@ expect_invariant_violation TenantDeleteRecovery TenantDeleteRecoveryLateDelete N
 run_tlc TenantDeletionRecord
 expect_invariant_violation TenantDeletionRecord TenantDeletionRecordLookupOnly RepairTargetsRecordedId
 expect_invariant_violation TenantDeletionRecord TenantDeletionRecordSkipFence SafeMetadataRecordIsAccurate
+run_tlc TenantReservation
+expect_invariant_violation TenantReservation TenantReservationPreflightOnly StaleTransactionsCannotCommit
+expect_invariant_violation TenantReservation TenantReservationCrashRecovery NoCrossHostCrashRecovery
