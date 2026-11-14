@@ -63,6 +63,15 @@ model abstracts metadata values and retry progress.
 Use the FoundationDB integration suite to validate the production adapter
 against the database.
 
+Each tenant-map delete attempt reads the name's current ID and stages the
+clear in one transaction. The non-snapshot read makes a change to the
+mapping conflict with the clear. FoundationDB reruns the ID check after a
+retryable or ambiguous commit result. An absent mapping or a different ID
+completes the delete without a clear. The [live regression](../../kits/foundationdb/src/fdb/tenant/admin_tests.rs)
+checks both the conflict and that an empty replacement survives a retry
+with an injected `commit_unknown_result`.
+[FoundationDB special-key transactions](https://apple.github.io/foundationdb/special-keys.html#read-write-modules)
+
 ## Automatic metadata restoration after a delete failure
 
 [TenantRestoration.tla](TenantRestoration.tla) starts with a submitted
@@ -88,11 +97,10 @@ write and an in-flight clear.
 
 The model distinguishes a reported timeout from a server-side abort. It
 assumes a non-snapshot clear conflicts with subsequent writes to its read
-range, and a delete commits only against an empty original tenant. It
-tracks an individual submitted delete against the original ID. It does not
-verify the binding's internal retries of the name-based tenant-map delete,
-which may start another transaction. Metadata bytes, arbitrary third-party
-metadata edits, and recovery after retry exhaustion are outside this model.
+range, and a delete commits only against an empty original tenant. It models
+an individual tenant-map delete. The adapter's repeated tenant-map attempts,
+metadata bytes, arbitrary third-party metadata edits, and recovery after
+retry exhaustion are outside this model.
 [FoundationDB transaction timeouts and conflict rules](https://apple.github.io/foundationdb/developer-guide.html#non-retryable-errors)
 
 ## FoundationDB recovery after name reuse

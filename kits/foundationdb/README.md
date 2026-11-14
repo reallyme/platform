@@ -130,11 +130,14 @@ If provisioning was interrupted after tenant creation, an operator may run
 `repair` after verifying the intended tenant name; it writes metadata only
 when the tenant is empty. `delete` first checks that no application data remains,
 then clears only the kit metadata keys in a tenant transaction. It deletes the
-empty tenant in a second operation and attempts metadata restoration after an
-unconfirmed clear or a failed delete. Each restore attempt verifies the handle
-used for its write against the original tenant ID saved with the metadata. It
-always writes the saved values so a pending clear conflicts if it tries to
-commit afterward, even when the values already match. Between the two phases,
+empty tenant in a second operation. Every deletion attempt checks the original
+ID and clears the matching tenant-map entry in the same transaction. A retry
+completes without a clear if the name is absent or has a different ID. The
+adapter attempts metadata restoration after an unconfirmed clear or a failed
+delete. Each restore attempt verifies the handle used for its write against
+the original tenant ID saved with the metadata. It always writes the saved
+values so a pending clear conflicts if it tries to commit afterward, even when
+the values already match. Between the two phases,
 concurrent opens fail closed and a concurrent writer can leave data in the
 tenant. If an outage prevents automatic restoration,
 `recover-delete <tenant> <expected-tenant-id>`

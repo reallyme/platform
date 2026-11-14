@@ -6,7 +6,11 @@
 use std::time::Duration;
 
 use crate::fdb::tenant_name::FoundationDbTenantName;
-use foundationdb::tenant::TenantManagement;
+use foundationdb::{
+    Transaction,
+    options::TransactionOption,
+    tenant::{TenantInfo, TenantManagement},
+};
 
 use super::TenantHandle;
 use super::metadata::{
@@ -25,6 +29,9 @@ const MAX_METADATA_VALUE_BYTES: usize = 64;
 const DELETE_SCAN_LIMIT: i32 = 3;
 const FDB_TENANT_NOT_EMPTY_CODE: i32 = 2133;
 const METADATA_RESTORE_ATTEMPTS: usize = 3;
+// FoundationDB's API 730 tenant management special key range.
+const TENANT_MAP_PREFIX: &[u8] = b"\xff\xff/management/tenant/map/";
+const TENANT_MAP_DELETE_RETRIES: i32 = 2;
 
 /// Creates a tenant if absent and validates its versioned metadata.
 ///
@@ -112,12 +119,14 @@ pub async fn recover_interrupted_delete(
     .map_err(|_| administration_failed(tenant))?
 }
 
-/// Deletes a tenant containing only the kit's own metadata keys.
+/// Deletes the named mapping to a tenant containing only the kit's metadata.
 ///
 /// FoundationDB checks emptiness before applying a tenant-map deletion, so
-/// metadata must be cleared in a committed tenant transaction first. An
-/// unconfirmed clear or failed second phase can restore the saved keys only
-/// to the original tenant.
+/// metadata must be cleared in a committed tenant transaction first. Each
+/// subsequent delete attempt checks the original ID in its own transaction.
+/// If the original mapping is already gone, the delete completes without
+/// changing the tenant map.
+/// A failed operation can restore the saved keys only to the original tenant.
 pub async fn delete_tenant(
     connector: &FoundationDbConnector,
     tenant: FoundationDbTenantName,
@@ -161,35 +170,99 @@ async fn finish_delete_after_clear(
     snapshot: &TenantMetadataSnapshot,
 ) -> FdbResult<()> {
     let tenant = snapshot.tenant;
-    let database = connector.database();
-    let deletion = tokio::time::timeout(
-        TENANT_ADMIN_TIMEOUT,
-        TenantManagement::delete_tenant(database, tenant.as_bytes()),
-    )
-    .await;
-    if matches!(deletion, Ok(Ok(()))) {
-        return Ok(());
-    }
+    let deletion_failure =
+        match delete_tenant_map_entry(connector, tenant, snapshot.original_id).await {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
 
-    // A concurrent delete may have completed even if the caller saw an
-    // uncertain timeout. Never recreate metadata for a removed tenant.
-    let existence = tokio::time::timeout(
-        TENANT_ADMIN_TIMEOUT,
-        TenantManagement::get_tenant(database, tenant.as_bytes()),
-    )
-    .await;
-    if let Ok(Ok(None)) = existence {
+    // A late commit or another operator can remove the original mapping. An
+    // absent entry and a replacement ID both mean this delete has no more work.
+    if let Ok(current_id) = tenant_id(connector, tenant).await
+        && current_id != Some(snapshot.original_id)
+    {
         return Ok(());
     }
     // Even if the lookup is unavailable, attempt to restore before returning.
     // A transient failure must not strand a surviving tenant without metadata.
     restore_metadata_with_retries(connector, snapshot).await?;
-    match deletion {
-        Ok(Err(error)) if error.code() == FDB_TENANT_NOT_EMPTY_CODE => Err(FdbError::Tenant {
-            reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
-        }),
-        _ => Err(administration_failed(tenant)),
+    Err(deletion_failure)
+}
+
+async fn delete_tenant_map_entry(
+    connector: &FoundationDbConnector,
+    tenant: FoundationDbTenantName,
+    original_id: i64,
+) -> FdbResult<()> {
+    let key = tenant_map_key(tenant)?;
+    let deletion = connector.database().run(|transaction, _| {
+        let key = key.as_slice();
+        async move {
+            stage_tenant_map_delete(&transaction, key, original_id)
+                .await
+                .map_err(Into::into)
+        }
+    });
+    match tokio::time::timeout(TENANT_ADMIN_TIMEOUT, deletion).await {
+        Ok(Ok(
+            TenantMapDeleteOutcome::ClearStaged | TenantMapDeleteOutcome::OriginalMappingAbsent,
+        )) => Ok(()),
+        Ok(Err(error))
+            if error
+                .get_fdb_error()
+                .is_some_and(|error| error.code() == FDB_TENANT_NOT_EMPTY_CODE) =>
+        {
+            Err(FdbError::Tenant {
+                reason: TenantErrorReason::RepairRequiresEmptyTenant { tenant },
+            })
+        }
+        Ok(Ok(TenantMapDeleteOutcome::InvalidEntry)) | Ok(Err(_)) | Err(_) => {
+            Err(administration_failed(tenant))
+        }
     }
+}
+
+fn tenant_map_key(tenant: FoundationDbTenantName) -> FdbResult<Vec<u8>> {
+    let name = tenant.as_bytes();
+    let length = TENANT_MAP_PREFIX
+        .len()
+        .checked_add(name.len())
+        .ok_or_else(|| administration_failed(tenant))?;
+    let mut key = Vec::with_capacity(length);
+    key.extend_from_slice(TENANT_MAP_PREFIX);
+    key.extend_from_slice(name);
+    Ok(key)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TenantMapDeleteOutcome {
+    ClearStaged,
+    OriginalMappingAbsent,
+    InvalidEntry,
+}
+
+async fn stage_tenant_map_delete(
+    transaction: &Transaction,
+    key: &[u8],
+    original_id: i64,
+) -> foundationdb::FdbResult<TenantMapDeleteOutcome> {
+    transaction.set_option(TransactionOption::Timeout(TENANT_ADMIN_TIMEOUT_MILLIS))?;
+    transaction.set_option(TransactionOption::RetryLimit(TENANT_MAP_DELETE_RETRIES))?;
+    transaction.set_option(TransactionOption::SpecialKeySpaceEnableWrites)?;
+    // The non-snapshot read and clear share a transaction so a name change
+    // after the read conflicts with the clear. The retry runner executes this
+    // read again after a conflict or an ambiguous commit.
+    let Some(value) = transaction.get(key, false).await? else {
+        return Ok(TenantMapDeleteOutcome::OriginalMappingAbsent);
+    };
+    let Ok(entry) = TenantInfo::try_from((key, value.as_ref())) else {
+        return Ok(TenantMapDeleteOutcome::InvalidEntry);
+    };
+    if entry.id != original_id {
+        return Ok(TenantMapDeleteOutcome::OriginalMappingAbsent);
+    }
+    transaction.clear(key);
+    Ok(TenantMapDeleteOutcome::ClearStaged)
 }
 
 struct TenantMetadataSnapshot {

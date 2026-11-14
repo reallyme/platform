@@ -5,10 +5,11 @@ use crate::fdb::tenant_name::FoundationDbTenantName;
 
 use super::metadata_keys;
 use super::{
-    TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, administration_failed, delete_tenant,
-    ensure_tenant, finish_delete_after_clear, open_delete_tenant, recover_interrupted_delete,
-    repair_absent_tenant_metadata, repair_tenant_metadata, restore_metadata_with_retries,
-    stage_metadata_clear, tenant_id,
+    TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, TenantMapDeleteOutcome,
+    administration_failed, delete_tenant, ensure_tenant, finish_delete_after_clear,
+    open_delete_tenant, recover_interrupted_delete, repair_absent_tenant_metadata,
+    repair_tenant_metadata, restore_metadata_with_retries, stage_metadata_clear,
+    stage_tenant_map_delete, tenant_id, tenant_map_key,
 };
 use crate::fdb::config::FdbConfig;
 use crate::fdb::connector::FoundationDbConnector;
@@ -16,6 +17,8 @@ use crate::fdb::error::{FdbError, TenantErrorReason};
 use crate::fdb::tenant::TenantDataKey;
 use crate::fdb::transaction::{TenantTransactionPolicy, WriteTxnPolicy};
 use foundationdb::tenant::TenantManagement;
+
+const FDB_COMMIT_UNKNOWN_RESULT_CODE: i32 = 1021;
 
 #[test]
 fn tenant_delete_targets_only_the_kits_two_metadata_keys() {
@@ -47,6 +50,12 @@ async fn tenant_delete_recovery_live_cases() {
     )
     .await
     .expect("automatic restore fixture completed");
+    tokio::time::timeout(
+        TENANT_ADMIN_TIMEOUT * 5,
+        tenant_map_delete_preserves_an_empty_replacement(&connector),
+    )
+    .await
+    .expect("tenant-map delete fixture completed");
     restore_write_conflicts_with_in_flight_clear(&connector).await;
     interrupted_creation_requires_explicit_empty_tenant_repair(&connector).await;
 }
@@ -247,6 +256,89 @@ async fn failed_second_delete_phase_restores_metadata_after_concurrent_write(
     delete_tenant(connector, tenant)
         .await
         .expect("delete empty tenant");
+}
+
+async fn tenant_map_delete_preserves_an_empty_replacement(connector: &FoundationDbConnector) {
+    let tenant = FoundationDbTenantName::new("kit-delete-retry-test").expect("fixed tenant name");
+    ensure_tenant(connector, tenant)
+        .await
+        .expect("provision original");
+    let original = open_delete_tenant(connector, tenant)
+        .await
+        .expect("verified original");
+    let (clear, snapshot) = stage_metadata_clear(&original)
+        .await
+        .expect("stage metadata clear");
+    clear.commit().await.expect("clear original metadata");
+
+    let database = connector.database();
+    let key = tenant_map_key(tenant).expect("tenant-map key");
+    let pending_delete = database.create_trx().expect("create delete transaction");
+    assert_eq!(
+        stage_tenant_map_delete(&pending_delete, &key, snapshot.original_id)
+            .await
+            .expect("check original ID and stage delete"),
+        TenantMapDeleteOutcome::ClearStaged,
+    );
+
+    // Let another attempt commit and reuse the name while the first
+    // transaction still holds its read. Raw creation leaves the replacement
+    // empty, so FoundationDB's emptiness check cannot protect it.
+    finish_delete_after_clear(connector, &snapshot)
+        .await
+        .expect("commit delete of original");
+    assert_eq!(
+        tenant_id(connector, tenant).await.expect("read tenant map"),
+        None
+    );
+    TenantManagement::create_tenant(database, tenant.as_bytes())
+        .await
+        .expect("create empty replacement");
+    let replacement_id = tenant_id(connector, tenant)
+        .await
+        .expect("read tenant map")
+        .expect("replacement exists");
+    assert_ne!(replacement_id, snapshot.original_id);
+
+    let commit_error = pending_delete
+        .commit()
+        .await
+        .expect_err("the old tenant-map read must conflict with name reuse");
+    assert_eq!(
+        commit_error.code(),
+        super::super::FDB_NOT_COMMITTED_ERROR_CODE
+    );
+
+    // Feed the retry runner an ambiguous result for the real deletion above.
+    // On replay it must use the same in-transaction check as production.
+    let outcome = database
+        .run(|transaction, maybe_committed| {
+            let key = key.as_slice();
+            let original_id = snapshot.original_id;
+            async move {
+                if !bool::from(maybe_committed) {
+                    return Err(
+                        foundationdb::FdbError::from_code(FDB_COMMIT_UNKNOWN_RESULT_CODE).into(),
+                    );
+                }
+                Ok(stage_tenant_map_delete(&transaction, key, original_id).await?)
+            }
+        })
+        .await
+        .expect("FoundationDB retries after an ambiguous result");
+    assert_eq!(outcome, TenantMapDeleteOutcome::OriginalMappingAbsent);
+
+    finish_delete_after_clear(connector, &snapshot)
+        .await
+        .expect("replay completes once the original mapping is gone");
+    assert_eq!(
+        tenant_id(connector, tenant).await.expect("read tenant map"),
+        Some(replacement_id),
+    );
+    // FoundationDB only permits this cleanup while the replacement is empty.
+    TenantManagement::delete_tenant(database, tenant.as_bytes())
+        .await
+        .expect("clean up the still-empty replacement");
 }
 
 async fn automatic_restore_does_not_write_to_a_replacement(connector: &FoundationDbConnector) {
