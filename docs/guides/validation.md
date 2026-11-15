@@ -38,7 +38,8 @@ scripts/build/check-worker.sh
 ```
 
 The [formal verification checks](../../conformance/formal-methods/README.md)
-run in a dedicated CI job with pinned versions of Kani and the TLA+ tools.
+run in separate CI jobs with pinned versions of Kani and the TLA+ tools.
+The combined verification status requires both jobs to pass.
 
 The workspace-standards gate enforces inherited lints, package visibility,
 SPDX headers, generated-code placement, the ban on wildcard Rust imports, and a

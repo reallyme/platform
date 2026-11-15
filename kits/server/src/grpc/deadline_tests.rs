@@ -39,8 +39,34 @@ fn timeout_rejects_unserializable_durations() {
 #[test]
 fn timeout_parser_rejects_signed_and_non_ascii_values() {
     for value in ["+1S", "-1S", "1é", "éS"] {
-        assert!(super::parse_grpc_timeout_value(value).is_err());
+        assert!(super::parse_grpc_timeout_value(value.as_bytes()).is_err());
     }
+}
+
+#[test]
+fn decoder_supports_the_full_width_of_each_wire_unit() {
+    let cases = [
+        ("99999999H", Duration::from_secs(359_999_996_400)),
+        ("99999999M", Duration::from_secs(5_999_999_940)),
+        ("99999999S", Duration::from_secs(99_999_999)),
+        ("99999999m", Duration::from_millis(99_999_999)),
+        ("99999999u", Duration::from_micros(99_999_999)),
+        ("99999999n", Duration::from_nanos(99_999_999)),
+    ];
+    for (wire, expected) in cases {
+        assert_eq!(
+            super::parse_grpc_timeout_value(wire.as_bytes()),
+            Ok(expected)
+        );
+    }
+    assert_eq!(
+        super::parse_grpc_timeout_value(b"00000001n"),
+        Ok(Duration::from_nanos(1))
+    );
+    assert_eq!(
+        super::parse_grpc_timeout_value(b"00000000n"),
+        Err(GrpcDeadlineErrorReason::MustBeGreaterThanZero)
+    );
 }
 
 #[test]
@@ -58,6 +84,24 @@ fn caller_timeout_parses_valid_metadata() {
     assert_eq!(
         timeout,
         Some(GrpcTimeout::new(Duration::from_millis(2500)).expect("fixture should be valid"))
+    );
+}
+
+#[test]
+fn caller_timeout_rejects_multiple_deadlines() {
+    let mut request = Request::new(());
+    for value in ["1S", "2S"] {
+        request.metadata_mut().append(
+            GRPC_TIMEOUT_METADATA_KEY,
+            value.parse().expect("static timeout metadata"),
+        );
+    }
+    assert_eq!(
+        caller_timeout(&request),
+        Err(GrpcDeadlineError::InvalidTimeoutMetadata {
+            field: GrpcDeadlineMetadataField::GrpcTimeout,
+            reason: GrpcDeadlineErrorReason::DuplicateTimeout,
+        })
     );
 }
 

@@ -4,6 +4,8 @@
 #![deny(unsafe_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::time::Duration;
+
 use foundationdb::options::MutationType;
 #[cfg(feature = "tenant-admin")]
 use reallyme_foundationdb_kit::fdb::tenant::admin;
@@ -78,6 +80,33 @@ async fn live_connector_proves_cluster_and_tenant_readiness() -> FdbResult<()> {
         .map_err(|_| reallyme_foundationdb_kit::FdbError::Query {
             reason: reallyme_foundationdb_kit::FdbQueryErrorReason::TransactionFailed,
         })?;
+
+    let deadline =
+        WriteTxnPolicy::try_new(1, Duration::from_millis(100)).expect("fixed transaction deadline");
+    let mut callback_started = false;
+    let overdue = handle
+        .transact_boxed(
+            (),
+            |transaction, _| {
+                callback_started = true;
+                Box::pin(async move {
+                    let key =
+                        TenantDataKey::new(b"kit-integration/data").expect("valid fixture key");
+                    transaction
+                        .set(key, b"overdue")
+                        .expect("stage fixture write");
+                    // No native future is polled between staging the write
+                    // and returning after the adapter's deadline.
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    Ok::<(), foundationdb::FdbError>(())
+                })
+            },
+            TenantTransactionPolicy::Write(deadline),
+        )
+        .await
+        .expect_err("overdue callback must not submit a commit");
+    assert!(callback_started);
+    assert_eq!(overdue.code(), 1031);
 
     let stored = handle
         .transact_boxed(

@@ -267,8 +267,11 @@ read policy, even if a caller ignores the returned error.
 
 - Retry limits cap total attempts, including the initial attempt, matching
   foundationdb-rs `TransactOption` semantics.
-- Timeouts are enforced both as a Rust retry deadline and as a FoundationDB C
-  API transaction timeout, so a stalled network call cannot bypass the bound.
+- The C API timeout bounds FoundationDB operations. The adapter also checks
+  the elapsed budget before starting a callback and before submitting its
+  commit, including after retry backoff.
+- Application callbacks own cancellation for their own asynchronous work.
+  A timeout can leave the outcome of an already submitted commit uncertain.
 - Retry limits are also installed in the C API, not only checked between Rust
   retry-loop iterations.
 - Non-retryable errors are returned immediately.

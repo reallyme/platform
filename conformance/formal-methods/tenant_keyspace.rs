@@ -4,6 +4,8 @@
 #[path = "../../kits/foundationdb/src/fdb/tenant/data_keyspace.rs"]
 mod keyspace;
 
+use std::convert::TryFrom;
+
 #[kani::proof]
 #[kani::unwind(10)]
 fn recognizes_the_metadata_prefix_and_system_keyspace() {
@@ -30,4 +32,20 @@ fn an_admitted_range_excludes_any_reserved_key_in_its_interval() {
     kani::assume(!keyspace::range_overlaps_metadata(begin, end));
     kani::assume(begin <= candidate && candidate < end);
     assert!(!keyspace::is_reserved_key(candidate));
+}
+
+#[kani::proof]
+fn a_versionstamp_replaces_exactly_ten_bytes_after_the_reserved_prefix() {
+    let key_len: usize = kani::any();
+    let offset: u32 = kani::any();
+    let expected = usize::try_from(offset).ok().is_some_and(|offset| {
+        offset >= b"__meta".len() && key_len.checked_sub(offset).is_some_and(|left| left >= 10)
+    });
+    let range = keyspace::versionstamp_range(key_len, offset);
+    assert_eq!(range.is_some(), expected);
+    if let Some(range) = range {
+        assert_eq!(u32::try_from(range.start), Ok(offset));
+        assert_eq!(range.end - range.start, 10);
+        assert!(range.start >= 6 && range.end <= key_len);
+    }
 }

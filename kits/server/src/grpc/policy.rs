@@ -19,7 +19,7 @@ use tonic::codegen::http::{Request, Response, StatusCode};
 use tower::{Layer, Service};
 
 use crate::config::TrustedProxyHeaders;
-use crate::grpc::{GRPC_TIMEOUT_METADATA_KEY, GrpcTimeout};
+use crate::grpc::{GRPC_TIMEOUT_METADATA_KEY, GrpcTimeout, deadline::parse_timeout};
 use crate::http::ForwardedClientIp;
 use crate::http::{client_ip_from_x_forwarded_for, read_trusted_metadata};
 use crate::observability::{
@@ -149,8 +149,13 @@ where
             });
         let listener_name = SharedString::from_shared(Arc::clone(&self.policy.listener_name));
 
-        let timeout = match request.headers().get(GRPC_TIMEOUT_METADATA_KEY) {
-            Some(value) => match value.to_str().ok().and_then(parse_grpc_timeout_header) {
+        let mut deadlines = request.headers().get_all(GRPC_TIMEOUT_METADATA_KEY).iter();
+        let timeout = match (deadlines.next(), deadlines.next()) {
+            (Some(value), None) => match value
+                .to_str()
+                .ok()
+                .and_then(|text| parse_timeout(text.as_bytes()).ok())
+            {
                 Some(timeout) => Some(timeout),
                 None => {
                     return GrpcPolicyResponseFuture::ready(grpc_status_response(
@@ -159,13 +164,19 @@ where
                     ));
                 }
             },
-            None if self.policy.deadline_required => {
+            (_, Some(_)) => {
+                return GrpcPolicyResponseFuture::ready(grpc_status_response(
+                    GRPC_STATUS_INVALID_ARGUMENT,
+                    "invalid_deadline",
+                ));
+            }
+            (None, None) if self.policy.deadline_required => {
                 return GrpcPolicyResponseFuture::ready(grpc_status_response(
                     GRPC_STATUS_INVALID_ARGUMENT,
                     "deadline_required",
                 ));
             }
-            None => None,
+            (None, None) => None,
         };
 
         if self
@@ -390,26 +401,6 @@ fn request_peer_ip(request: &Request<TonicBody>) -> Option<IpAddr> {
         })
 }
 
-fn parse_grpc_timeout_header(value: &str) -> Option<GrpcTimeout> {
-    if value.len() < 2 || value.len() > 9 {
-        return None;
-    }
-    let (digits, unit) = value.split_at(value.len() - 1);
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let amount = digits.parse::<u64>().ok()?;
-    let duration = match unit {
-        "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),
-        "M" => std::time::Duration::from_secs(amount.checked_mul(60)?),
-        "S" => std::time::Duration::from_secs(amount),
-        "m" => std::time::Duration::from_millis(amount),
-        "u" => std::time::Duration::from_micros(amount),
-        "n" => std::time::Duration::from_nanos(amount),
-        _ => return None,
-    };
-    GrpcTimeout::new(duration).ok()
-}
 #[cfg(test)]
 #[path = "policy_tests.rs"]
 mod tests;

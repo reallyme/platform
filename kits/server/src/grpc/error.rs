@@ -52,26 +52,7 @@ pub enum GrpcDeadlineMetadataField {
     GrpcTimeout,
 }
 
-/// Why a timeout configuration or metadata value was invalid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrpcDeadlineErrorReason {
-    /// The timeout must be greater than zero.
-    MustBeGreaterThanZero,
-    /// The metadata field is empty.
-    Empty,
-    /// The metadata field is not valid visible ASCII.
-    InvalidAscii,
-    /// The metadata field did not contain a numeric value.
-    MissingValue,
-    /// The numeric portion could not be parsed.
-    InvalidInteger,
-    /// The metadata unit suffix is not supported by gRPC.
-    InvalidUnit,
-    /// The numeric portion exceeded the supported eight-digit format.
-    TooManyDigits,
-    /// The value overflowed the supported duration range.
-    Overflow,
-}
+pub use super::deadline_wire::GrpcDeadlineErrorReason;
 
 /// Typed deadline and timeout failures.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]

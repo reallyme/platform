@@ -99,6 +99,20 @@ async fn malformed_grpc_deadlines_are_rejected_before_handler() {
             .expect("policy response should succeed");
         assert_eq!(response.headers().get("grpc-status").expect("status"), "3");
     }
+    let request = Request::builder()
+        .uri("/reallyme.api.v1.ApiStatusService/GetStatus")
+        .header("grpc-timeout", "1S")
+        .header("grpc-timeout", "2S")
+        .body(TonicBody::empty())
+        .expect("duplicate deadline fixture");
+    let response = service
+        .ready()
+        .await
+        .expect("service should be ready")
+        .call(request)
+        .await
+        .expect("policy response should succeed");
+    assert_eq!(response.headers().get("grpc-status").expect("status"), "3");
     assert!(!called.load(Ordering::SeqCst));
 }
 

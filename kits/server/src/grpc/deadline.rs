@@ -6,16 +6,13 @@ use std::time::Duration;
 
 use tonic::Request;
 
+use super::deadline_wire::{MAX_GRPC_TIMEOUT, parse_grpc_timeout_value};
 use super::error::{
     GrpcDeadlineConfigField, GrpcDeadlineError, GrpcDeadlineErrorReason, GrpcDeadlineMetadataField,
 };
 
 /// Standard gRPC timeout metadata key.
 pub const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
-
-// gRPC permits at most eight digits; hours are its largest timeout unit.
-// Keep construction within tonic's serialization range to prevent a panic.
-const MAX_GRPC_TIMEOUT: Duration = Duration::from_secs(359_999_996_400);
 
 /// Validated gRPC timeout used for caller deadlines and server-side maximums.
 ///
@@ -57,11 +54,19 @@ pub fn apply_client_timeout<T>(request: &mut Request<T>, timeout: GrpcTimeout) {
 
 /// Parses the caller-provided gRPC timeout from inbound metadata.
 pub fn caller_timeout<T>(request: &Request<T>) -> Result<Option<GrpcTimeout>, GrpcDeadlineError> {
-    request
-        .metadata()
-        .get(GRPC_TIMEOUT_METADATA_KEY)
-        .map(parse_timeout_metadata)
-        .transpose()
+    let mut values = request.metadata().get_all(GRPC_TIMEOUT_METADATA_KEY).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(invalid_timeout_metadata(
+            GrpcDeadlineErrorReason::DuplicateTimeout,
+        ));
+    }
+    let text = value
+        .to_str()
+        .map_err(|_| invalid_timeout_metadata(GrpcDeadlineErrorReason::InvalidAscii))?;
+    parse_timeout(text.as_bytes()).map(Some)
 }
 
 /// Returns the effective server-side timeout for the request.
@@ -92,120 +97,16 @@ where
         .map_err(|_| GrpcDeadlineError::DeadlineExceeded)
 }
 
-fn parse_timeout_metadata(
-    value: &tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
-) -> Result<GrpcTimeout, GrpcDeadlineError> {
-    let value = value
-        .to_str()
-        .map_err(|_| GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::InvalidAscii,
-        })?;
-
-    let duration = parse_grpc_timeout_value(value)?;
+pub(super) fn parse_timeout(bytes: &[u8]) -> Result<GrpcTimeout, GrpcDeadlineError> {
+    let duration = parse_grpc_timeout_value(bytes).map_err(invalid_timeout_metadata)?;
     GrpcTimeout::new(duration)
 }
 
-fn parse_grpc_timeout_value(value: &str) -> Result<Duration, GrpcDeadlineError> {
-    if value.is_empty() {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::Empty,
-        });
-    }
-
-    if value.len() == 1 {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::MissingValue,
-        });
-    }
-
-    if value.len() > 9 {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::TooManyDigits,
-        });
-    }
-
-    if !value.is_ascii() {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::InvalidAscii,
-        });
-    }
-    let unit_offset =
-        value
-            .len()
-            .checked_sub(1)
-            .ok_or(GrpcDeadlineError::InvalidTimeoutMetadata {
-                field: GrpcDeadlineMetadataField::GrpcTimeout,
-                reason: GrpcDeadlineErrorReason::MissingValue,
-            })?;
-    let (digits, unit) = value.split_at(unit_offset);
-    if digits.is_empty() {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::MissingValue,
-        });
-    }
-
-    if !digits.bytes().all(|digit| digit.is_ascii_digit()) {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::InvalidInteger,
-        });
-    }
-
-    let amount = digits
-        .parse::<u64>()
-        .map_err(|_| GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::InvalidInteger,
-        })?;
-
-    let duration = match unit {
-        "H" => duration_from_hours(amount),
-        "M" => duration_from_minutes(amount),
-        "S" => duration_from_seconds(amount),
-        "m" => Some(Duration::from_millis(amount)),
-        "u" => Some(Duration::from_micros(amount)),
-        "n" => Some(Duration::from_nanos(amount)),
-        _ => {
-            return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-                field: GrpcDeadlineMetadataField::GrpcTimeout,
-                reason: GrpcDeadlineErrorReason::InvalidUnit,
-            });
-        }
-    }
-    .ok_or(GrpcDeadlineError::InvalidTimeoutMetadata {
+fn invalid_timeout_metadata(reason: GrpcDeadlineErrorReason) -> GrpcDeadlineError {
+    GrpcDeadlineError::InvalidTimeoutMetadata {
         field: GrpcDeadlineMetadataField::GrpcTimeout,
-        reason: GrpcDeadlineErrorReason::Overflow,
-    })?;
-
-    if duration.is_zero() {
-        return Err(GrpcDeadlineError::InvalidTimeoutMetadata {
-            field: GrpcDeadlineMetadataField::GrpcTimeout,
-            reason: GrpcDeadlineErrorReason::MustBeGreaterThanZero,
-        });
+        reason,
     }
-
-    Ok(duration)
-}
-
-fn duration_from_hours(value: u64) -> Option<Duration> {
-    value
-        .checked_mul(60)?
-        .checked_mul(60)
-        .map(Duration::from_secs)
-}
-
-fn duration_from_minutes(value: u64) -> Option<Duration> {
-    value.checked_mul(60).map(Duration::from_secs)
-}
-
-fn duration_from_seconds(value: u64) -> Option<Duration> {
-    Some(Duration::from_secs(value))
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@
 //! product-specific protobuf services or business RPC logic.
 
 mod deadline;
+mod deadline_wire;
 mod error;
 mod health;
 mod interceptors;

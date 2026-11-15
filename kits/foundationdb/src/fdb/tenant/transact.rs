@@ -6,8 +6,8 @@
 use std::{future::Future, marker::PhantomData, pin::Pin, sync::Arc, time::Instant};
 
 use foundationdb::{
-    DatabaseTransact, TransactError, TransactOption, Transaction, options::TransactionOption,
-    tenant::FdbTenant,
+    DatabaseTransact, FdbError as DriverError, TransactError, TransactOption, Transaction,
+    options::TransactionOption, tenant::FdbTenant,
 };
 #[cfg(feature = "metrics")]
 use metrics::{counter, histogram};
@@ -22,6 +22,13 @@ use super::{
     METRIC_FDB_TRANSACTION_RETRIES_TOTAL, METRIC_LABEL_OPERATION_CLASS,
 };
 use crate::fdb::tenant_name::FoundationDbTenantName;
+
+#[path = "transact_budget.rs"]
+mod budget;
+pub(super) use budget::retry_permitted;
+use budget::{deadline_allows_work, retry_budget_allows};
+
+const TRANSACTION_TIMED_OUT: i32 = 1031;
 
 pub(super) struct TenantTransactArcData<'trx, F, D> {
     f: F,
@@ -145,17 +152,6 @@ pub(super) fn record_tenant_open_failure(_tenant: FoundationDbTenantName) {
     .increment(1);
 }
 
-pub(super) const fn retry_permitted(
-    error_is_retryable: bool,
-    error_is_maybe_committed: bool,
-    operation_is_idempotent: bool,
-    budget_allows_retry: bool,
-) -> bool {
-    error_is_retryable
-        && (operation_is_idempotent || !error_is_maybe_committed)
-        && budget_allows_retry
-}
-
 pub(super) fn c_api_timeout_millis(duration: std::time::Duration) -> i32 {
     i32::try_from(duration.as_millis())
         .unwrap_or(i32::MAX)
@@ -206,77 +202,40 @@ where
     let mut attempts: u32 = 0;
     let mut conflicts: u32 = 0;
     let started_at = Instant::now();
-    let time_out = options
-        .time_out
-        .map(|duration| started_at.checked_add(duration).unwrap_or(started_at));
+    let timeout = options.time_out;
     let retry_limit = options.retry_limit;
     let mut trx = tenant.create_trx()?;
     apply_c_api_limits(&trx, options).map_err(E::from)?;
-    let can_retry = |completed_attempts: u32| {
-        retry_limit
-            .map(|limit| completed_attempts < limit)
-            .unwrap_or(true)
-            && time_out
-                .map(|deadline| Instant::now() < deadline)
-                .unwrap_or(true)
+    let can_retry =
+        |attempts| retry_budget_allows(attempts, retry_limit, started_at.elapsed(), timeout);
+    let check_deadline = || {
+        if deadline_allows_work(started_at.elapsed(), timeout) {
+            Ok(())
+        } else {
+            Err(E::from(DriverError::from_code(TRANSACTION_TIMED_OUT)))
+        }
     };
 
     #[cfg(feature = "metrics")]
     let started = Instant::now();
 
     loop {
+        // Native retry backoff can return after the outer budget expires.
+        check_deadline()?;
         attempts = attempts.saturating_add(1);
         let r = f.transact(trx).await;
         f = r.0;
         trx = r.1;
 
         match r.2 {
-            Ok(item) => match trx.commit().await {
-                Ok(_) => {
-                    #[cfg(feature = "metrics")]
-                    let elapsed = started.elapsed();
-                    #[cfg(feature = "metrics")]
-                    record_transaction_metrics(tenant_label, operation_class, attempts, retries);
-                    #[cfg(feature = "metrics")]
-                    record_transaction_conflicts(tenant_label, operation_class, conflicts);
-                    #[cfg(feature = "metrics")]
-                    record_commit_latency(tenant_label, operation_class, elapsed);
-                    return Ok(item);
-                }
-                Err(error) => {
-                    let should_retry = retry_permitted(
-                        error.is_retryable(),
-                        error.is_maybe_committed(),
-                        is_idempotent,
-                        can_retry(attempts),
-                    );
-                    if error.code() == FDB_NOT_COMMITTED_ERROR_CODE {
-                        conflicts = conflicts.saturating_add(1);
-                    }
-                    if should_retry {
-                        match error.on_error().await {
-                            Ok(next_transaction) => {
-                                retries = retries.saturating_add(1);
-                                trx = next_transaction;
-                            }
-                            Err(on_error) => {
-                                #[cfg(feature = "metrics")]
-                                record_transaction_metrics(
-                                    tenant_label,
-                                    operation_class,
-                                    attempts,
-                                    retries,
-                                );
-                                #[cfg(feature = "metrics")]
-                                record_transaction_conflicts(
-                                    tenant_label,
-                                    operation_class,
-                                    conflicts,
-                                );
-                                return Err(E::from(on_error));
-                            }
-                        }
-                    } else {
+            Ok(item) => {
+                // A callback can yield or run local work without polling a
+                // FoundationDB future. Recheck before submitting its writes.
+                check_deadline()?;
+                match trx.commit().await {
+                    Ok(_) => {
+                        #[cfg(feature = "metrics")]
+                        let elapsed = started.elapsed();
                         #[cfg(feature = "metrics")]
                         record_transaction_metrics(
                             tenant_label,
@@ -286,10 +245,58 @@ where
                         );
                         #[cfg(feature = "metrics")]
                         record_transaction_conflicts(tenant_label, operation_class, conflicts);
-                        return Err(E::from(error.into()));
+                        #[cfg(feature = "metrics")]
+                        record_commit_latency(tenant_label, operation_class, elapsed);
+                        return Ok(item);
+                    }
+                    Err(error) => {
+                        let should_retry = retry_permitted(
+                            error.is_retryable(),
+                            error.is_maybe_committed(),
+                            is_idempotent,
+                            can_retry(attempts),
+                        );
+                        if error.code() == FDB_NOT_COMMITTED_ERROR_CODE {
+                            conflicts = conflicts.saturating_add(1);
+                        }
+                        if should_retry {
+                            match error.on_error().await {
+                                Ok(next_transaction) => {
+                                    retries = retries.saturating_add(1);
+                                    trx = next_transaction;
+                                }
+                                Err(on_error) => {
+                                    #[cfg(feature = "metrics")]
+                                    record_transaction_metrics(
+                                        tenant_label,
+                                        operation_class,
+                                        attempts,
+                                        retries,
+                                    );
+                                    #[cfg(feature = "metrics")]
+                                    record_transaction_conflicts(
+                                        tenant_label,
+                                        operation_class,
+                                        conflicts,
+                                    );
+                                    return Err(E::from(on_error));
+                                }
+                            }
+                        } else {
+                            #[cfg(feature = "metrics")]
+                            record_transaction_metrics(
+                                tenant_label,
+                                operation_class,
+                                attempts,
+                                retries,
+                            );
+                            #[cfg(feature = "metrics")]
+                            record_transaction_conflicts(tenant_label, operation_class, conflicts);
+                            return Err(E::from(error.into()));
+                        }
                     }
                 }
-            },
+            }
             Err(user_error) => match user_error.try_into_fdb_error() {
                 Ok(fdb_error) => {
                     let should_retry = retry_permitted(

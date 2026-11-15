@@ -16,6 +16,12 @@ and verify its SHA-256 against the value in the workflow. The runner builds a
 temporary copy of the harnesses and production modules so the verifier can use its
 own compiler without building the server kit or writing into the source tree.
 
+Pass `kani` or `tlc` to the runner to check one group. CI runs the groups
+independently with proof-step limits of eight and twelve minutes respectively.
+The existing verification status requires both jobs to succeed. Each harness
+file and TLC configuration reports its elapsed time and exit status. For a
+counterexample configuration, cancellation or a tool failure fails the run.
+
 ## Listener route policy
 
 [The Kani harness](policy_path.rs) checks the production escape decoder used
@@ -383,6 +389,39 @@ the metadata and system prefixes and that an admitted half-open range
 contains no reserved key. It explores keys up to eight bytes, covering both
 six-byte metadata boundary keys and suffixes. The transaction handle scopes
 the request to its tenant. The harness checks the keyspace within that scope.
+It also checks that a versionstamp replacement has room for all ten bytes and
+starts after the six-byte prefix that determines namespace membership.
+
+## Deadline and retry boundaries
+
+The [gRPC deadline harness](grpc_deadline.rs) checks the decoder shared by the
+metadata helper and listener policy against the complete wire shape. The
+input is one to eight decimal digits followed by one supported unit. The
+harness includes empty, malformed, and oversized inputs and checks that
+accepted durations are positive and within the protocol maximum. Transport
+tests reject duplicate timeout headers before dispatch.
+[gRPC timeout grammar](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests)
+
+The [FoundationDB retry harness](fdb_retry_budget.rs) checks the production
+budget decision and the ambiguous-write retry rule. The adapter checks the
+deadline again after native retry backoff and before submitting a commit.
+The [live regression](../../kits/foundationdb/tests/foundationdb_integration.rs)
+stages a mutation in a callback that returns after its budget and verifies
+that the original value survives.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Transaction deadline](FdbTransactionDeadline.cfg) | No retry starts or commit is submitted after the deadline boundary. An ambiguous non-idempotent write is never automatically replayed. |
+| [Late retry](FdbTransactionDeadlineLateRetry.cfg) | Native backoff crosses the deadline and another callback runs. The runner requires `NoAttemptAfterDeadline` to fail. |
+| [Late submission](FdbTransactionDeadlineLateSubmit.cfg) | A callback returns after the deadline and its commit is submitted. The runner requires `NoCommitSubmittedAfterDeadline` to fail. |
+| [Ambiguous write replay](FdbTransactionDeadlineReplayWrite.cfg) | A committed write loses its response and a retry applies it again. The runner requires `NoDuplicateWrite` to fail. |
+| [Late settlement](FdbTransactionDeadlineLateCommit.cfg) | A commit sent within budget settles after the caller receives a timeout. The runner requires this witness to violate `NoLateSettlement`. |
+
+The [model](FdbTransactionDeadline.tla) uses two attempts and a logical
+clock. It checks admission at adapter boundaries and permits a submitted
+commit to settle later. An arbitrary application callback must own its own
+deadline and cancellation behavior.
+[FoundationDB transaction timeout semantics](https://apple.github.io/foundationdb/developer-guide.html#non-retryable-errors)
 
 ## Rate-limit refill
 
@@ -421,3 +460,11 @@ that the original watcher error is returned after shutdown.
 Permission, principal and resource binding, delegated authority, replay
 prevention, and cross-service evidence depend on the product's policy and
 storage adapters. Each product needs proofs against those implementations.
+
+Client-kit checks should target decisions implemented here. Broker delivery
+and deduplication, upstream transport and failover behavior, and generated
+wire compatibility need integration and contract tests at their actual
+boundaries. For example, the Typesense request timeout applies to each
+attempt. An application with an end-to-end latency budget must account for
+the attempts and their backoff. See the
+[Typesense retry loop](../../kits/typesense/src/typesense/client/retry.rs).

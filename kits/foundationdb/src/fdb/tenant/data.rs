@@ -16,15 +16,13 @@ use thiserror::Error;
 #[path = "data_keyspace.rs"]
 mod keyspace;
 pub(super) use keyspace::{RESERVED_METADATA_END, RESERVED_METADATA_START};
-use keyspace::{is_reserved_key, range_overlaps_metadata};
+use keyspace::{is_reserved_key, range_overlaps_metadata, versionstamp_range};
 const MAX_TENANT_KEY_BYTES: usize = 10_000;
 const MAX_TENANT_VALUE_BYTES: usize = 100_000;
 const MAX_RANGE_RESULTS: usize = 64;
 const MAX_RANGE_TARGET_BYTES: usize = 1_000_000;
 const MAX_TRANSACTION_SIZE_LIMIT: i32 = 10_000_000;
-const VERSIONSTAMP_BYTES: usize = 10;
 const VERSIONSTAMP_OFFSET_BYTES: usize = 4;
-const MIN_STABLE_KEY_PREFIX_BYTES: usize = 6;
 
 /// A finite reason for rejecting an application key or range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -338,15 +336,9 @@ fn validate_versionstamped_key_template(
     let offset_bytes: [u8; VERSIONSTAMP_OFFSET_BYTES] = key_template[key_bytes..]
         .try_into()
         .map_err(|_| TenantDataAccessErrorReason::KeyChangingMutation)?;
-    let offset = usize::try_from(u32::from_le_bytes(offset_bytes))
-        .map_err(|_| TenantDataAccessErrorReason::KeyChangingMutation)?;
-    let end = offset
-        .checked_add(VERSIONSTAMP_BYTES)
+    let range = versionstamp_range(key_bytes, u32::from_le_bytes(offset_bytes))
         .ok_or(TenantDataAccessErrorReason::KeyChangingMutation)?;
-    if offset < MIN_STABLE_KEY_PREFIX_BYTES
-        || end > key_bytes
-        || key_template[offset..end].iter().any(|byte| *byte != 0xff)
-    {
+    if key_template[range].iter().any(|byte| *byte != 0xff) {
         return Err(TenantDataAccessErrorReason::KeyChangingMutation);
     }
     Ok(())
