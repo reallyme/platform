@@ -11,6 +11,7 @@
 //! - `delete <tenant-name> --record <path>`
 //! - `resume-delete <path>`
 //! - `prune-delete <path>`
+//! - `reclaim-delete <path>`
 //! - `takeover-delete <tenant-name>`
 //! - `delete-cutoff <tenant-name>`
 //! - `advance-delete-cutoff <tenant-name> <target-generation>`
@@ -39,7 +40,7 @@ use delete_record::{
     DeleteRecord, DeleteRecordError, DeleteRecordState, DeleteReservation, LockedDeleteRecord,
 };
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete|delete-cutoff> <tenant> | delete <tenant> --record <path> | <resume-delete|prune-delete> <path> | recover-delete <tenant> <expected-tenant-id> | advance-delete-cutoff <tenant> <target-generation>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete|delete-cutoff> <tenant> | delete <tenant> --record <path> | <resume-delete|prune-delete|reclaim-delete> <path> | recover-delete <tenant> <expected-tenant-id> | advance-delete-cutoff <tenant> <target-generation>";
 const CONTROL_TENANT_ENV: &str = "FDB_TENANT_ADMIN_CONTROL_TENANT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -102,6 +103,7 @@ enum Command {
     RecordedDelete(FoundationDbTenantName, PathBuf),
     ResumeDelete(PathBuf),
     PruneDelete(PathBuf),
+    ReclaimDelete(PathBuf),
     TakeoverDelete(FoundationDbTenantName),
     DeleteCutoff(FoundationDbTenantName),
     AdvanceDeleteCutoff(FoundationDbTenantName, ReservationGeneration),
@@ -116,6 +118,8 @@ fn parse_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, Ad
         Command::ResumeDelete(PathBuf::from(operand))
     } else if command == "prune-delete" {
         Command::PruneDelete(PathBuf::from(operand))
+    } else if command == "reclaim-delete" {
+        Command::ReclaimDelete(PathBuf::from(operand))
     } else {
         let tenant = parse_tenant(
             operand
@@ -198,6 +202,10 @@ async fn run(command: Command) -> Result<(), AdminToolError> {
         Command::PruneDelete(path) => {
             let state = prune_delete(&context, &path).await?;
             write_output(state.as_str())
+        }
+        Command::ReclaimDelete(path) => {
+            reclaim_delete(&context, &path).await?;
+            write_output("retired")
         }
         Command::TakeoverDelete(tenant) => {
             let control = required_control(&context).await?;
@@ -351,6 +359,17 @@ async fn prune_delete(
         .prune_completed(intent(record, reservation))
         .await?;
     Ok(record_state(outcome))
+}
+
+async fn reclaim_delete(context: &FdbContext, path: &Path) -> Result<(), AdminToolError> {
+    let file = LockedDeleteRecord::open(path)?;
+    let record = load_verified_record(context, &file).await?;
+    let reservation = record.reservation.ok_or(AdminToolError::LegacyRecord)?;
+    check_configured_control(configured_control_tenant()?, reservation.control)?;
+    ReservationStore::new(context, reservation.control)
+        .reclaim_tombstone(intent(record, reservation))
+        .await?;
+    Ok(())
 }
 
 async fn load_verified_record(

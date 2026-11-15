@@ -30,6 +30,9 @@ pub enum ReservationErrorReason {
     /// The operation has no completed cluster record to compact.
     #[error("reservation has no completed outcome to prune")]
     PruneNotCompleted,
+    /// Reclamation requires a tombstone from a generation below the cutoff.
+    #[error("reservation is not a tombstone below the admission cutoff")]
+    ReclaimNotEligible,
     /// An intent predates the durable cutoff for its tenant name.
     #[error("delete intent expired at the tenant admission cutoff")]
     IntentExpired,

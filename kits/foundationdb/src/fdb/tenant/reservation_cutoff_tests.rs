@@ -73,6 +73,10 @@ async fn verify_cutoff() {
         store.prune_completed(historical).await,
         Ok(TenantDeleteResolution::MetadataSafe)
     );
+    assert_eq!(
+        store.reclaim_tombstone(historical).await,
+        Err(ReservationErrorReason::ReclaimNotEligible)
+    );
     let old = capture(&store, tenant, legacy).await;
     let visits = Cell::new(0_u8);
     let result = store
@@ -183,9 +187,55 @@ async fn verify_cutoff() {
     assert_eq!(visits.get(), 2);
     let fresh = capture(&peer, tenant, third).await;
     assert_eq!(fresh.original_id, interrupted.original_id);
+    let fresh_grant = match store.claim_recovery(fresh).await.expect("fresh claim") {
+        Claim::Acquired(grant) => Some(grant),
+        Claim::Complete(_) => None,
+    }
+    .expect("first claim acquires a grant");
+    assert_eq!(
+        store.reclaim_tombstone(current).await,
+        Err(ReservationErrorReason::ReclaimNotEligible)
+    );
+    let wrong_id = ReservationIntent {
+        original_id: fresh.original_id,
+        ..historical
+    };
+    assert_eq!(
+        store.reclaim_tombstone(wrong_id).await,
+        Err(ReservationErrorReason::InvalidRecord)
+    );
+    visits.set(0);
+    let result = store
+        .transact(async |transaction| {
+            visits.set(
+                visits
+                    .get()
+                    .checked_add(1)
+                    .expect("count ambiguous reclaim attempts"),
+            );
+            store.stage_reclaim(transaction, historical).await?;
+            if visits.get() == 1 {
+                peer.reclaim_tombstone(historical)
+                    .await
+                    .expect("commit reclaim through second client");
+                return Err(DriverError::from_code(FDB_COMMIT_UNKNOWN_RESULT).into());
+            }
+            Ok(())
+        })
+        .await;
+    assert_eq!(result, Ok(()));
+    assert_eq!(visits.get(), 2);
+    assert_eq!(
+        store.resume(historical).await,
+        Err(ReservationErrorReason::IntentExpired)
+    );
+    assert_eq!(
+        store.finish(fresh_grant).await,
+        Ok(TenantDeleteResolution::MetadataSafe)
+    );
     assert!(matches!(
-        store.claim_recovery(fresh).await,
-        Ok(Claim::Acquired(grant)) if store.finish(grant).await == Ok(TenantDeleteResolution::MetadataSafe)
+        store.acquire(historical).await,
+        Err(ReservationErrorReason::IntentExpired)
     ));
     assert_eq!(
         store.prune_completed(fresh).await,
@@ -199,7 +249,7 @@ async fn verify_cutoff() {
     store
         .transact(async |transaction| {
             assert!(store.active_id(transaction, tenant).await?.is_none());
-            for rejected in [old, interrupted] {
+            for rejected in [old, interrupted, historical] {
                 assert!(
                     store
                         .read_record(transaction, tenant, rejected.operation)
@@ -207,7 +257,7 @@ async fn verify_cutoff() {
                         .is_none()
                 );
             }
-            for completed in [historical, current, fresh] {
+            for completed in [current, fresh] {
                 transaction.clear(&store.record_key(tenant, completed.operation));
             }
             transaction.clear(&store.cutoff_key(tenant));

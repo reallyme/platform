@@ -334,6 +334,12 @@ async fn reserved_delete_reconciles_across_processes() {
         .expect("replacement ID");
     assert_ne!(replacement_id, initial_id);
     expect_cli(&["prune-delete"], Some(&completed), b"original-absent\n").await;
+    let too_early = cli(&["reclaim-delete"], Some(&completed)).await;
+    assert!(!too_early.status.success());
+    assert!(String::from_utf8_lossy(&too_early.stderr).contains("below the admission cutoff"));
+    for _ in 0..2 {
+        expect_cli(&["reclaim-delete"], Some(&intent), b"retired\n").await;
+    }
     expect_cli(&["resume-delete"], Some(&completed), b"original-absent\n").await;
     expect_cli(&["resume-delete"], Some(&intent), b"metadata-safe\n").await;
     assert_eq!(

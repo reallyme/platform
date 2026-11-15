@@ -59,4 +59,42 @@ impl ReservationStore<'_> {
         );
         Ok(outcome)
     }
+
+    /// Removes an older tombstone after the durable cutoff excludes its intent.
+    /// An already absent row below the cutoff is a successful retry.
+    pub async fn reclaim_tombstone(&self, intent: ReservationIntent) -> ReservationResult<()> {
+        self.validate_intent(intent)?;
+        self.transact(async |transaction| self.stage_reclaim(transaction, intent).await)
+            .await
+    }
+
+    pub(super) async fn stage_reclaim(
+        &self,
+        transaction: &Transaction,
+        intent: ReservationIntent,
+    ) -> AttemptResult<()> {
+        if intent.generation >= self.read_cutoff(transaction, intent.tenant).await? {
+            return Err(ReservationErrorReason::ReclaimNotEligible.into());
+        }
+        let active = self.active_id(transaction, intent.tenant).await?;
+        if active == Some(intent.operation) {
+            return Err(ReservationErrorReason::InvalidRecord.into());
+        }
+        match self
+            .read_record(transaction, intent.tenant, intent.operation)
+            .await?
+        {
+            None => Ok(()),
+            Some(ReservationRecord::Full(_)) => {
+                Err(ReservationErrorReason::ReclaimNotEligible.into())
+            }
+            Some(ReservationRecord::Tombstone(completion)) => {
+                Self::completed_outcome(active, intent, completion)?;
+                // Keep the cutoff and any newer grant intact. The original
+                // generation will stay ineligible after this key is gone.
+                transaction.clear(&self.record_key(intent.tenant, intent.operation));
+                Ok(())
+            }
+        }
+    }
 }

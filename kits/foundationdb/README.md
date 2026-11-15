@@ -221,9 +221,9 @@ also accepts a pending local file if the cluster has already recorded
 completion. The adapter replaces the full record with a tombstone at the
 same key. The tombstone keeps the original tenant ID and outcome and allows
 retries to return that outcome after a lost reply or tenant name reuse.
-Active and missing reservations are rejected. Keep the tombstones in the
-control tenant so a stale local file can still distinguish a completed
-operation from one that never acquired a reservation.
+Active and missing reservations are rejected. Keep each tombstone until the
+admission cutoff excludes its generation so a stale local file can still
+distinguish a completed operation from one that never acquired a reservation.
 
 ### Advance a delete admission cutoff
 
@@ -242,6 +242,13 @@ returns the current generation when the requested target has already been
 reached. New delete files capture the tenant ID and generation together.
 An older pending file can replay a retained completion, and an older
 pending file with no cluster record reports that the intent expired.
+
+Use `fdb-tenant-admin reclaim-delete <record-path>` to remove a compacted
+tombstone after the cutoff has passed its generation. The command returns
+`retired` and can be retried with the same record. A completed local file
+still reports its saved outcome. A pending file whose tombstone was
+reclaimed reports expiry, so save any outcome required for audit before
+reclaiming it.
 
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
