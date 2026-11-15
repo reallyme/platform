@@ -13,7 +13,7 @@ const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
 const PREFLIGHT_WORKFLOW = "crates-package-preflight.yml";
 const PREFLIGHT_PATH = `.github/workflows/${PREFLIGHT_WORKFLOW}`;
-const PREFLIGHT_TITLE = "Crates package preflight";
+const PREFLIGHT_TITLE = "Preflight crates";
 const ATTESTATION_SCHEMA = "reallyme.platform.crates_preflight.v1";
 const DEFAULT_ATTESTATION_PATH = "release-attestation/crates-preflight.json";
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
@@ -219,7 +219,7 @@ export const selectLatestPreflightRun = (value, expected) => {
   if (latest === undefined) {
     fail("missing-preflight-run");
   }
-  const expectedTitle = `${PREFLIGHT_TITLE} ${expected.releaseVersion} @ ${expected.releaseSha}`;
+  const expectedTitle = `${PREFLIGHT_TITLE} ${expected.releaseVersion} ${expected.releaseSha}`;
   if (latest.displayTitle !== expectedTitle) {
     fail("preflight-version-mismatch");
   }

@@ -25,6 +25,7 @@ const {
   assertNodeWorkflowJobsPinNode,
   assertRepositoryShapePolicy,
   assertReallyMeReleasePackagePolicy,
+  assertRustReleasePolicy,
   assertRustSourcePolicy,
   assertSpdxHeaders,
   assertTextPolicy,
@@ -35,7 +36,7 @@ const {
 
 assertReallyMeReleasePackagePolicy({
   scriptPath: "scripts/check_release_readiness.mjs",
-  version: "0.7.0",
+  version: "0.9.5",
 });
 assertWorkflowActionsPinned();
 assertNodeWorkflowJobsPinNode({ nodeVersion: "26" });
@@ -43,6 +44,33 @@ assertCargoWorkspacePolicy({
   requireWorkspaceLints: true,
   requirePublishInclude: true,
   validatePublishablePathDependencies: true,
+});
+const rustWorkflow = ".github/workflows/rust-ci.yml";
+const rustJob = "rust-fast";
+const publishableCrates = [
+  "reallyme-app-kit",
+  "reallyme-foundationdb-kit",
+  "reallyme-nats-kit",
+  "reallyme-platform",
+  "reallyme-postgres-kit",
+  "reallyme-s3-kit",
+  "reallyme-server-kit",
+  "reallyme-typesense-kit",
+  "reallyme-valkey-kit",
+];
+assertRustReleasePolicy({
+  release: { workflow: rustWorkflow, job: rustJob, step: "Cargo test" },
+  msrv: publishableCrates.map((packageName) => ({
+    package: packageName,
+    workflow: rustWorkflow,
+    job: rustJob,
+    step: `Test ${packageName} at its MSRV`,
+  })),
+  dependencyReview: {
+    workflow: rustWorkflow,
+    job: rustJob,
+    step: "Review locked dependencies",
+  },
 });
 assertRustSourcePolicy({
   roots: ["."],

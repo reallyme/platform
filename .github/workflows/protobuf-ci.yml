@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Protobuf CI
+
+on:
+  workflow_call:
+    outputs:
+      verified_sha:
+        value: ${{ jobs.contracts.outputs.verified_sha }}
+
+permissions:
+  contents: read
+
+env:
+  BUF_VERSION: 1.75.0
+  BUFFA_VERSION: 0.1.2
+  CONNECTRPC_CODEGEN_VERSION: 0.9.0
+  BUF_LINUX_X86_64_SHA256: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      verified_sha: ${{ steps.verified.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: contract-generators
+
+      - name: Install Buf
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/buf/bin"
+          mkdir -p "$install_dir"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            --output "$install_dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          printf '%s  %s\n' "$BUF_LINUX_X86_64_SHA256" "$install_dir/buf" \
+            | sha256sum --check --strict
+          chmod 0755 "$install_dir/buf"
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Install Rust protobuf generators
+        run: |
+          cargo install reallyme-protoc-gen-buffa --version "=$BUFFA_VERSION" --locked
+          cargo install reallyme-protoc-gen-buffa-packaging --version "=$BUFFA_VERSION" --locked
+          cargo install connectrpc-codegen --version "=$CONNECTRPC_CODEGEN_VERSION" --locked
+
+      - name: Generate Rust contracts
+        run: scripts/generation/generate-rust-contracts.sh
+
+      - name: Verify generated contracts are current
+        run: |
+          git diff --exit-code -- apps/example/contract/src/generated
+          test -z "$(git ls-files --others --exclude-standard apps/example/contract/src/generated)"
+
+      - name: Record verified source
+        id: verified
+        shell: bash
+        run: |
+          sha=$(git rev-parse --verify HEAD)
+          test "$sha" = "$GITHUB_SHA"
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,346 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Live infrastructure tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUF_VERSION: 1.75.0
+  BUFFA_VERSION: 0.1.2
+  CONNECTRPC_CODEGEN_VERSION: 0.9.0
+  BUF_LINUX_X86_64_SHA256: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
+  FDB_CLIENT_SHA256: b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254
+  FDB_VERSION: 7.3.77
+
+jobs:
+  rust-full:
+    name: Rust full audit suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.100.0
+          components: clippy,rustfmt
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install Ripgrep for repository policy checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+          rg --version
+
+      - name: Install Buf
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/buf/bin"
+          mkdir -p "$install_dir"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            --output "$install_dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          printf '%s  %s\n' "$BUF_LINUX_X86_64_SHA256" "$install_dir/buf" \
+            | sha256sum --check --strict
+          chmod 0755 "$install_dir/buf"
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Install FoundationDB client
+        run: |
+          set -euo pipefail
+          package_name="foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          package_path="$RUNNER_TEMP/$package_name"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            --output "$package_path" \
+            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${package_name}"
+          printf '%s  %s\n' "$FDB_CLIENT_SHA256" "$package_path" \
+            | sha256sum --check --strict
+          sudo dpkg -i "$package_path"
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+
+      - name: Set up pnpm and Node for Worker validation
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        with:
+          runtime: node@26
+          cache: true
+          cache-dependency-path: workers/example/pnpm-lock.yaml
+          working-directory: workers/example
+          install: false
+
+      - name: Install Rust protobuf generators
+        run: |
+          cargo install reallyme-protoc-gen-buffa --version "=$BUFFA_VERSION" --locked
+          cargo install reallyme-protoc-gen-buffa-packaging --version "=$BUFFA_VERSION" --locked
+          cargo install connectrpc-codegen --version "=$CONNECTRPC_CODEGEN_VERSION" --locked
+
+      - name: Generate Rust contracts
+        run: scripts/generation/generate-rust-contracts.sh
+
+      - name: Install pinned Worker build tool
+        run: cargo install worker-build --version 0.8.7 --locked
+
+      - name: Validate Worker deployment bundle
+        run: scripts/build/check-worker.sh
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked --workspace --all-features
+
+      - name: Cargo test
+        run: cargo test --locked --workspace --all-features
+
+      - name: Start NATS JetStream
+        run: |
+          docker run --detach \
+            --name reallyme-ci-nats \
+            --publish 4222:4222 \
+            --publish 8222:8222 \
+            nats:2.15.2-scratch@sha256:965fc69c168a39f2bfd63a68361288beb0cc64ca60c8c308bf6c0eb74f463b1d \
+            -js \
+            -m 8222
+          for _attempt in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/4222) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs reallyme-ci-nats
+          exit 1
+
+      - name: Run nats integration tests
+        env:
+          REALLYME_RUN_NATS_INTEGRATION: "1"
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-nats-kit --features testing --lib -- --list \
+            | rg '^consumer::tests::real_publish_consume_and_ack_round_trip: test$'
+          cargo test --locked -p reallyme-nats-kit --features testing --lib \
+            consumer::tests::real_publish_consume_and_ack_round_trip -- --ignored --exact
+
+      - name: Start PostgreSQL
+        run: |
+          docker run --detach \
+            --name reallyme-ci-postgres \
+            --publish 5432:5432 \
+            --env POSTGRES_PASSWORD=reallyme-integration-password \
+            --env POSTGRES_DB=reallyme_integration \
+            postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+          for _attempt in {1..30}; do
+            if docker exec reallyme-ci-postgres pg_isready --username postgres --dbname reallyme_integration; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs reallyme-ci-postgres
+          exit 1
+
+      - name: Run PostgreSQL integration tests
+        env:
+          REALLYME_RUN_POSTGRES_INTEGRATION: "1"
+          REALLYME_POSTGRES_INTEGRATION_URI: >-
+            postgres://postgres:reallyme-integration-password@127.0.0.1:5432/reallyme_integration
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-postgres-kit --test postgres_integration -- --list \
+            | rg '^live_pool_transactions_and_error_classification: test$'
+          cargo test --locked -p reallyme-postgres-kit --test postgres_integration \
+            live_pool_transactions_and_error_classification -- --ignored --exact
+
+      - name: Start FoundationDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          fdb_digest=sha256:559b178a137bbe09272ad6e3752531aa04e2ddacab8ccfa4ffa86467db033bea
+          docker run --detach \
+            --name reallyme-ci-fdb \
+            --network host \
+            --env FDB_CLUSTER_FILE=/var/fdb/fdb.cluster \
+            --env FDB_NETWORKING_MODE=host \
+            --env FDB_PORT=4500 \
+            --tmpfs /var/fdb/data:rw,size=2g \
+            --tmpfs /var/fdb/logs:rw,size=2g \
+            "foundationdb/foundationdb:${FDB_VERSION}@${fdb_digest}"
+          configured=0
+          for _attempt in {1..30}; do
+            if docker exec reallyme-ci-fdb fdbcli --exec 'configure new single memory' 2>&1 \
+              | rg 'Database created'; then
+              configured=1
+              break
+            fi
+            sleep 1
+          done
+          if ((configured == 0)); then
+            docker logs reallyme-ci-fdb
+            exit 1
+          fi
+          docker exec reallyme-ci-fdb fdbcli --exec 'configure tenant_mode=optional_experimental'
+          docker exec reallyme-ci-fdb cat /var/fdb/fdb.cluster > "$RUNNER_TEMP/fdb.cluster"
+          printf 'FDB_CLUSTER_FILE=%s\n' "$RUNNER_TEMP/fdb.cluster" >> "$GITHUB_ENV"
+
+      - name: Provision FoundationDB integration tenant
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --quiet -p reallyme-foundationdb-kit \
+            --features tenant-admin --bin fdb-tenant-admin -- \
+            ensure foundationdb-kit-integration
+
+      - name: Run FoundationDB integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --test foundationdb_integration -- --list \
+            | rg '^live_connector_proves_cluster_and_tenant_readiness: test$'
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --test foundationdb_integration \
+            live_connector_proves_cluster_and_tenant_readiness -- --ignored --exact
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --test foundationdb_integration \
+            live_tenant_delete_clears_metadata_but_refuses_application_data -- --ignored --exact
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib -- --list \
+            | rg '^fdb::tenant::admin::tests::tenant_delete_recovery_live_cases: test$'
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib \
+            fdb::tenant::admin::tests::tenant_delete_recovery_live_cases -- --ignored --exact
+          reservation_test=fdb::tenant::admin::reservation_tests::reservation_takeover_conflicts_with_clear_and_delete
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$reservation_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$reservation_test" -- --ignored --exact
+          atomic_recovery_test=fdb::tenant::admin::reservations::tests::takeover_fences_retries_and_recovery_completes_atomically
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$atomic_recovery_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$atomic_recovery_test" -- --ignored --exact
+          prune_test=fdb::tenant::admin::reservations::tests::prune_retries_after_lost_reply_and_fences_stale_resumes
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$prune_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$prune_test" -- --ignored --exact
+          cutoff_test=fdb::tenant::admin::reservations::cutoff_tests::cutoff_advances_serialize_with_claims_and_retries
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$cutoff_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$cutoff_test" -- --ignored --exact
+          cargo build --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --bin fdb-tenant-admin
+          FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \
+            cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin \
+              --bin fdb-tenant-admin tests::live::durable_delete_survives_crashes_late_clear_and_name_reuse \
+              -- --ignored --exact
+          reserved_cli_test=tests::live::reserved_delete_reconciles_across_processes
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --bin fdb-tenant-admin -- --list | rg -Fx "$reserved_cli_test: test"
+          FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \
+            cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin \
+              --bin fdb-tenant-admin "$reserved_cli_test" -- --ignored --exact
+
+      - name: Start Typesense
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name reallyme-ci-typesense \
+            --publish 127.0.0.1:8108:8108 \
+            --tmpfs /data:rw,size=1g \
+            typesense/typesense:30.2@sha256:610f2d34b1f93d00762869da2c67736775e5798d19a2c8b91b014b8a0cc1e110 \
+            --data-dir /data --api-key=platform-integration-key
+          for _attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8108/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs reallyme-ci-typesense
+          exit 1
+
+      - name: Run Typesense integration test
+        shell: bash
+        env:
+          REALLYME_TYPESENSE_INTEGRATION_API_KEY: platform-integration-key
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-typesense-kit \
+            --test typesense_integration -- --list \
+            | rg '^connector_exercises_typesense_30_collection_import_and_search: test$'
+          cargo test --locked -p reallyme-typesense-kit \
+            --test typesense_integration \
+            connector_exercises_typesense_30_collection_import_and_search -- --ignored --exact
+
+      - name: Start Valkey
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach \
+            --name reallyme-ci-valkey \
+            --publish 127.0.0.1:6379:6379 \
+            valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7 \
+            valkey-server --save '' --appendonly no
+          for _attempt in {1..30}; do
+            if docker exec reallyme-ci-valkey valkey-cli ping | rg '^PONG$'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs reallyme-ci-valkey
+          exit 1
+
+      - name: Run Valkey integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p reallyme-valkey-kit \
+            --test valkey_integration -- --list \
+            | rg '^cache_lease_and_counter_commands_are_atomic: test$'
+          cargo test --locked -p reallyme-valkey-kit \
+            --test valkey_integration \
+            cache_lease_and_counter_commands_are_atomic -- --ignored --exact
+
+      - name: Cargo doc tests
+        run: cargo test --locked --workspace --all-features --doc
+
+      - name: Cargo clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test release automation
+        run: node --test scripts/release/*.test.mjs
+
+      - name: Contract boundaries
+        run: scripts/policy/verify-contract-boundaries.sh
+
+      - name: Crypto dependency policy
+        run: scripts/policy/verify-crypto-policy.sh
+
+      - name: Example app feature separation
+        run: scripts/conformance/verify-example-app-feature-separation.sh
+
+      - name: Server-kit feature separation
+        run: scripts/conformance/verify-server-kit-feature-separation.sh
+
+      - name: Workspace standards
+        run: scripts/policy/verify-workspace-standards.sh

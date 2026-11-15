@@ -54,6 +54,7 @@ const unknownArguments = arguments_
   .slice(1)
   .filter((argument) => argument !== "--allow-dirty");
 const releaseVersion = process.env.RELEASE_VERSION ?? "";
+const reviewedArchiveDirectory = process.env.CRATE_ARCHIVE_DIR;
 
 if (
   (mode !== MODE_INSPECT && mode !== MODE_ORDER && mode !== MODE_PUBLISH) ||
@@ -72,6 +73,10 @@ if (allowDirty && mode === MODE_PUBLISH) {
 }
 if (mode === MODE_PUBLISH && releaseVersion.length === 0) {
   console.error("RELEASE_VERSION must be set when publishing crates");
+  process.exit(2);
+}
+if (reviewedArchiveDirectory !== undefined && !path.isAbsolute(reviewedArchiveDirectory)) {
+  console.error("CRATE_ARCHIVE_DIR must be an absolute path");
   process.exit(2);
 }
 if (releaseVersion.length !== 0 && !/^[0-9]+[.][0-9]+[.][0-9]+$/u.test(releaseVersion)) {
@@ -324,8 +329,12 @@ function packageWorkspaceForInspection() {
   }
   fs.rmSync(unpackDirectory, { force: true, recursive: true });
   fs.mkdirSync(unpackDirectory, { recursive: true });
+  if (reviewedArchiveDirectory !== undefined) {
+    fs.mkdirSync(reviewedArchiveDirectory, { mode: 0o700 });
+  }
   for (const pkg of ordered) {
-    const archive = path.join(packageDirectory, `${pkg.name}-${pkg.version}.crate`);
+    const name = `${pkg.name}-${pkg.version}.crate`;
+    const archive = path.join(packageDirectory, name);
     if (!fs.existsSync(archive)) {
       console.error(`missing release archive: ${archive}`);
       process.exit(1);
@@ -333,6 +342,15 @@ function packageWorkspaceForInspection() {
     const extractResult = run("tar", ["-xzf", archive, "-C", unpackDirectory]);
     if (extractResult.status !== 0) {
       process.exit(extractResult.status ?? 1);
+    }
+    // Preserve the archive that was unpacked for inspection. Cargo dry runs
+    // may overwrite the package directory as they resolve registry inputs.
+    if (reviewedArchiveDirectory !== undefined) {
+      fs.copyFileSync(
+        archive,
+        path.join(reviewedArchiveDirectory, name),
+        fs.constants.COPYFILE_EXCL,
+      );
     }
   }
 }
@@ -549,12 +567,21 @@ function publishPackage(pkg) {
   if (packageResult.status !== 0) {
     process.exit(packageResult.status ?? 1);
   }
+  const publishArguments = ["publish", "-p", pkg.name, "--locked"];
+  if (reviewedArchiveDirectory !== undefined) {
+    const name = `${pkg.name}-${pkg.version}.crate`;
+    const reviewed = path.join(reviewedArchiveDirectory, name);
+    const repacked = path.join(packageDirectory, name);
+    if (!fs.existsSync(reviewed) || !fs.readFileSync(reviewed).equals(fs.readFileSync(repacked))) {
+      console.error(`${pkg.name} repacked archive does not match the reviewed preflight archive`);
+      process.exit(1);
+    }
+    // Compilation took place in preflight. Keep dependency build scripts
+    // from running in the job that has access to the registry token.
+    publishArguments.push("--no-verify");
+  }
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
-    const result = run(
-      "cargo",
-      ["publish", "-p", pkg.name, "--locked"],
-      { capture: true },
-    );
+    const result = run("cargo", publishArguments, { capture: true });
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     if (result.status === 0) {

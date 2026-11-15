@@ -3,7 +3,7 @@
 
 name: Crates Package Preflight
 
-run-name: Crates package preflight ${{ inputs.version }} @ ${{ github.sha }}
+run-name: Preflight crates ${{ inputs.version }} ${{ inputs.source_sha }}
 
 on:
   workflow_dispatch:
@@ -12,7 +12,10 @@ on:
         description: Release version without a leading v
         required: true
         type: string
-        default: 0.4.0
+      source_sha:
+        description: Full SHA of the current main commit
+        required: true
+        type: string
 
 concurrency:
   group: crates-package-preflight-${{ inputs.version }}-${{ github.sha }}
@@ -36,6 +39,10 @@ jobs:
   verify-source-sha:
     name: Verify release source
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     outputs:
       release_sha: ${{ steps.verify-source.outputs.release_sha }}
       release_version: ${{ steps.verify-source.outputs.release_version }}
@@ -52,13 +59,45 @@ jobs:
         with:
           node-version: "26"
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.100.0
+
       - name: Match workflow head, current main, and public crate versions
         id: verify-source
         env:
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ inputs.source_sha }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_SOURCE_WRITE_GITHUB_OUTPUT: "1"
         run: node scripts/release/verify_release_source.mjs
+
+      - name: Checkout release-readiness runner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: reallyme/release-readiness
+          ref: 55115f21d5bf9a3fbc1bb8d10484aecba6e7bd8f
+          path: .release-readiness
+          persist-credentials: false
+
+      - name: Verify release candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.verify-source.outputs.release_version }}
+          RELEASE_TAG: v${{ steps.verify-source.outputs.release_version }}
+          SOURCE_SHA: ${{ steps.verify-source.outputs.release_sha }}
+        run: >-
+          node .release-readiness/scripts/run-consumer-check.mjs
+          --check-release crates preflight "$RELEASE_VERSION" "$RELEASE_TAG" "$SOURCE_SHA"
+
+      - name: Record verified CI
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-readiness-ci-${{ github.run_attempt }}-${{ steps.candidate.outputs.ci_run_id }}
+          path: ${{ runner.temp }}/release-readiness-ci.json
+          if-no-files-found: error
+          retention-days: 30
 
   crates-package:
     name: Review crates.io packages
@@ -81,9 +120,10 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release-registry
+          cache-bin: false
           cache-targets: false
 
       - name: Install Node
@@ -99,15 +139,6 @@ jobs:
           cache-dependency-path: workers/example/pnpm-lock.yaml
           working-directory: workers/example
           install: false
-
-      - name: Run shared ReallyMe release-readiness policy
-        env:
-          REALLYME_RELEASE_READINESS_REQUIRE_TRACKED: "1"
-        run: >-
-          npm exec --yes
-          --allow-git=root
-          --package=github:reallyme/release-readiness#18a6d91d99837e80f92e41fe04effb0b043d754e
-          -- reallyme-release-readiness
 
       - name: Install Buf
         shell: bash
@@ -190,6 +221,7 @@ jobs:
       - name: Inspect normalized crate archives and dry-run publication
         env:
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+          CRATE_ARCHIVE_DIR: ${{ runner.temp }}/release-package
         run: node scripts/release/publish_crates_in_order.mjs inspect
 
       - name: Revalidate the exact reviewed source tree
@@ -202,26 +234,42 @@ jobs:
         env:
           RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
-        run: node scripts/release/write_release_attestation.mjs
+        run: |
+          node scripts/release/write_release_attestation.mjs
+          mv release-attestation/crates-preflight.json "$RUNNER_TEMP/release-package/"
 
-      - name: Upload reviewed package attestation
+      - name: Upload reviewed crate archives and attestation
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reallyme-platform-crates-preflight-${{ inputs.version }}-${{ github.sha }}
-          path: release-attestation/crates-preflight.json
+          path: ${{ runner.temp }}/release-package
           if-no-files-found: error
           retention-days: 30
 
-      - name: Summarize reviewed release
+      - name: Show release form inputs
+        shell: bash
         env:
-          RELEASE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
           RELEASE_VERSION: ${{ needs.verify-source-sha.outputs.release_version }}
+          SOURCE_SHA: ${{ needs.verify-source-sha.outputs.release_sha }}
+          VERSION_PATTERN: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          SHA_PATTERN: '^[0-9a-f]{40}$'
         run: |
-          {
-            echo '## Crates package preflight passed'
-            echo
-            echo "- Distribution: ReallyMe Platform ${RELEASE_VERSION}"
-            echo "- Commit: \`${RELEASE_SHA}\`"
-          echo '- Public crates: 9'
-            echo "- Attestation run ID: \`${GITHUB_RUN_ID}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ||
+                "$SOURCE_SHA" != "$GITHUB_SHA" || ! "$SOURCE_SHA" =~ $SHA_PATTERN ||
+                ! "$RELEASE_VERSION" =~ $VERSION_PATTERN ||
+                ! "$GITHUB_REPOSITORY" =~ ^[a-zA-Z0-9-]+/[a-zA-Z0-9_.-]+$ ]]; then
+            echo "::warning::Cannot show release inputs without a matching preflight dispatch on main." >&2
+            exit 0
+          fi
+          if [[ -z "$GITHUB_STEP_SUMMARY" ]]; then
+            echo "::warning::GitHub Actions did not provide a job summary file." >&2
+            exit 0
+          fi
+          if ! printf '%s\n' '## Release form inputs' '' \
+              'After this preflight succeeds, run this command to dispatch publish with both inputs set.' '' \
+              '```sh' "gh workflow run crates-release.yml --repo github.com/$GITHUB_REPOSITORY --ref main -f version=$RELEASE_VERSION -f source_sha=$SOURCE_SHA" '```' '' \
+              'Copy these values into the release form for this ecosystem once the preflight run succeeds.' '' \
+              '**Version**' '```text' "$RELEASE_VERSION" '```' '' \
+              '**Source SHA**' '```text' "$SOURCE_SHA" '```' >>"$GITHUB_STEP_SUMMARY"; then
+            echo "::warning::Could not write release inputs to the GitHub Actions summary." >&2
+          fi

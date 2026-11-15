@@ -44,7 +44,7 @@ const workflowRun = (overrides = {}) => ({
 });
 const listedWorkflowRun = (overrides = {}) => ({
   ...workflowRun(),
-  display_title: `Crates package preflight ${expected.releaseVersion} @ ${releaseSha}`,
+  display_title: `Preflight crates ${expected.releaseVersion} ${releaseSha}`,
   ...overrides,
 });
 
@@ -117,7 +117,7 @@ test("newer failed, running, wrong-version, and rerun preflights fail closed", (
     listedWorkflowRun({ id: 124, conclusion: null, status: "in_progress" }),
     listedWorkflowRun({
       id: 124,
-      display_title: `Crates package preflight 0.2.0 @ ${releaseSha}`,
+      display_title: `Preflight crates 0.2.0 ${releaseSha}`,
     }),
     listedWorkflowRun({ id: 124, run_attempt: 2 }),
   ];

@@ -18,10 +18,20 @@ function runFixture({
   requirement = "^0.1.0",
   alreadyPublishedNames = [],
   dirtyWorktree = false,
+  reviewedArchive = undefined,
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "platform-publish-test-"));
   try {
     mkdirSync(join(directory, "apps/example/contract/src/generated"), { recursive: true });
+    const env = { ...process.env, RELEASE_VERSION: "0.1.0" };
+    delete env.CRATE_ARCHIVE_DIR;
+    if (reviewedArchive !== undefined) {
+      env.CRATE_ARCHIVE_DIR = join(directory, "reviewed");
+      mkdirSync(env.CRATE_ARCHIVE_DIR);
+      if (reviewedArchive !== null) {
+        writeFileSync(join(env.CRATE_ARCHIVE_DIR, "reallyme-app-kit-0.1.0.crate"), reviewedArchive);
+      }
+    }
     const callsPath = join(directory, "calls.json");
     const preload = join(directory, "mock.mjs");
     writeFileSync(
@@ -130,7 +140,7 @@ syncBuiltinESMExports();
         cwd: directory,
         encoding: "utf8",
         timeout: 10_000,
-        env: { ...process.env, RELEASE_VERSION: "0.1.0" },
+        env,
       },
     );
     assert.equal(result.error, undefined);
@@ -139,6 +149,25 @@ syncBuiltinESMExports();
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+test("the publisher uses the reviewed archive and stops before an unreviewed upload", () => {
+  const result = runFixture({ reviewedArchive: "archive" });
+  assert.equal(result.status, 1);
+  const published = result.calls.filter((call) => call[1] === "publish");
+  assert.deepEqual(published, [
+    ["cargo", "publish", "-p", "reallyme-app-kit", "--locked", "--no-verify"],
+  ]);
+  assert.match(result.stderr, /repacked archive does not match the reviewed preflight archive/u);
+});
+
+test("missing or modified reviewed archives fail before upload", () => {
+  for (const reviewedArchive of [null, "different"]) {
+    const result = runFixture({ reviewedArchive });
+    assert.equal(result.status, 1);
+    assert.equal(result.calls.some((call) => call[1] === "publish"), false);
+    assert.match(result.stderr, /repacked archive does not match the reviewed preflight archive/u);
+  }
+});
 
 test("successful publication respects every local dependency edge", () => {
   const result = runFixture();

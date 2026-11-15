@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: CLA Assistant
+run-name: CLA ${{ github.event.action }} PR #${{ github.event.pull_request.number || github.event.issue.number || 0 }}
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  CLAAssistant:
+    # This workflow uses repository write permissions and never checks out PR code.
+    # Filter comments here so ordinary issue and PR discussion does not start
+    # a runner. Only signature and recheck comments on PRs reach the action.
+    if: >-
+      github.repository_owner == 'reallyme' &&
+      toJSON(github.event.repository.private) == 'false' &&
+      (github.event.repository.visibility == null || github.event.repository.visibility == 'public') &&
+      (github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request &&
+      (github.event.comment.body == 'recheck' ||
+      contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA'))))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check contributor signatures
+        if: github.event_name == 'pull_request_target' || github.event_name == 'issue_comment'
+        uses: iainmcgin/cla-github-action@0d27e5a16278d4adb6b0c4b92f08ad27b0a21dc8 # v3.2.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/reallyme/.github/blob/main/CLA.md
+          path-to-signatures: signatures/cla.json
+          branch: cla-signatures
+          allowlist: 'dependabot[bot],github-actions[bot],renovate[bot]'
+          require-opener-as-author: 'true'
+
+      - name: Verify CLA checks for queued pull requests
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$BASE_SHA" =~ ^[a-f0-9]{40}$ || ! "$GROUP_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::invalid merge group SHA"
+            exit 1
+          fi
+          workflow_path="${GITHUB_WORKFLOW_REF%@*}"
+          workflow_file="${workflow_path##*/}"
+          case "$workflow_file" in
+            cla.yaml|cla.yml) ;;
+            *) echo "::error::unexpected CLA workflow filename"; exit 1 ;;
+          esac
+
+          # Squash queue commits end in a PR number added by GitHub. Fail
+          # closed on any unrecognized commit before checking the PR heads.
+          pr_numbers=$(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" |
+              jq -er '
+                . as $pages
+                | [.[].commits[]] as $commits
+                | if ($commits | length) == 0 or
+                     ($commits | length) != $pages[0].total_commits
+                  then error("incomplete merge group commit list")
+                  else $commits[]
+                  end
+                | .commit.message | split("\n")[0]
+                | capture(" [(]#(?<number>[1-9][0-9]*)[)]$").number //
+                  error("merge group commit lacks a pull request number")
+              ' | sort -u
+          )
+
+          for pr in $pr_numbers; do
+            head_sha=$(
+              gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" |
+                jq -er --arg base "${BASE_REF#refs/heads/}" --arg repo "$GITHUB_REPOSITORY" '
+                  select(.state == "open" and .base.ref == $base and .base.repo.full_name == $repo)
+                  | .head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))
+                '
+            )
+
+            # Bind the result to this workflow and PR. A closed event can
+            # succeed after locking the PR without evaluating its signatures.
+            if ! gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_file/runs?event=pull_request_target&head_sha=$head_sha&per_page=100" |
+              jq -e --arg head "$head_sha" --arg pr "$pr" --arg path ".github/workflows/$workflow_file" '
+                [.[].workflow_runs[] | select(
+                  .head_sha == $head and .event == "pull_request_target" and .path == $path and
+                  (.display_title == ("CLA opened PR #" + $pr) or
+                   .display_title == ("CLA reopened PR #" + $pr) or
+                   .display_title == ("CLA synchronize PR #" + $pr))
+                )]
+                | max_by(.id)
+                | .status == "completed" and .conclusion == "success"
+              ' >/dev/null; then
+              echo "::error::PR #$pr needs a successful CLAAssistant check on its current head"
+              exit 1
+            fi
+          done

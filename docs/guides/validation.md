@@ -21,12 +21,16 @@ and Worker tooling, so a cold environment requires network access.
 
 The script runs `cargo deny`, `cargo audit`, and `cargo machete` only when those
 tools are installed and reports each skipped check. CI additionally requires
-dependency/license checks, vulnerability checks, published-API compatibility
-against the latest release tag, the minimum-supported Rust toolchain check,
-and default/no-default feature test runs. The manually dispatched full CI lane
-starts disposable services and selects the ignored live infrastructure tests;
-the local script does not run those service tests. Package preflight also
-inspects crate archives and validates release-source identity.
+locked dependency and license checks, vulnerability checks, published-API
+compatibility against the latest release tag, all-feature tests at each
+published crate's declared minimum Rust version, and default/no-default feature
+test runs. The manually dispatched Live infrastructure tests workflow starts
+disposable services and runs the ignored service tests.
+
+Crates Package Preflight requires the release version and full current
+`main` SHA. It verifies Required CI for that SHA, inspects the crate archives,
+and uploads them with the release attestation. Its summary includes a command
+to dispatch publication for the verified version and SHA.
 
 For a faster development loop, select the narrowest applicable gate:
 
@@ -38,9 +42,8 @@ scripts/conformance/verify-server-kit-feature-separation.sh
 scripts/build/check-worker.sh
 ```
 
-The [formal verification checks](../../conformance/formal-methods/README.md)
-run in separate CI jobs with pinned versions of Kani and the TLA+ tools.
-The combined verification status requires both jobs to pass.
+The formal verification lane runs Kani proofs and TLA+ model checks against
+the same verified commit. See the [formal verification checks](../../conformance/formal-methods/README.md).
 
 The workspace-standards gate enforces inherited lints, package visibility,
 SPDX headers, generated-code placement, the ban on wildcard Rust imports, and a

@@ -1,0 +1,197 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Rust CI
+
+on:
+  workflow_call:
+    outputs:
+      verified_sha:
+        value: ${{ jobs.rust-fast.outputs.verified_sha }}
+
+permissions:
+  contents: read
+
+env:
+  FDB_CLIENT_SHA256: b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254
+  FDB_VERSION: 7.3.77
+  CARGO_AUDIT_VERSION: 0.22.2
+  CARGO_SEMVER_CHECKS_VERSION: 0.51.0
+
+jobs:
+  rust-fast:
+    name: Rust fast gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      verified_sha: ${{ steps.verified.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.100.0
+          components: clippy,rustfmt
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-bin: false
+
+      - name: Install Ripgrep for repository policy checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+          rg --version
+
+      - name: Install FoundationDB client
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          package_path="$RUNNER_TEMP/$package_name"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors \
+            --output "$package_path" \
+            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${package_name}"
+          printf '%s  %s\n' "$FDB_CLIENT_SHA256" "$package_path" \
+            | sha256sum --check --strict
+          sudo dpkg -i "$package_path"
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+
+      - name: Set up pnpm and Node for Worker validation
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        with:
+          runtime: node@26
+          cache: true
+          cache-dependency-path: workers/example/pnpm-lock.yaml
+          working-directory: workers/example
+          install: false
+
+      - name: Install pinned Worker build tool
+        run: cargo install worker-build --version 0.8.7 --locked
+
+      - name: Validate Worker deployment bundle
+        run: scripts/build/check-worker.sh
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked --workspace --all-features
+
+      - name: Cargo test
+        run: cargo +1.100.0 test --locked --workspace --all-features
+
+      - name: Test reallyme-app-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-app-kit --all-features
+
+      - name: Test reallyme-foundationdb-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-foundationdb-kit --all-features
+
+      - name: Test reallyme-nats-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-nats-kit --all-features
+
+      - name: Test reallyme-platform at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-platform --all-features
+
+      - name: Test reallyme-postgres-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-postgres-kit --all-features
+
+      - name: Test reallyme-s3-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-s3-kit --all-features
+
+      - name: Test reallyme-server-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-server-kit --all-features
+
+      - name: Test reallyme-typesense-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-typesense-kit --all-features
+
+      - name: Test reallyme-valkey-kit at its MSRV
+        run: cargo +1.100.0 test --locked --package reallyme-valkey-kit --all-features
+
+      - name: Cargo default and no-default feature tests
+        run: |
+          cargo test --locked --workspace
+          cargo test --locked --workspace --no-default-features
+          cargo test --locked -p reallyme-server-kit --no-default-features
+
+      - name: Cargo doc tests
+        run: cargo test --locked --workspace --all-features --doc
+
+      - name: Rustdoc warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
+
+      - name: Cargo clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
+
+      - name: Review locked dependencies
+        run: >-
+          cargo +1.100.0 deny --locked --workspace --all-features
+          --config deny.toml check advisories licenses sources
+
+      - name: Dependency and public API checks
+        run: |
+          cargo deny --all-features check bans
+          cargo audit
+          baseline_tag="$(git describe --tags --match 'v[0-9]*' --abbrev=0)"
+          # Infer the compatibility requirement from the workspace version change,
+          # including breaking minor-version bumps before 1.0.
+          cargo semver-checks check-release --workspace \
+            --baseline-rev "$baseline_tag"
+
+      - name: Feature separation
+        run: |
+          scripts/conformance/verify-example-app-feature-separation.sh
+          scripts/conformance/verify-server-kit-feature-separation.sh
+
+      - name: Test release automation
+        run: node --test scripts/release/*.test.mjs
+
+      - name: Verify crates.io publish order and metadata
+        run: node scripts/release/publish_crates_in_order.mjs order
+
+      - name: Contract boundaries
+        run: scripts/policy/verify-contract-boundaries.sh
+
+      - name: Crypto dependency policy
+        run: scripts/policy/verify-crypto-policy.sh
+
+      - name: Workspace standards
+        run: scripts/policy/verify-workspace-standards.sh
+
+      - name: Record verified source
+        id: verified
+        shell: bash
+        run: |
+          sha=$(git rev-parse --verify HEAD)
+          test "$sha" = "$GITHUB_SHA"
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"

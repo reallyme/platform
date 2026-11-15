@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "lanes": {
+    "policy": { "workflow": "release-readiness.yml" },
+    "code": { "workflow": "rust-ci.yml" },
+    "proto": { "workflow": "protobuf-ci.yml" },
+    "formal": { "workflow": "formal-methods.yml" }
+  },
+  "release": {
+    "tagPrefix": "v",
+    "crates": {
+      "preflight": "crates-package-preflight.yml",
+      "publish": "crates-release.yml",
+      "artifacts": ["reallyme-platform-crates-preflight-{version}-{sha}"],
+      "tagJob": "finalize"
+    }
+  }
+}

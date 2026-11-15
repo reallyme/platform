@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Release Readiness
+
+on:
+  workflow_call:
+    outputs:
+      verified_sha:
+        value: ${{ jobs.policy.outputs.verified_sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      verified_sha: ${{ steps.verified.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout release-readiness runner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: reallyme/release-readiness
+          ref: 55115f21d5bf9a3fbc1bb8d10484aecba6e7bd8f
+          path: .release-readiness
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.100.0
+
+      - name: Run release readiness checks
+        env:
+          REALLYME_RELEASE_READINESS_REQUIRE_TRACKED: '1'
+        run: node .release-readiness/scripts/run-consumer-check.mjs
+
+      - name: Record verified source
+        id: verified
+        shell: bash
+        run: |
+          sha=$(git rev-parse --verify HEAD)
+          test "$sha" = "$GITHUB_SHA"
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
