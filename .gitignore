@@ -93,14 +93,16 @@ proptest-regressions/
 **/.envrc
 
 # Keep generated Rust/build artifacts out of git tooling and local commits.
-# The checked-in example contract is an intentional exception: its generated
-# API surface is reviewed together with the schema and distributed with the crate.
+# Keep the example contract and the reproducible ConnectRPC source import
+# under review with their respective schema and compatibility patch.
 **/generated
 **/generated/**
 **/src/generated
 **/src/generated/**
 !apps/example/contract/src/generated/
 !apps/example/contract/src/generated/**
+!conformance/contracts/vendor/connectrpc/src/generated/
+!conformance/contracts/vendor/connectrpc/src/generated/**
 **/src/pb
 **/src/pb/**
 **/src/prost

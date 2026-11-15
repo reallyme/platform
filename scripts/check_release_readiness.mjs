@@ -46,7 +46,10 @@ assertCargoWorkspacePolicy({
 });
 assertRustSourcePolicy({
   roots: ["."],
-  generatedPrefixes: ["apps/example/contract/src/generated"],
+  generatedPrefixes: [
+    "apps/example/contract/src/generated",
+    "conformance/contracts/vendor/connectrpc/src/generated",
+  ],
   baselinePath: null,
   productionTargetLines: 500,
   productionHardLines: 500,
@@ -66,6 +69,10 @@ assertSpdxHeaders({
     {
       path: "apps/example/contract/src/generated",
       reason: "generated",
+    },
+    {
+      path: "conformance/contracts/vendor/connectrpc",
+      reason: "vendored",
     },
   ],
   requireExclusionsMatched: true,

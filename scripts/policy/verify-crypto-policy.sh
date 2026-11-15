@@ -42,10 +42,13 @@ fail_matches \
   'reallyme-codec\s*=.*path\s*=' \
   --glob Cargo.toml
 
+# ConnectRPC's imported wire codecs retain upstream base64 behavior. Its
+# checksum and compatibility patch are verified separately from authored code.
 fail_matches \
   'base64/base64url call sites must use reallyme-codec, not the base64 crate directly' \
   '(^|[^[:alnum:]_:])base64::|^[[:space:]]*use base64::' \
-  --glob '*.rs'
+  --glob '*.rs' \
+  --glob '!conformance/contracts/vendor/connectrpc/src/generated/**'
 
 fail_matches \
   'SHA-2 call sites must use reallyme-crypto::sha2, not the sha2 crate directly' \

@@ -29,10 +29,27 @@ async fn binary_connect_route_calls_host_neutral_app_core() {
         .await;
 
     response.assert_status_ok();
+    assert_eq!(
+        response.as_bytes().as_ref(),
+        b"\x0a\x16hello from example-app"
+    );
 
     let response = HelloResponse::decode(&mut response.as_bytes().as_ref())
         .expect("binary Connect hello response should decode");
     assert_eq!(response.message, "hello from example-app");
+}
+
+#[tokio::test]
+async fn binary_connect_rejects_a_truncated_protobuf_field() {
+    let server = TestServer::new(connect_router(local_context()).into_axum_router());
+
+    let response = server
+        .post(EXAMPLE_HELLO_CONNECT_RPC_PATH)
+        .bytes(Bytes::from_static(b"\x0a\x02a"))
+        .add_header("content-type", "application/proto")
+        .await;
+
+    response.assert_status_bad_request();
 }
 
 #[test]

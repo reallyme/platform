@@ -12,7 +12,8 @@ tests, documentation tests, Clippy, Rustdoc, and release-tool tests. It also
 checks the facade without default features and builds the Worker bundle.
 
 Install the pinned Rust toolchain from `rust-toolchain.toml`, Node 26, pnpm
-12.18.0, Buf 1.75.0, `protoc-gen-buffa` and `protoc-gen-buffa-packaging` 0.9.2,
+12.18.0, Buf 1.75.0, the `reallyme-protoc-gen-buffa` and
+`reallyme-protoc-gen-buffa-packaging` packages at exactly 0.1.2,
 `connectrpc-codegen` 0.9.0, and `worker-build` 0.8.7. The FoundationDB crate
 requires the FoundationDB 7.3.77 C client library. Repository policy checks
 require Ripgrep. The gate downloads the pinned shared release-readiness package

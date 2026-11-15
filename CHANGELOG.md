@@ -2,6 +2,9 @@
 
 ## 0.4.0
 
+- Generate and run the example protobuf contracts with ReallyMe Buffa 0.1.2.
+  The native example uses a vendored ConnectRPC transport with matching
+  owned-view lifetime bounds. Protobuf field numbers and RPC paths are unchanged.
 - Add Kani checks for request admission, gRPC identity and deadlines, rate
   limiting, and FoundationDB tenant data boundaries. Add TLA+ models for
   server shutdown and FoundationDB deletion, retry, and recovery protocols.

@@ -24,9 +24,9 @@ while IFS= read -r generated_path; do
     continue
   fi
   case "${generated_path}" in
-    apps/example/contract/src/generated/*) ;;
+    apps/example/contract/src/generated/* | conformance/contracts/vendor/connectrpc/src/generated/*) ;;
     *)
-      printf 'generated Rust source is outside an approved contract: %s\n' \
+      printf 'generated Rust source is outside an approved source tree: %s\n' \
         "${generated_path}" >&2
       status=1
       ;;

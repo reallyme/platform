@@ -6,6 +6,15 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+readonly buffa_version=0.1.2
+for plugin in protoc-gen-reallyme-buffa protoc-gen-reallyme-buffa-packaging; do
+  if ! actual_version="$("${plugin}" --version)" ||
+    [[ "${actual_version}" != "${plugin} ${buffa_version}" ]]; then
+    printf 'contract generation requires %s %s\n' "${plugin}" "${buffa_version}" >&2
+    exit 1
+  fi
+done
+
 readonly contract_dirs=(
   "apps/example/contract"
 )

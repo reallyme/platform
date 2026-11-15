@@ -1,0 +1,349 @@
+diff --git a/client/mod.rs b/client/mod.rs
+--- a/client/mod.rs
++++ b/client/mod.rs
+@@ -116,2 +116,3 @@
+
++use buffa::ViewLifetimeParametric;
+ use buffa::view::HasMessageView;
+@@ -1673,3 +1674,3 @@
+ where
+-    V: MessageView<'static>,
++    V: ViewReborrow,
+ {
+@@ -1777,3 +1778,3 @@
+ where
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -1844,3 +1845,3 @@
+     Req: buffa::Message + crate::codec::JsonSerialize,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -1979,3 +1980,3 @@
+     Req: buffa::Message + crate::codec::JsonSerialize,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -2169,3 +2170,3 @@
+     B::Error: std::fmt::Display,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -2351,3 +2352,3 @@
+     B::Error: std::fmt::Display,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -2848,3 +2849,3 @@
+     B::Error: std::fmt::Display,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -2930,2 +2931,6 @@
+     /// producing the terminal record.
++    #[allow(
++        clippy::result_large_err,
++        reason = "Keep the terminal record inline to avoid allocating on normal end of stream."
++    )]
+     async fn next_message_or_end(&mut self) -> Result<OwnedView<RespView>, StreamEnd> {
+@@ -3274,3 +3279,3 @@
+     Req: buffa::Message + crate::codec::JsonSerialize,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -3367,3 +3372,3 @@
+     B::Error: std::fmt::Display,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -3812,3 +3817,3 @@
+     B::Error: std::fmt::Display,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -4018,3 +4023,3 @@
+     Req: buffa::Message + crate::codec::JsonSerialize,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -4109,3 +4114,3 @@
+     Req: buffa::Message + crate::codec::JsonSerialize,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -4251,3 +4256,3 @@
+     Req: buffa::Message + crate::codec::JsonSerialize,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+@@ -4358,3 +4363,3 @@
+     B::Error: std::fmt::Display,
+-    RespView: MessageView<'static> + Send,
++    RespView: ViewLifetimeParametric + Send,
+     RespView::Owned: buffa::Message + crate::codec::JsonDeserialize,
+diff --git a/dispatcher.rs b/dispatcher.rs
+--- a/dispatcher.rs
++++ b/dispatcher.rs
+@@ -357,4 +357,4 @@
+
+-    use buffa::Message;
+     use buffa::view::OwnedView;
++    use buffa::{Message, ViewLifetimeParametric};
+     use bytes::Bytes;
+@@ -453,3 +453,3 @@
+         M: crate::HasMessageView + JsonDeserialize + 'static,
+-        M::View<'static>: 'static,
++        M::View<'static>: ViewLifetimeParametric,
+     {
+diff --git a/handler.rs b/handler.rs
+--- a/handler.rs
++++ b/handler.rs
+@@ -27,5 +27,5 @@
+
+-use buffa::Message;
+ use buffa::view::MessageView;
+ use buffa::view::OwnedView;
++use buffa::{Message, ViewLifetimeParametric};
+ use bytes::Bytes;
+@@ -689,3 +689,3 @@
+ where
+-    ReqView: MessageView<'static> + Send,
++    ReqView: ViewLifetimeParametric + Send,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -759,3 +759,3 @@
+ where
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+ {
+@@ -787,3 +787,3 @@
+     Fut: Future<Output = Result<EncodedResponse, ConnectError>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+ {
+@@ -810,3 +810,3 @@
+     Fut: Future<Output = Result<EncodedResponse, ConnectError>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+ {
+@@ -819,3 +819,3 @@
+     H: ViewHandler<ReqView>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -829,3 +829,3 @@
+     H: ViewHandler<ReqView>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -843,3 +843,3 @@
+     H: ViewHandler<ReqView>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -872,3 +872,3 @@
+ where
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     Res: Message + Send + 'static,
+@@ -905,3 +905,3 @@
+     Fut: Future<Output = ServiceResult<ServiceStream<B>>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     Res: Message + Send + 'static,
+@@ -926,3 +926,3 @@
+     Fut: Future<Output = ServiceResult<ServiceStream<B>>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     Res: Message + Send + 'static,
+@@ -937,3 +937,3 @@
+     H: ViewStreamingHandler<ReqView, Res>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -948,3 +948,3 @@
+     H: ViewStreamingHandler<ReqView, Res>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -963,3 +963,3 @@
+     H: ViewStreamingHandler<ReqView, Res>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -987,3 +987,3 @@
+ where
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+ {
+@@ -1018,3 +1018,3 @@
+     Fut: Future<Output = Result<EncodedResponse, ConnectError>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+ {
+@@ -1039,3 +1039,3 @@
+     Fut: Future<Output = Result<EncodedResponse, ConnectError>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+ {
+@@ -1048,3 +1048,3 @@
+     H: ViewClientStreamingHandler<ReqView>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -1058,3 +1058,3 @@
+     H: ViewClientStreamingHandler<ReqView>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -1072,3 +1072,3 @@
+     H: ViewClientStreamingHandler<ReqView>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -1099,3 +1099,3 @@
+ where
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     Res: Message + Send + 'static,
+@@ -1133,3 +1133,3 @@
+     Fut: Future<Output = ServiceResult<ServiceStream<B>>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     Res: Message + Send + 'static,
+@@ -1156,3 +1156,3 @@
+     Fut: Future<Output = ServiceResult<ServiceStream<B>>> + Send + 'static,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     Res: Message + Send + 'static,
+@@ -1167,3 +1167,3 @@
+     H: ViewBidiStreamingHandler<ReqView, Res>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -1178,3 +1178,3 @@
+     H: ViewBidiStreamingHandler<ReqView, Res>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+@@ -1194,3 +1194,3 @@
+     H: ViewBidiStreamingHandler<ReqView, Res>,
+-    ReqView: MessageView<'static> + Send + Sync + 'static,
++    ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+     ReqView::Owned: Message + JsonDeserialize,
+diff --git a/payload.rs b/payload.rs
+--- a/payload.rs
++++ b/payload.rs
+@@ -26,4 +26,4 @@
+
+-use buffa::Message;
+-use buffa::view::{MessageView, OwnedView};
++use buffa::view::OwnedView;
++use buffa::{Message, ViewLifetimeParametric};
+ use bytes::Bytes;
+@@ -426,3 +426,3 @@
+     where
+-        V: MessageView<'static>,
++        V: ViewLifetimeParametric,
+     {
+diff --git a/request.rs b/request.rs
+--- a/request.rs
++++ b/request.rs
+@@ -13,2 +13,3 @@
+
++use buffa::ViewLifetimeParametric;
+ use buffa::view::MessageView;
+@@ -139,3 +140,6 @@
+     #[must_use]
+-    pub fn to_owned_view(&self) -> OwnedView<Req::View<'static>> {
++    pub fn to_owned_view(&self) -> OwnedView<Req::View<'static>>
++    where
++        Req::View<'static>: ViewLifetimeParametric,
++    {
+         OwnedView::decode(self.body.clone())
+diff --git a/router.rs b/router.rs
+--- a/router.rs
++++ b/router.rs
+@@ -9,3 +9,3 @@
+
+-use buffa::view::MessageView;
++use buffa::ViewLifetimeParametric;
+
+@@ -508,3 +508,3 @@
+         H: ViewHandler<ReqView>,
+-        ReqView: MessageView<'static> + Send + Sync + 'static,
++        ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+         ReqView::Owned: Message + JsonDeserialize,
+@@ -524,3 +524,3 @@
+         H: ViewHandler<ReqView>,
+-        ReqView: MessageView<'static> + Send + Sync + 'static,
++        ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+         ReqView::Owned: Message + JsonDeserialize,
+@@ -540,3 +540,3 @@
+         H: ViewHandler<ReqView>,
+-        ReqView: MessageView<'static> + Send + Sync + 'static,
++        ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+         ReqView::Owned: Message + JsonDeserialize,
+@@ -566,3 +566,3 @@
+         H: ViewStreamingHandler<ReqView, Res>,
+-        ReqView: MessageView<'static> + Send + Sync + 'static,
++        ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+         ReqView::Owned: Message + JsonDeserialize,
+@@ -593,3 +593,3 @@
+         H: ViewClientStreamingHandler<ReqView>,
+-        ReqView: MessageView<'static> + Send + Sync + 'static,
++        ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+         ReqView::Owned: Message + JsonDeserialize,
+@@ -618,3 +618,3 @@
+         H: ViewBidiStreamingHandler<ReqView, Res>,
+-        ReqView: MessageView<'static> + Send + Sync + 'static,
++        ReqView: ViewLifetimeParametric + Send + Sync + 'static,
+         ReqView::Owned: Message + JsonDeserialize,
+diff --git a/server.rs b/server.rs
+--- a/server.rs
++++ b/server.rs
+@@ -3455,3 +3455,4 @@
+     fn parse_max_concurrent_streams(payload: &[u8]) -> Option<u32> {
+-        payload.chunks_exact(6).find_map(|entry| {
++        let (entries, _) = payload.as_chunks::<6>();
++        entries.iter().find_map(|entry| {
+             let id = u16::from_be_bytes([entry[0], entry[1]]);
+@@ -3987,3 +3988,3 @@
+
+-    #[tokio::test(start_paused = true)]
++    #[tokio::test]
+     async fn max_connection_idle_reaps_quiet_connection() {
+@@ -4016,2 +4017,6 @@
+         resp.await.unwrap();
++
++        // Loopback readiness is driven by the OS. Pause only after the
++        // first response so startup cannot auto-advance the idle timer.
++        tokio::time::pause();
+
+diff --git a/stream_message.rs b/stream_message.rs
+--- a/stream_message.rs
++++ b/stream_message.rs
+@@ -11,2 +11,3 @@
+
++use buffa::ViewLifetimeParametric;
+ use buffa::view::{OwnedView, ViewReborrow};
+@@ -82,3 +83,6 @@
+     #[must_use]
+-    pub fn from_message(message: &M) -> Self {
++    pub fn from_message(message: &M) -> Self
++    where
++        M::View<'static>: ViewLifetimeParametric,
++    {
+         let bytes = Bytes::from(buffa::Message::encode_to_vec(message));
+@@ -121,3 +125,6 @@
+     #[must_use]
+-    pub fn to_owned_message(&self) -> M {
++    pub fn to_owned_message(&self) -> M
++    where
++        M::View<'static>: ViewReborrow,
++    {
+         self.inner.as_ref().to_owned_message()
+@@ -185,2 +192,3 @@
+     M: HasMessageView + JsonSerialize,
++    M::View<'static>: ViewReborrow,
+ {

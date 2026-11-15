@@ -119,21 +119,24 @@ fork behavior between Connect, gRPC, HTTP, server, and Workers adapters.
 
 ## RPC Generation
 
-`contract/proto/` is the canonical contract for RPC-shaped behavior. This app
-follows the Connect Rust production workflow from inside the contract crate:
+`contract/proto/` is the canonical contract for RPC-shaped behavior. From
+the Platform root, lint the schema and regenerate the contract:
 
 ```text
-cd apps/example/contract
-buf lint
-buf generate
+(cd apps/example/contract && buf lint)
+scripts/generation/generate-rust-contracts.sh
 ```
 
-`buf generate` is expected to use `protoc-gen-buffa`,
-`protoc-gen-connect-rust`, and `protoc-gen-buffa-packaging` as configured in
+The script checks the exact ReallyMe Buffa plugin versions before calling
+`buf generate` with the local Buffa and ConnectRPC plugins configured in
 `contract/buf.gen.yaml`. Generated Rust is committed under
 `contract/src/generated/`. App adapters import generated code from
 `reallyme-example-contract`; they do not own a second generated tree. Do not
 add Cargo `build.rs` protobuf generation for this app.
+
+The native Connect adapter uses a
+[reproducible ConnectRPC import](../../conformance/contracts/vendor/connectrpc/UPSTREAM.md).
+The transport and generated messages share the same ReallyMe Buffa runtime.
 
 The protobuf `service ExampleService` declaration is one RPC service contained
 by the example app. It is not a server process and must not own listeners,
@@ -148,7 +151,7 @@ Use this sequence for new app-owned protobuf/RPC services.
 2. Define request/response messages with stable field names and comments.
 3. Add the protobuf `service` and RPC methods.
 4. Run `buf lint`.
-5. Run `buf generate`.
+5. Run `scripts/generation/generate-rust-contracts.sh` from the Platform root.
 6. Commit generated Buffa/Connect code under `contract/src/generated/`.
 7. Add or update host-neutral DTOs/ports/errors in `contract/src/`.
 8. Add a host-neutral request/response/use-case in `src/app/`.
@@ -272,10 +275,8 @@ through `reallyme-server-kit`; the Worker uses Workers observability.
 Before using this app as a reference for a new app, run:
 
 ```text
-cd apps/example/contract
-buf lint
-buf generate
-cd ../../..
+(cd apps/example/contract && buf lint)
+scripts/generation/generate-rust-contracts.sh
 cargo fmt --all
 cargo check
 cargo test
