@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "example-app"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "axum",
  "axum-test",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "example-server"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "axum",
  "example-app",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "example-worker"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "buffa",
  "example-app",
@@ -2821,7 +2821,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platform-tls-provider-conformance"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "reallyme-nats-kit",
  "reallyme-typesense-kit",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-app-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3770,7 +3770,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-example-contract"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "buffa",
  "connectrpc",
@@ -3781,7 +3781,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-foundationdb-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "foundationdb",
@@ -3798,7 +3798,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-nats-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "async-nats",
  "bytes",
@@ -3819,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-platform"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "reallyme-app-kit",
  "reallyme-foundationdb-kit",
@@ -3833,7 +3833,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-postgres-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "bb8",
  "bb8-postgres",
@@ -3851,7 +3851,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-s3-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "futures-util",
  "reallyme-crypto",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-server-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "axum",
  "axum-test",
@@ -3909,7 +3909,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-typesense-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3932,7 +3932,7 @@ dependencies = [
 
 [[package]]
 name = "reallyme-valkey-kit"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "redis",
  "rustls",

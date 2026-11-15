@@ -1,7 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
+- Add Kani checks for request admission, gRPC identity and deadlines, rate
+  limiting, and FoundationDB tenant data boundaries. Add TLA+ models for
+  server shutdown and FoundationDB deletion, retry, and recovery protocols.
+- Add durable tenant deletion and recovery to `fdb-tenant-admin`, with
+  control-tenant reservations, ownership takeover, and tombstone reclamation.
+  Deletion and recovery retries verify the original tenant ID to protect
+  replacements after name reuse.
+- Enforce FoundationDB transaction budgets before starting callbacks and
+  submitting commits. Duplicate gRPC timeout metadata is rejected.
+- Add `ClusterIdentityUnavailable` to `FdbSetupErrorReason` and
+  `DuplicateTimeout` to `GrpcDeadlineErrorReason`. Downstream exhaustive
+  matches must handle the new variants.
 - Align the workspace MSRV, stable toolchain, CI checks, and example server
   Docker builder on Rust 1.100.0.
 

@@ -175,8 +175,10 @@ jobs:
           cargo deny --all-features check
           cargo audit
           baseline_tag="$(git describe --tags --match 'v[0-9]*' --abbrev=0)"
+          # Infer the compatibility requirement from the workspace version change,
+          # including breaking minor-version bumps before 1.0.
           cargo semver-checks check-release --workspace \
-            --baseline-rev "$baseline_tag" --release-type patch
+            --baseline-rev "$baseline_tag"
 
       - name: Feature separation
         run: |
