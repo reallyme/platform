@@ -4,6 +4,7 @@
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::{IpAddr, Ipv6Addr};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard};
 use std::time::Instant;
@@ -22,6 +23,9 @@ use crate::task::{ShutdownToken, TaskExecutionError};
 #[path = "rate_limit/state.rs"]
 mod state;
 use state::RateLimitBucketState;
+#[path = "rate_limit/refill.rs"]
+mod refill;
+use refill::{BucketCredits, refill_credits};
 
 /// Maximum number of retained per-source buckets per registry.
 ///
@@ -358,22 +362,23 @@ fn refill_bucket_scaled(
     capacity: u32,
     refill_multiplier: u32,
 ) {
-    let elapsed = now.saturating_duration_since(bucket.last_refill_at);
-    const NANOS_PER_SECOND: u128 = 1_000_000_000;
-    let denominator = NANOS_PER_SECOND.saturating_mul(u128::from(divisor));
-    let accrued = elapsed
-        .as_nanos()
-        .saturating_mul(u128::from(policy.refill_tokens_per_second()))
-        .saturating_mul(u128::from(refill_multiplier))
-        .saturating_add(u128::from(bucket.fractional_tokens));
-    let refill = accrued / denominator;
-    let refill_u32 = u32::try_from(refill).unwrap_or(u32::MAX);
-    bucket.tokens = bucket.tokens.saturating_add(refill_u32).min(capacity);
-    bucket.fractional_tokens = if bucket.tokens == capacity {
-        0
-    } else {
-        u64::try_from(accrued % denominator).unwrap_or_default()
+    let Some(divisor) = NonZeroU32::new(divisor) else {
+        return;
     };
+    let credits = refill_credits(
+        BucketCredits {
+            tokens: bucket.tokens,
+            fractional_tokens: bucket.fractional_tokens,
+        },
+        now.saturating_duration_since(bucket.last_refill_at)
+            .as_nanos(),
+        policy.refill_tokens_per_second(),
+        divisor,
+        capacity,
+        refill_multiplier,
+    );
+    bucket.tokens = credits.tokens;
+    bucket.fractional_tokens = credits.fractional_tokens;
     bucket.last_refill_at = now;
 }
 

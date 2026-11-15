@@ -13,8 +13,10 @@ use foundationdb::{
 };
 use thiserror::Error;
 
-pub(super) const RESERVED_METADATA_START: &[u8] = b"__meta";
-pub(super) const RESERVED_METADATA_END: &[u8] = b"__metb";
+#[path = "data_keyspace.rs"]
+mod keyspace;
+pub(super) use keyspace::{RESERVED_METADATA_END, RESERVED_METADATA_START};
+use keyspace::{is_reserved_key, range_overlaps_metadata};
 const MAX_TENANT_KEY_BYTES: usize = 10_000;
 const MAX_TENANT_VALUE_BYTES: usize = 100_000;
 const MAX_RANGE_RESULTS: usize = 64;
@@ -96,7 +98,7 @@ impl<'a> TenantDataKey<'a> {
         if bytes.len() > MAX_TENANT_KEY_BYTES {
             return Err(TenantDataAccessErrorReason::KeyTooLong);
         }
-        if (RESERVED_METADATA_START..RESERVED_METADATA_END).contains(&bytes) || bytes[0] == 0xff {
+        if is_reserved_key(bytes) {
             return Err(TenantDataAccessErrorReason::ReservedKey);
         }
         Ok(Self { bytes })
@@ -122,7 +124,7 @@ impl<'a> TenantDataRange<'a> {
         if begin.as_bytes() >= end.as_bytes() {
             return Err(TenantDataAccessErrorReason::InvalidRange);
         }
-        if begin.as_bytes() < RESERVED_METADATA_END && end.as_bytes() > RESERVED_METADATA_START {
+        if range_overlaps_metadata(begin.as_bytes(), end.as_bytes()) {
             return Err(TenantDataAccessErrorReason::ReservedRange);
         }
         Ok(Self { begin, end })

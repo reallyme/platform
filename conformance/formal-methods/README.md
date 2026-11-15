@@ -353,3 +353,71 @@ acquisition, recovery, and guarded grant transactions. The
 [live cutoff test](../../kits/foundationdb/src/fdb/tenant/reservation_cutoff_tests.rs)
 forces both commit orders between a claim and an advance. It also tests
 a resume racing an advance, an ambiguous advance retry, and name reuse.
+Reclamation reads the cutoff and the exact tombstone in the transaction
+that removes it. The live test retries an unknown reclaim result while
+a newer reservation is active and checks that the stale intent expires.
+
+## Trusted proxy admission
+
+The [Kani harness](proxy_trust.rs) checks the production gate used by HTTP
+normalization of forwarded client identity, host, and scheme and by gRPC
+source selection. It checks that an untrusted peer or a disabled field can
+neither supply the result nor invoke the header reader. Transport address
+classification and header parsing are covered by [HTTP](../../kits/server/src/http/layers/security/tests.rs)
+and [gRPC](../../kits/server/src/grpc/policy_tests.rs) regressions.
+
+## gRPC principal binding
+
+The [Kani harness](grpc_authorization.rs) checks the production composition
+used by the combined gRPC security interceptor. Authentication failure skips
+authorization. Successful dispatch requires both policy results and carries
+the exact identity supplied to the authorizer. The
+[interceptor regression](../../kits/server/src/grpc/interceptors_tests.rs)
+checks that a pre-existing extension cannot substitute a principal.
+
+## Tenant data keyspace
+
+The [Kani harness](tenant_keyspace.rs) exercises the production predicates
+used by the tenant data capability. It checks that individual keys exclude
+the metadata and system prefixes and that an admitted half-open range
+contains no reserved key. It explores keys up to eight bytes, covering both
+six-byte metadata boundary keys and suffixes. The transaction handle scopes
+the request to its tenant. The harness checks the keyspace within that scope.
+
+## Rate-limit refill
+
+The [Kani harness](rate_limit_refill.rs) checks the arithmetic used by the
+[runtime limiter](../../kits/server/src/runtime/rate_limit/refill.rs).
+Starting within capacity, a refill preserves existing tokens, never
+exceeds the configured capacity, and clears carried credit when it fills
+the bucket. A second harness compares subdivision of a fractional token
+against integer division at a single-token refill rate. The runtime's
+clock, source eviction, and shard allocation are outside the harness.
+
+## Server lifecycle
+
+[ServerLifecycle.tla](ServerLifecycle.tla) follows two listeners and two
+critical tasks from startup through shutdown. In the model readiness
+requires both listeners and both task acknowledgements. After a shutdown
+request or observed failure, readiness stays false. A serving runtime lets
+readiness propagate before draining listeners. Before app cleanup, each
+listener has stopped or had cancellation requested at the deadline.
+
+| Configuration | TLC checks |
+| --- | --- |
+| [Ordered lifecycle](ServerLifecycle.cfg) | Startup readiness, readiness withdrawal, the propagation interval, and drain completion before cleanup. |
+| [Signal watcher failure bypasses drain](ServerLifecycleSignalError.cfg) | Returning from a watcher failure leaves the service ready. The runner requires `ReadinessWithdrawnDuringShutdown` to fail. |
+| [Drain starts before propagation](ServerLifecycleEarlyDrain.cfg) | Listener drain starts while the readiness change is still propagating. The runner requires `ServingDrainWaitsForPropagation` to fail. |
+| [Signal watcher failure completes shutdown](ServerLifecycleProgress.cfg) | The runner requires a witness reaching the end of an ordered shutdown after the watcher fails and the deadline forces cancellation. It checks for `NoOrderedSignalErrorShutdown` to fail. |
+
+The model treats completion of the configured delay as a single action.
+Critical-task failure enters shutdown when the supervisor observes it.
+The [runtime regression](../../kits/server/src/runtime/server/tests/phases.rs)
+checks readiness and phases after the signal channel closes and checks
+that the original watcher error is returned after shutdown.
+
+## Application-specific verification
+
+Permission, principal and resource binding, delegated authority, replay
+prevention, and cross-service evidence depend on the product's policy and
+storage adapters. Each product needs proofs against those implementations.

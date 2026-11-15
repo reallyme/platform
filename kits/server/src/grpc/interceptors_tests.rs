@@ -156,10 +156,19 @@ impl GrpcAuthorizationPolicy for RequireBoundPrincipal {
 #[test]
 fn composable_security_interceptor_binds_principal_to_authorization() {
     let mut interceptor = GrpcSecurityInterceptor::new(AcceptAuthentication, RequireBoundPrincipal);
+    let mut request = tonic::Request::new(());
+    // An extension inserted before the interceptor must never substitute
+    // for the identity returned by authentication.
+    request.extensions_mut().insert(Principal::Anonymous);
     let request = interceptor
-        .call(tonic::Request::new(()))
+        .call(request)
         .expect("bound principal should be allowed");
-    assert!(request.extensions().get::<Principal>().is_some());
+    let identity = request
+        .extensions()
+        .get::<Principal>()
+        .and_then(Principal::authenticated)
+        .expect("authenticated principal installed");
+    assert_eq!(identity.principal_id().as_str(), "service-a");
 
     let (_reporter, service) = tonic_health::server::health_reporter();
     let protected = tonic::service::interceptor::InterceptedService::new(

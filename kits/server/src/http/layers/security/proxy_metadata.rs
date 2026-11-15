@@ -14,7 +14,7 @@ use crate::config::{HostAuthority, NetworkPort, TrustedProxyHeaderFamily};
 use super::{
     FORWARDED_HEADER, ForwardedHost, ForwardedMetadataDebugReason, ForwardedProto,
     ProxyMetadataError, X_FORWARDED_FOR_HEADER, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
-    X_FORWARDED_PROTO_HEADER, X_REAL_IP_HEADER, is_operational_route,
+    X_FORWARDED_PROTO_HEADER, X_REAL_IP_HEADER, is_operational_route, read_trusted_metadata,
 };
 
 #[path = "proxy_metadata/client_chain.rs"]
@@ -80,19 +80,19 @@ pub(super) fn normalized_external_host(
     listener_name: &str,
     route_template: &str,
 ) -> Result<Option<ForwardedHost>, ProxyMetadataError> {
-    if trusted_peer && trust_forwarded_host {
-        let forwarded = forwarded_host_from_forwarded_header(request.headers());
-        let x_forwarded = forwarded_host_from_x_forwarded_headers(request.headers());
-
-        if let Some(authority) = resolve_forwarded_host_precedence(
-            forwarded,
-            x_forwarded,
+    if let Some(authority) = read_trusted_metadata(trusted_peer, trust_forwarded_host, || {
+        resolve_forwarded_host_precedence(
+            forwarded_host_from_forwarded_header(request.headers()),
+            forwarded_host_from_x_forwarded_headers(request.headers()),
             strict_forwarded_header_consistency,
             listener_name,
             route_template,
-        )? {
-            return Ok(Some(authority));
-        }
+        )
+    })
+    .transpose()?
+    .flatten()
+    {
+        return Ok(Some(authority));
     }
 
     Ok(direct_host_authority(request).map(ForwardedHost::new))
@@ -106,19 +106,19 @@ pub(super) fn normalized_external_proto(
     listener_name: &str,
     route_template: &str,
 ) -> Result<Option<ForwardedProto>, ProxyMetadataError> {
-    if trusted_peer && trust_forwarded_proto {
-        let forwarded = forwarded_proto_from_forwarded_header(request.headers());
-        let x_forwarded = forwarded_proto_from_x_forwarded_headers(request.headers());
-
-        if let Some(proto) = resolve_forwarded_proto_precedence(
-            forwarded,
-            x_forwarded,
+    if let Some(proto) = read_trusted_metadata(trusted_peer, trust_forwarded_proto, || {
+        resolve_forwarded_proto_precedence(
+            forwarded_proto_from_forwarded_header(request.headers()),
+            forwarded_proto_from_x_forwarded_headers(request.headers()),
             strict_forwarded_header_consistency,
             listener_name,
             route_template,
-        )? {
-            return Ok(Some(proto));
-        }
+        )
+    })
+    .transpose()?
+    .flatten()
+    {
+        return Ok(Some(proto));
     }
 
     // Absolute-form request targets are controlled by the caller and cannot

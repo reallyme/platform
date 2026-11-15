@@ -20,7 +20,10 @@ use super::phase::{ServerRuntimePhase, ServerRuntimePhaseReporter};
 use super::readiness_drain::ReadinessDrainDelay;
 
 pub(crate) enum RuntimeTermination {
-    Shutdown(ShutdownReason),
+    Shutdown {
+        reason: ShutdownReason,
+        signal_error: Option<ShutdownError>,
+    },
     CriticalTask(CriticalTaskFailure),
 }
 
@@ -38,23 +41,33 @@ pub(crate) struct CriticalTerminationContext<'a> {
 pub(crate) async fn wait_for_runtime_termination<F>(
     shutdown_signal_future: F,
     critical_task_monitor: &mut Option<CriticalTaskMonitor>,
-) -> Result<RuntimeTermination, ServerRuntimeError>
+) -> RuntimeTermination
 where
     F: Future<Output = Result<ShutdownReason, ShutdownError>>,
 {
     let Some(monitor) = critical_task_monitor.as_mut() else {
-        return shutdown_signal_future
-            .await
-            .map(RuntimeTermination::Shutdown)
-            .map_err(|source| ServerRuntimeError::Shutdown { source });
+        return signal_termination(shutdown_signal_future.await);
     };
 
     tokio::select! {
         biased;
-        shutdown = shutdown_signal_future => shutdown
-            .map(RuntimeTermination::Shutdown)
-            .map_err(|source| ServerRuntimeError::Shutdown { source }),
-        failure = monitor.next_failure() => Ok(RuntimeTermination::CriticalTask(failure)),
+        shutdown = shutdown_signal_future => signal_termination(shutdown),
+        failure = monitor.next_failure() => RuntimeTermination::CriticalTask(failure),
+    }
+}
+
+fn signal_termination(result: Result<ShutdownReason, ShutdownError>) -> RuntimeTermination {
+    // A failed watcher still needs the ordered shutdown path so readiness
+    // and listener lifetime agree before the original error is returned.
+    match result {
+        Ok(reason) => RuntimeTermination::Shutdown {
+            reason,
+            signal_error: None,
+        },
+        Err(error) => RuntimeTermination::Shutdown {
+            reason: ShutdownReason::Unknown,
+            signal_error: Some(error),
+        },
     }
 }
 

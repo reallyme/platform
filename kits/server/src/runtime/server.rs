@@ -420,10 +420,12 @@ impl ServerRuntime {
         log_service_ready(&server_name);
 
         let termination =
-            wait_for_runtime_termination(shutdown_signal_future, &mut critical_task_monitor)
-                .await?;
-        let reason = match termination {
-            RuntimeTermination::Shutdown(reason) => reason,
+            wait_for_runtime_termination(shutdown_signal_future, &mut critical_task_monitor).await;
+        let (reason, signal_error) = match termination {
+            RuntimeTermination::Shutdown {
+                reason,
+                signal_error,
+            } => (reason, signal_error),
             RuntimeTermination::CriticalTask(failure) => {
                 return Err(terminate_for_critical_task(
                     failure,
@@ -453,11 +455,7 @@ impl ServerRuntime {
 
         tokio::time::sleep(readiness_drain_delay.as_duration()).await;
 
-        let drain_error = tasks
-            .shutdown(reason, active_shutdown_timeout)
-            .await
-            .err()
-            .map(|source| ServerRuntimeError::Shutdown { source });
+        let drain_error = tasks.shutdown(reason, active_shutdown_timeout).await.err();
 
         // Cleanup owns app resources that may need release even when an
         // in-flight request or managed task exceeded its drain deadline.
@@ -478,16 +476,16 @@ impl ServerRuntime {
         log_shutdown_completed(&server_name, reason);
         transition_runtime_phase(&phase_reporter, &server_name, ServerRuntimePhase::Stopped);
 
-        if let Some(error) = drain_error {
+        if let Some(source) = signal_error.or(drain_error) {
             if cleanup_result.is_err() {
                 crate::observability::log_error(
                     crate::observability::ErrorKind::Internal,
-                    "app cleanup also failed after task drain error",
+                    "app cleanup also failed during shutdown",
                     None,
                     None,
                 );
             }
-            Err(error)
+            Err(ServerRuntimeError::Shutdown { source })
         } else {
             cleanup_result
         }

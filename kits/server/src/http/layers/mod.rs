@@ -21,11 +21,11 @@ pub use normalize::normalize_http_error_responses_layer;
 pub use request_id::request_id_layer;
 pub use route_visibility::route_visibility_layer;
 pub(crate) use route_visibility::route_visibility_layer_with_rate_limit_registry;
-#[cfg(feature = "tonic-grpc")]
-pub(crate) use security::client_ip_from_x_forwarded_for;
 pub use security::{
     ExternalRequestOrigin, ForwardedClientIp, ForwardedHost, ForwardedProto, security_layer,
 };
+#[cfg(feature = "tonic-grpc")]
+pub(crate) use security::{client_ip_from_x_forwarded_for, read_trusted_metadata};
 pub use timeout::timeout_layer;
 pub use trace::trace_layer;
 pub use trace_id::trace_id_layer;

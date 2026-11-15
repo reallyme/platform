@@ -12,6 +12,9 @@ use crate::authn::Principal;
 use super::metadata::attach_correlation_ids;
 use super::status::ToGrpcStatus;
 
+#[path = "authorize_call.rs"]
+mod binding;
+
 /// Synchronous authentication policy for gRPC interceptors.
 ///
 /// Tonic interceptors are synchronous, so this scaffolding is intentionally
@@ -138,9 +141,24 @@ where
     Authentication: GrpcAuthenticationPolicy,
     Authorization: GrpcAuthorizationPolicy,
 {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
-        let authenticated = self.authentication.call(request)?;
-        self.authorization.call(authenticated)
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        let metadata = request.metadata();
+        let principal = binding::authorize_call(
+            || {
+                self.authentication
+                    .policy
+                    .authenticate(metadata)
+                    .map_err(|error| error.to_grpc_status())
+            },
+            |principal| {
+                self.authorization
+                    .policy
+                    .authorize(principal, metadata)
+                    .map_err(|error| error.to_grpc_status())
+            },
+        )?;
+        request.extensions_mut().insert(principal);
+        Ok(request)
     }
 }
 

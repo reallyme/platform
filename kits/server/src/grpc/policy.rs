@@ -21,7 +21,7 @@ use tower::{Layer, Service};
 use crate::config::TrustedProxyHeaders;
 use crate::grpc::{GRPC_TIMEOUT_METADATA_KEY, GrpcTimeout};
 use crate::http::ForwardedClientIp;
-use crate::http::client_ip_from_x_forwarded_for;
+use crate::http::{client_ip_from_x_forwarded_for, read_trusted_metadata};
 use crate::observability::{
     HttpMethodLabel, HttpRateLimitOutcome, HttpRejectionReason, MetricRouteTemplateLabel,
     TransportLabel, record_http_rate_limit_decision_for_route_template_with_transport,
@@ -346,10 +346,13 @@ fn request_source_identity(
     // Interceptors that authenticate a service run inside this transport
     // policy layer. A principal is therefore unavailable at this boundary.
     if let Some(peer_ip) = request_peer_ip(request) {
-        if trusted_proxy_headers.trusts_peer(Some(peer_ip))
-            && let Some(forwarded_ip) = request_source_forwarded_ip(request).or_else(|| {
+        let trusted_peer = trusted_proxy_headers.trusts_peer(Some(peer_ip));
+        if let Some(forwarded_ip) = read_trusted_metadata(trusted_peer, true, || {
+            request_source_forwarded_ip(request).or_else(|| {
                 client_ip_from_x_forwarded_for(request.headers(), trusted_proxy_headers)
             })
+        })
+        .flatten()
         {
             return RateLimitSourceIdentity::ForwardedIp(forwarded_ip);
         }

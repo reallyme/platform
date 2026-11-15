@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tower::{Layer, Service};
 
 use super::response_headers::{
@@ -253,6 +253,45 @@ async fn untrusted_proxy_headers_are_stripped_before_handlers() {
 
     let response = service.call(request).await.expect("infallible service");
 
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn an_untrusted_peer_cannot_attach_forwarded_identity_or_origin() {
+    let host = HostAuthority::new("api.reallyme.net").expect("valid fixture host");
+    let config = HttpSecurityConfig::new(
+        SecurityHeadersConfig::secure_defaults(),
+        HostAuthorityPolicy::allow_list(vec![host]).expect("allowed host"),
+        TrustedProxyHeaders::trust_configured_proxies(vec![
+            TrustedProxyRange::parse("10.0.0.0/8").expect("valid proxy range"),
+        ])
+        .expect("valid trusted peer policy"),
+        TrustedProxyRequestMetadataConfig::new(true, true, false, false, true),
+        OperationalRouteAccess::LocalOnly,
+    );
+    let mut service =
+        security_layer(&config).layer(tower::service_fn(|request: Request<Body>| async move {
+            let extensions = request.extensions();
+            assert!(extensions.get::<super::ForwardedClientIp>().is_none());
+            assert!(extensions.get::<ForwardedProto>().is_none());
+            assert!(extensions.get::<ExternalRequestOrigin>().is_none());
+            let host = extensions
+                .get::<ForwardedHost>()
+                .expect("normalized direct host");
+            assert_eq!(host.authority().as_str(), "api.reallyme.net");
+            Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
+        }));
+    let mut request = Request::builder()
+        .uri("/app")
+        .header("host", "api.reallyme.net")
+        .header("x-forwarded-for", "203.0.113.1")
+        .header("x-forwarded-host", "ignored.example")
+        .header("x-forwarded-proto", "https")
+        .body(Body::empty())
+        .expect("build request");
+    let remote = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), 40_000));
+    request.extensions_mut().insert(ConnectInfo(remote));
+    let response = service.call(request).await.expect("infallible service");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 

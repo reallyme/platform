@@ -9,6 +9,10 @@ model_dir="conformance/formal-methods"
 path_policy="kits/server/src/http/layers/route_visibility/policy_path.rs"
 route_admission="kits/server/src/http/visibility/admission.rs"
 route_selection="kits/server/src/http/visibility/selection.rs"
+proxy_trust="kits/server/src/http/layers/security/proxy_trust.rs"
+rate_limit_refill="kits/server/src/runtime/rate_limit/refill.rs"
+grpc_authorization="kits/server/src/grpc/authorize_call.rs"
+tenant_keyspace="kits/foundationdb/src/fdb/tenant/data_keyspace.rs"
 
 : "${TLA2TOOLS_JAR:?Set TLA2TOOLS_JAR to the path to the TLA+ tools JAR}"
 if [[ ! -f "$TLA2TOOLS_JAR" || ! -r "$TLA2TOOLS_JAR" ]]; then
@@ -23,11 +27,14 @@ jar_path="$jar_dir/$(basename "$TLA2TOOLS_JAR")"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/$model_dir"
-for source in "$path_policy" "$route_admission" "$route_selection"; do
+for source in "$path_policy" "$route_admission" "$route_selection" "$proxy_trust" \
+  "$rate_limit_refill" "$grpc_authorization" "$tenant_keyspace"; do
   mkdir -p "$scratch/$(dirname "$source")"
   cp "$repo_root/$source" "$scratch/$source"
 done
-cp "$repo_root/$model_dir/"{policy_path.rs,route_admission.rs,route_selection.rs} "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{policy_path.rs,route_admission.rs,route_selection.rs,proxy_trust.rs,rate_limit_refill.rs} \
+  "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"{grpc_authorization.rs,tenant_keyspace.rs} "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantDeletion.tla,TenantDeletion.cfg} "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"{TenantRecovery.tla,TenantRecovery.cfg,TenantRecoveryLookupOnly.cfg} \
   "$scratch/$model_dir/"
@@ -49,11 +56,17 @@ cp "$repo_root/$model_dir/"TenantReservationPruning{.tla,.cfg,Ambiguous.cfg,Name
   "$scratch/$model_dir/"
 cp "$repo_root/$model_dir/"TenantReservationCutoff{.tla,.cfg,Preflight.cfg,EarlyReclaim.cfg,Progress.cfg} \
   "$scratch/$model_dir/"
+cp "$repo_root/$model_dir/"ServerLifecycle{.tla,.cfg,SignalError.cfg,EarlyDrain.cfg,Progress.cfg} \
+  "$scratch/$model_dir/"
 
 cd "$scratch/$model_dir"
 kani --output-format terse policy_path.rs
 kani --output-format terse route_admission.rs
 kani --output-format terse route_selection.rs
+kani --output-format terse proxy_trust.rs
+kani --output-format terse rate_limit_refill.rs
+kani --output-format terse grpc_authorization.rs
+kani --output-format terse tenant_keyspace.rs
 
 run_tlc() {
   java -Xmx512m -XX:+UseParallelGC -cp "$jar_path" tlc2.TLC -workers 1 "$@"
@@ -99,3 +112,7 @@ run_tlc TenantReservationCutoff
 expect_invariant_violation TenantReservationCutoff TenantReservationCutoffPreflight NoStaleClaimAfterNameReuse
 expect_invariant_violation TenantReservationCutoff TenantReservationCutoffEarlyReclaim NoSameGenerationClaimAfterReclaim
 expect_invariant_violation TenantReservationCutoff TenantReservationCutoffProgress NoProgressAfterCutoff
+run_tlc ServerLifecycle
+expect_invariant_violation ServerLifecycle ServerLifecycleSignalError ReadinessWithdrawnDuringShutdown
+expect_invariant_violation ServerLifecycle ServerLifecycleEarlyDrain ServingDrainWaitsForPropagation
+expect_invariant_violation ServerLifecycle ServerLifecycleProgress NoOrderedSignalErrorShutdown

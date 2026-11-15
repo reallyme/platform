@@ -42,7 +42,7 @@ mod ids;
 mod internal;
 mod layers;
 #[cfg(feature = "tonic-grpc")]
-pub(crate) use layers::client_ip_from_x_forwarded_for;
+pub(crate) use layers::{client_ip_from_x_forwarded_for, read_trusted_metadata};
 mod response;
 mod routes;
 pub(crate) use routes::apply_standard_router_layers_after_cors;

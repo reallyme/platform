@@ -8,6 +8,8 @@ mod origin;
 pub use origin::{ExternalRequestOrigin, ForwardedClientIp, ForwardedHost, ForwardedProto};
 
 mod proxy_metadata;
+#[path = "security/proxy_trust.rs"]
+mod proxy_trust;
 #[cfg(feature = "tonic-grpc")]
 pub(crate) use proxy_metadata::client_ip_from_x_forwarded_for;
 use proxy_metadata::{
@@ -15,6 +17,7 @@ use proxy_metadata::{
     has_mixed_proxy_header_families, normalized_external_host, normalized_external_proto,
     request_contains_proxy_headers, strip_unselected_proxy_headers, strip_untrusted_proxy_headers,
 };
+pub(crate) use proxy_trust::read_trusted_metadata;
 
 #[path = "security/request_policy.rs"]
 mod request_policy;
@@ -310,11 +313,9 @@ where
             }
         }
 
-        if trusted_peer {
-            let client_ip = forwarded_client_ip_from_headers(
-                request.headers(),
-                self.config.trusted_proxy_headers(),
-            );
+        if let Some(client_ip) = read_trusted_metadata(trusted_peer, true, || {
+            forwarded_client_ip_from_headers(request.headers(), self.config.trusted_proxy_headers())
+        }) {
             let client_ip = match client_ip {
                 Ok(client_ip) => client_ip,
                 Err(_) => {

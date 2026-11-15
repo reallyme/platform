@@ -15,7 +15,7 @@ use crate::runtime::{
     HttpServerSpec, RuntimeStartupCheck, ServerRuntime, ServerRuntimeError, ServerRuntimePhase,
     ServerRuntimePhaseReporter, ServerRuntimeTransport,
 };
-use crate::shutdown::ShutdownReason;
+use crate::shutdown::{ShutdownError, ShutdownReason};
 use crate::startup::{ServerName, TaskName};
 use crate::task::{ShutdownTimeout, TaskExecutionError};
 use crate::version::BuildInfo;
@@ -27,6 +27,18 @@ fn runtime_phase_ordering_is_observable_in_subprocess() {
     assert!(
         output.status.success(),
         "phase regression subprocess failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_one_subprocess_test_passed(&output);
+}
+
+#[test]
+fn a_failed_signal_watcher_clears_readiness_before_shutdown() {
+    let output = spawn_phase_regression_worker("signal-error");
+    assert!(
+        output.status.success(),
+        "signal watcher regression subprocess failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -58,14 +70,17 @@ fn phase_regression_subprocess_worker() {
         .expect("worker tokio runtime should build")
         .block_on(async move {
             match action.to_string_lossy().as_ref() {
-                "phase-order" => runtime_phase_order_worker().await,
+                "phase-order" => runtime_phase_order_worker(Ok(ShutdownReason::Sigterm)).await,
+                "signal-error" => {
+                    runtime_phase_order_worker(Err(ShutdownError::SignalChannelClosed)).await
+                }
                 "bind-failure" => failed_bind_phase_worker().await,
                 value => panic!("unsupported phase regression action: {value}"),
             }
         });
 }
 
-async fn runtime_phase_order_worker() {
+async fn runtime_phase_order_worker(shutdown: Result<ShutdownReason, ShutdownError>) {
     let server_name = ServerName::new("runtime-phase-order-regression").expect("valid server name");
     let readiness = Readiness::new();
     let mut readiness_watcher = readiness.watch();
@@ -90,11 +105,12 @@ async fn runtime_phase_order_worker() {
     assert!(!readiness.is_ready());
 
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+    let signal_error = shutdown.is_err();
     let runtime_task = tokio::spawn(runtime.run_until_shutdown(async move {
         shutdown_receiver
             .await
             .expect("test shutdown trigger should be sent");
-        Ok(ShutdownReason::Sigterm)
+        shutdown
     }));
 
     assert_eq!(
@@ -151,11 +167,20 @@ async fn runtime_phase_order_worker() {
         ServerRuntimePhase::Stopped
     );
 
-    runtime_task
-        .await
-        .expect("runtime task should not panic")
-        .expect("runtime should shut down cleanly");
-    assert_eq!(phase_watcher.current(), ServerRuntimePhase::Stopped);
+    let result = runtime_task.await.expect("runtime task should not panic");
+    if signal_error {
+        assert!(matches!(
+            result,
+            Err(ServerRuntimeError::Shutdown {
+                source: ShutdownError::SignalChannelClosed
+            })
+        ));
+        assert_eq!(phase_watcher.current(), ServerRuntimePhase::Failed);
+    } else {
+        result.expect("runtime should shut down cleanly");
+        assert_eq!(phase_watcher.current(), ServerRuntimePhase::Stopped);
+    }
+    assert!(!readiness.is_ready());
 }
 
 async fn failed_bind_phase_worker() {
