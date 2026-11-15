@@ -220,6 +220,13 @@ async fn reserved_delete_reconciles_across_processes() {
     let competing = cli_with_control(&delete, Some(&contender), control).await;
     assert!(!competing.status.success());
     assert!(String::from_utf8_lossy(&competing.stderr).contains("another operation holds"));
+    let cutoff = cli_with_control(&["delete-cutoff", RESERVATION_TENANT], None, control).await;
+    assert!(cutoff.status.success());
+    assert_eq!(cutoff.stdout, b"0\n");
+    let advance = ["advance-delete-cutoff", RESERVATION_TENANT, "1"];
+    let active = cli_with_control(&advance, None, control).await;
+    assert!(!active.status.success());
+    assert!(String::from_utf8_lossy(&active.stderr).contains("another operation holds"));
     for path in [&intent, &contender] {
         let rejected = cli(&["prune-delete"], Some(path)).await;
         assert!(!rejected.status.success());
@@ -292,12 +299,31 @@ async fn reserved_delete_reconciles_across_processes() {
     transaction.clear(data);
     transaction.commit().await.expect("remove fixture data");
 
+    for _ in 0..2 {
+        let advanced = cli_with_control(&advance, None, control).await;
+        assert!(
+            advanced.status.success(),
+            "{}",
+            String::from_utf8_lossy(&advanced.stderr)
+        );
+        assert_eq!(advanced.stdout, b"1\n");
+    }
+    let stale = cli(&["resume-delete"], Some(&contender)).await;
+    assert!(!stale.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("expired at the tenant admission cutoff")
+    );
     let completed = records.path().join("completed");
     let deleted = cli_with_control(&delete, Some(&completed), control).await;
     assert!(
         deleted.status.success(),
         "{}",
         String::from_utf8_lossy(&deleted.stderr)
+    );
+    assert!(
+        fs::read_to_string(&completed)
+            .expect("read new intent")
+            .starts_with("fdb-tenant-delete-v3\n")
     );
     TenantManagement::create_tenant(&database, tenant.as_bytes())
         .await

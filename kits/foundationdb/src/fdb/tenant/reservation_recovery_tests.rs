@@ -7,9 +7,9 @@ use foundationdb::{Database, tenant::TenantManagement};
 
 use super::{
     Claim, CompletionTombstone, DriverError, Grant, Phase, ReservationControlTenant,
-    ReservationErrorReason, ReservationId, ReservationIntent, ReservationRecord, ReservationStore,
-    StoredReservation, TENANT_ADMIN_TIMEOUT, TenantDeleteResolution, configure_transaction,
-    mapping_matches, stage_clear, stage_delete,
+    ReservationErrorReason, ReservationGeneration, ReservationId, ReservationIntent,
+    ReservationRecord, ReservationStore, StoredReservation, TENANT_ADMIN_TIMEOUT,
+    TenantDeleteResolution, configure_transaction, mapping_matches, stage_clear, stage_delete,
 };
 use crate::fdb::tenant::{
     FDB_NOT_COMMITTED_ERROR_CODE,
@@ -23,6 +23,7 @@ const FDB_COMMIT_UNKNOWN_RESULT: i32 = 1021;
 fn rejects_corrupt_reservation_rows() {
     let record = StoredReservation {
         original_id: 42,
+        generation: ReservationGeneration::new(u64::MAX),
         epoch: 2,
         claimant: ReservationId::from_bytes([0xa5; 16]),
         expires_at: 10_000_000,
@@ -31,6 +32,7 @@ fn rejects_corrupt_reservation_rows() {
     let encoded = record.encode();
     let decoded = StoredReservation::decode(&encoded).expect("valid fixture record");
     assert_eq!(decoded.original_id, record.original_id);
+    assert_eq!(decoded.generation, record.generation);
     assert_eq!(decoded.epoch, record.epoch);
     assert!(decoded.claimant == record.claimant);
     assert_eq!(decoded.expires_at, record.expires_at);
@@ -91,6 +93,7 @@ fn decodes_legacy_completions_and_rejects_malformed_tombstones() {
         ));
         let compact = CompletionTombstone {
             original_id: 42,
+            generation: ReservationGeneration::LEGACY,
             outcome,
         }
         .encode();
@@ -99,6 +102,7 @@ fn decodes_legacy_completions_and_rejects_malformed_tombstones() {
             ReservationRecord::decode(&compact),
             Ok(ReservationRecord::Tombstone(CompletionTombstone {
                 original_id: 42,
+                generation: ReservationGeneration::LEGACY,
                 outcome: saved,
             })) if saved == outcome
         ));
@@ -108,16 +112,16 @@ fn decodes_legacy_completions_and_rejects_malformed_tombstones() {
                 Err(ReservationErrorReason::InvalidRecord)
             ));
         }
-        let mut negative_id = compact;
+        let mut negative_id = compact.clone();
         negative_id[2] = u8::MAX;
-        let mut active_tag = compact;
+        let mut active_tag = compact.clone();
         active_tag[1] = 1;
-        let mut unknown_version = compact;
+        let mut unknown_version = compact.clone();
         unknown_version[0] = u8::MAX;
         for malformed in [
-            negative_id.to_vec(),
-            active_tag.to_vec(),
-            unknown_version.to_vec(),
+            negative_id,
+            active_tag,
+            unknown_version,
             [compact.as_slice(), &[0]].concat(),
         ] {
             assert!(matches!(
@@ -166,6 +170,7 @@ async fn verify_live_recovery() {
             .expect("target lookup")
             .expect("target ID"),
         operation: ReservationId::generate().expect("operation ID"),
+        generation: ReservationGeneration::LEGACY,
     };
     let grant = store.acquire(intent).await.expect("acquire original grant");
     let competing = ReservationIntent {
@@ -352,6 +357,7 @@ async fn verify_live_pruning() {
             .expect("target lookup")
             .expect("target ID"),
         operation: ReservationId::generate().expect("old operation ID"),
+        generation: ReservationGeneration::LEGACY,
     };
     let absent = TenantDeleteResolution::OriginalAbsent;
     assert_eq!(
@@ -370,6 +376,7 @@ async fn verify_live_pruning() {
             .expect("replacement lookup")
             .expect("replacement ID"),
         operation: ReservationId::generate().expect("replacement operation ID"),
+        generation: ReservationGeneration::LEGACY,
     };
     assert_ne!(old.original_id, replacement.original_id);
     let newer_grant = peer
@@ -438,7 +445,7 @@ async fn verify_live_pruning() {
     assert_eq!(compact.len(), 10);
     assert!(matches!(
         ReservationRecord::decode(compact.as_ref()),
-        Ok(ReservationRecord::Tombstone(CompletionTombstone { original_id, outcome }))
+        Ok(ReservationRecord::Tombstone(CompletionTombstone { original_id, outcome, generation: ReservationGeneration::LEGACY }))
             if original_id == old.original_id && outcome == absent
     ));
     assert_eq!(store.prune_completed(old).await, Ok(absent));

@@ -30,6 +30,12 @@ pub enum ReservationErrorReason {
     /// The operation has no completed cluster record to compact.
     #[error("reservation has no completed outcome to prune")]
     PruneNotCompleted,
+    /// An intent predates the durable cutoff for its tenant name.
+    #[error("delete intent expired at the tenant admission cutoff")]
+    IntentExpired,
+    /// An advance must use an explicit, consecutive nonzero target.
+    #[error("cutoff target must name a nonzero generation at most one past the current cutoff")]
+    InvalidCutoffTarget,
     /// The epoch or owner changed before the mutation could commit.
     #[error("reservation ownership changed; reconcile the recorded delete")]
     Stale,
@@ -52,6 +58,25 @@ pub enum ReservationErrorReason {
 
 /// Result of an operator reservation operation.
 pub type ReservationResult<T> = Result<T, ReservationErrorReason>;
+
+/// Admission generation of a recorded intent for one tenant name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReservationGeneration(u64);
+
+impl ReservationGeneration {
+    /// Generation of existing records that predate the cutoff.
+    pub const LEGACY: Self = Self(0);
+
+    /// Constructs a generation from its durable integer representation.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the durable integer representation.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
 
 /// Random identifier for a durable delete intent.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,4 +149,6 @@ pub struct ReservationIntent {
     pub original_id: i64,
     /// Stable operation ID shared by the local and cluster records.
     pub operation: ReservationId,
+    /// Generation captured with the original ID before the local file is persisted.
+    pub generation: ReservationGeneration,
 }

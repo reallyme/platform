@@ -225,6 +225,24 @@ Active and missing reservations are rejected. Keep the tombstones in the
 control tenant so a stale local file can still distinguish a completed
 operation from one that never acquired a reservation.
 
+### Advance a delete admission cutoff
+
+Upgrade every writer that shares the control tenant before advancing a
+cutoff. The current binary reads existing records as generation zero and
+keeps writing the existing formats while the cutoff is zero.
+
+```sh
+fdb-tenant-admin delete-cutoff example
+fdb-tenant-admin advance-delete-cutoff example 1
+```
+
+Pass the explicit next generation. If the reply is lost, retry the same
+target. Advancing requires an empty active reservation slot. The command
+returns the current generation when the requested target has already been
+reached. New delete files capture the tenant ID and generation together.
+An older pending file can replay a retained completion, and an older
+pending file with no cluster record reports that the intent expired.
+
 The `tenant-admin` feature should be enabled only for operator tooling. Runtime
 code receives `TenantHandle`, whose transaction helpers remain scoped to the
 selected tenant.

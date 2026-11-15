@@ -58,6 +58,22 @@ fn parses_recorded_delete_and_resume_without_changing_existing_commands() {
         parse(&["takeover-delete", "catalog"]),
         Ok(Command::TakeoverDelete(_))
     ));
+    assert!(matches!(
+        parse(&["delete-cutoff", "catalog"]),
+        Ok(Command::DeleteCutoff(_))
+    ));
+    assert!(matches!(
+        parse(&["advance-delete-cutoff", "catalog", "2"]),
+        Ok(Command::AdvanceDeleteCutoff(_, generation)) if generation.value() == 2
+    ));
+    for invalid in ["0", "-1", "+1", "18446744073709551616"] {
+        assert!(matches!(
+            parse(&["advance-delete-cutoff", "catalog", invalid]),
+            Err(AdminToolError::Reservation(
+                super::ReservationErrorReason::InvalidCutoffTarget
+            ))
+        ));
+    }
     for args in [
         &["delete", "catalog", "--record"][..],
         &["delete", "catalog", "--wrong", "path"],
@@ -65,6 +81,7 @@ fn parses_recorded_delete_and_resume_without_changing_existing_commands() {
         &["resume-delete", "path", "unexpected"],
         &["prune-delete"],
         &["prune-delete", "path", "unexpected"],
+        &["advance-delete-cutoff", "catalog"],
     ] {
         assert!(matches!(parse(args), Err(AdminToolError::Usage)));
     }

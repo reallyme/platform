@@ -9,13 +9,19 @@ use crate::{FoundationDbConnector, FoundationDbTenantName};
 #[path = "reservation_types.rs"]
 mod types;
 pub use types::{
-    ReservationControlTenant, ReservationErrorReason, ReservationId, ReservationIntent,
-    ReservationResult,
+    ReservationControlTenant, ReservationErrorReason, ReservationGeneration, ReservationId,
+    ReservationIntent, ReservationResult,
 };
 
 #[path = "reservation_record.rs"]
 mod record;
 use record::{CompletionTombstone, Phase, ReservationRecord, StoredReservation};
+
+#[path = "reservation_claims.rs"]
+mod claims;
+
+#[path = "reservation_cutoff.rs"]
+mod cutoff;
 
 #[path = "reservation_pruning.rs"]
 mod pruning;
@@ -138,115 +144,11 @@ impl<'a> ReservationStore<'a> {
                     tenant,
                     original_id: stored.original_id,
                     operation,
+                    generation: stored.generation,
                 })
             })
             .await?;
         self.resume(intent).await
-    }
-
-    async fn acquire(&self, intent: ReservationIntent) -> ReservationResult<Grant> {
-        self.validate_intent(intent)?;
-        self.transact(async |transaction| {
-            let active = self.active_id(transaction, intent.tenant).await?;
-            if let Some(record) = self
-                .read_record(transaction, intent.tenant, intent.operation)
-                .await?
-            {
-                // Replay after an ambiguous acquisition may observe just this
-                // grant. It cannot reset a transferred or completed record.
-                if let ReservationRecord::Full(stored) = record
-                    && active == Some(intent.operation)
-                    && stored.original_id == intent.original_id
-                    && stored.phase == Phase::Deleting
-                    && stored.claimant == intent.operation
-                {
-                    return Ok(Grant {
-                        intent,
-                        claimant: stored.claimant,
-                        epoch: stored.epoch,
-                        phase: stored.phase,
-                    });
-                }
-                return Err(ReservationErrorReason::Stale.into());
-            }
-            if active.is_some() {
-                return Err(ReservationErrorReason::Busy.into());
-            }
-            if !mapping_matches(transaction, intent.tenant, intent.original_id).await? {
-                return Err(ReservationErrorReason::TargetChanged.into());
-            }
-            let grant = Grant {
-                intent,
-                claimant: intent.operation,
-                epoch: 1,
-                phase: Phase::Deleting,
-            };
-            self.write_grant(transaction, grant).await?;
-            Ok(grant)
-        })
-        .await
-    }
-
-    async fn claim_recovery(&self, intent: ReservationIntent) -> ReservationResult<Claim> {
-        self.validate_intent(intent)?;
-        let claimant = ReservationId::generate()?;
-        self.transact(async |transaction| {
-            let active = self.active_id(transaction, intent.tenant).await?;
-            let epoch = match self
-                .read_record(transaction, intent.tenant, intent.operation)
-                .await?
-            {
-                Some(ReservationRecord::Tombstone(completion)) => {
-                    return Self::completed_outcome(active, intent, completion)
-                        .map(Claim::Complete);
-                }
-                Some(ReservationRecord::Full(stored)) => {
-                    if stored.original_id != intent.original_id {
-                        return Err(ReservationErrorReason::InvalidRecord.into());
-                    }
-                    if let Phase::Complete(outcome) = stored.phase {
-                        if active == Some(intent.operation) {
-                            return Err(ReservationErrorReason::InvalidRecord.into());
-                        }
-                        return Ok(Claim::Complete(outcome));
-                    }
-                    if active != Some(intent.operation) {
-                        return Err(ReservationErrorReason::InvalidRecord.into());
-                    }
-                    if stored.phase == Phase::Recovering && stored.claimant == claimant {
-                        return Ok(Claim::Acquired(Grant {
-                            intent,
-                            claimant,
-                            epoch: stored.epoch,
-                            phase: stored.phase,
-                        }));
-                    }
-                    if transaction.get_read_version().await? < stored.expires_at {
-                        return Err(ReservationErrorReason::LeaseActive.into());
-                    }
-                    stored
-                        .epoch
-                        .checked_add(1)
-                        .ok_or(ReservationErrorReason::InvalidRecord)?
-                }
-                None if active == Some(intent.operation) => {
-                    return Err(ReservationErrorReason::InvalidRecord.into());
-                }
-                None if active.is_some() => return Err(ReservationErrorReason::Busy.into()),
-                // The local intent can survive a crash before acquisition.
-                // Publish recovery-only ownership before touching metadata.
-                None => 1,
-            };
-            let grant = Grant {
-                intent,
-                claimant,
-                epoch,
-                phase: Phase::Recovering,
-            };
-            self.write_grant(transaction, grant).await?;
-            Ok(Claim::Acquired(grant))
-        })
-        .await
     }
 
     fn completed_outcome(
@@ -254,7 +156,10 @@ impl<'a> ReservationStore<'a> {
         intent: ReservationIntent,
         completion: CompletionTombstone,
     ) -> AttemptResult<TenantDeleteResolution> {
-        if completion.original_id != intent.original_id || active == Some(intent.operation) {
+        if completion.original_id != intent.original_id
+            || completion.generation != intent.generation
+            || active == Some(intent.operation)
+        {
             return Err(ReservationErrorReason::InvalidRecord.into());
         }
         Ok(completion.outcome)
@@ -333,6 +238,7 @@ impl<'a> ReservationStore<'a> {
 
     fn check_epoch(stored: StoredReservation, grant: Grant) -> ReservationResult<()> {
         if stored.original_id != grant.intent.original_id
+            || stored.generation != grant.intent.generation
             || stored.epoch != grant.epoch
             || stored.claimant != grant.claimant
         {
@@ -353,7 +259,7 @@ impl<'a> ReservationStore<'a> {
         {
             return Err(ReservationErrorReason::Stale.into());
         }
-        Ok(())
+        self.check_cutoff(transaction, grant.intent).await
     }
 
     async fn transact<T>(
@@ -452,6 +358,7 @@ impl<'a> ReservationStore<'a> {
         let intent = grant.intent;
         let record = StoredReservation {
             original_id: intent.original_id,
+            generation: intent.generation,
             epoch: grant.epoch,
             claimant: grant.claimant,
             expires_at,
@@ -477,3 +384,7 @@ fn configure_transaction(transaction: &Transaction) -> Result<(), DriverError> {
 #[cfg(test)]
 #[path = "reservation_recovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reservation_cutoff_tests.rs"]
+mod cutoff_tests;

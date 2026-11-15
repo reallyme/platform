@@ -35,7 +35,9 @@ impl ReservationStore<'_> {
                 return Self::completed_outcome(active, intent, completion);
             }
             ReservationRecord::Full(stored) => {
-                if stored.original_id != intent.original_id {
+                if stored.original_id != intent.original_id
+                    || stored.generation != intent.generation
+                {
                     return Err(ReservationErrorReason::InvalidRecord.into());
                 }
                 let Phase::Complete(outcome) = stored.phase else {
@@ -43,6 +45,7 @@ impl ReservationStore<'_> {
                 };
                 CompletionTombstone {
                     original_id: stored.original_id,
+                    generation: stored.generation,
                     outcome,
                 }
             }

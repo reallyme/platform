@@ -11,7 +11,7 @@ use reallyme_foundationdb_kit::{
     FoundationDbTenantName,
     fdb::tenant::admin::{
         TenantAdminClusterId,
-        reservations::{ReservationControlTenant, ReservationId},
+        reservations::{ReservationControlTenant, ReservationGeneration, ReservationId},
     },
 };
 use tempfile::NamedTempFile;
@@ -19,6 +19,7 @@ use thiserror::Error;
 
 const LOCAL_RECORD: &str = "fdb-tenant-delete-v1";
 const RESERVED_RECORD: &str = "fdb-tenant-delete-v2";
+const STAMPED_RECORD: &str = "fdb-tenant-delete-v3";
 const MAX_RECORD_BYTES: u64 = 320;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -73,6 +74,7 @@ pub(super) struct DeleteRecord {
 pub(super) struct DeleteReservation {
     pub(super) control: ReservationControlTenant,
     pub(super) operation: ReservationId,
+    pub(super) generation: ReservationGeneration,
 }
 
 impl DeleteRecord {
@@ -81,9 +83,6 @@ impl DeleteRecord {
         let text = std::str::from_utf8(bytes).map_err(|_| invalid)?;
         let mut fields = text.strip_suffix('\n').ok_or(invalid)?.split('\n');
         let version = fields.next().ok_or(invalid)?;
-        if version != LOCAL_RECORD && version != RESERVED_RECORD {
-            return Err(invalid);
-        }
         let cluster = TenantAdminClusterId::from_bytes(fields.next().ok_or(invalid)?.as_bytes())
             .ok_or(invalid)?;
         let tenant =
@@ -95,7 +94,7 @@ impl DeleteRecord {
             Some("metadata-safe") => DeleteRecordState::MetadataSafe,
             _ => return Err(invalid),
         };
-        let reservation = if version == RESERVED_RECORD {
+        let reservation = if matches!(version, RESERVED_RECORD | STAMPED_RECORD) {
             let control =
                 FoundationDbTenantName::new(fields.next().ok_or(invalid)?).map_err(|_| invalid)?;
             let id = parse_id(fields.next().ok_or(invalid)?)?;
@@ -104,9 +103,20 @@ impl DeleteRecord {
             }
             let control = ReservationControlTenant::new(control, id).map_err(|_| invalid)?;
             let operation = parse_operation(fields.next().ok_or(invalid)?)?;
-            Some(DeleteReservation { control, operation })
-        } else {
+            let generation = if version == STAMPED_RECORD {
+                parse_generation(fields.next().ok_or(invalid)?).ok_or(invalid)?
+            } else {
+                ReservationGeneration::LEGACY
+            };
+            Some(DeleteReservation {
+                control,
+                operation,
+                generation,
+            })
+        } else if version == LOCAL_RECORD {
             None
+        } else {
+            return Err(invalid);
         };
         if fields.next().is_some() {
             return Err(invalid);
@@ -123,10 +133,12 @@ impl DeleteRecord {
     fn write(self, file: &mut File) -> Result<(), DeleteRecordError> {
         let uid = std::str::from_utf8(self.cluster.as_bytes())
             .map_err(|_| DeleteRecordError::InvalidRecord)?;
-        let version = if self.reservation.is_some() {
-            RESERVED_RECORD
-        } else {
-            LOCAL_RECORD
+        let version = match self.reservation {
+            Some(reservation) if reservation.generation != ReservationGeneration::LEGACY => {
+                STAMPED_RECORD
+            }
+            Some(_) => RESERVED_RECORD,
+            None => LOCAL_RECORD,
         };
         writeln!(
             file,
@@ -150,9 +162,21 @@ impl DeleteRecord {
                 write!(file, "{byte:02x}").map_err(|_| DeleteRecordError::PersistFailed)?;
             }
             writeln!(file).map_err(|_| DeleteRecordError::PersistFailed)?;
+            if version == STAMPED_RECORD {
+                writeln!(file, "{}", reservation.generation.value())
+                    .map_err(|_| DeleteRecordError::PersistFailed)?;
+            }
         }
         Ok(())
     }
+}
+
+pub(super) fn parse_generation(value: &str) -> Option<ReservationGeneration> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value = value.parse::<u64>().ok()?;
+    (value != 0).then_some(ReservationGeneration::new(value))
 }
 
 fn parse_id(value: &str) -> Result<i64, DeleteRecordError> {

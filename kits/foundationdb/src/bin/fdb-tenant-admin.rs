@@ -12,6 +12,8 @@
 //! - `resume-delete <path>`
 //! - `prune-delete <path>`
 //! - `takeover-delete <tenant-name>`
+//! - `delete-cutoff <tenant-name>`
+//! - `advance-delete-cutoff <tenant-name> <target-generation>`
 //! - `exists <tenant-name>`
 //! - `id <tenant-name>`
 
@@ -24,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use admin::reservations::{
-    ReservationControlTenant, ReservationErrorReason, ReservationId, ReservationIntent,
+    ReservationControlTenant, ReservationErrorReason, ReservationGeneration, ReservationIntent,
     ReservationStore,
 };
 use reallyme_foundationdb_kit::FoundationDbTenantName;
@@ -37,7 +39,7 @@ use delete_record::{
     DeleteRecord, DeleteRecordError, DeleteRecordState, DeleteReservation, LockedDeleteRecord,
 };
 
-const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete> <tenant> | delete <tenant> --record <path> | <resume-delete|prune-delete> <path> | recover-delete <tenant> <expected-tenant-id>";
+const USAGE: &str = "usage: fdb-tenant-admin <ensure|repair|delete|exists|id|takeover-delete|delete-cutoff> <tenant> | delete <tenant> --record <path> | <resume-delete|prune-delete> <path> | recover-delete <tenant> <expected-tenant-id> | advance-delete-cutoff <tenant> <target-generation>";
 const CONTROL_TENANT_ENV: &str = "FDB_TENANT_ADMIN_CONTROL_TENANT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -82,7 +84,7 @@ enum AdminToolError {
     Reservation(#[from] ReservationErrorReason),
     #[error("invalid reservation control tenant configuration")]
     InvalidControlTenant,
-    #[error("takeover-delete requires FDB_TENANT_ADMIN_CONTROL_TENANT")]
+    #[error("this command requires FDB_TENANT_ADMIN_CONTROL_TENANT")]
     ControlTenantRequired,
     #[error("configured control tenant differs from the delete record")]
     ControlTenantMismatch,
@@ -101,6 +103,8 @@ enum Command {
     ResumeDelete(PathBuf),
     PruneDelete(PathBuf),
     TakeoverDelete(FoundationDbTenantName),
+    DeleteCutoff(FoundationDbTenantName),
+    AdvanceDeleteCutoff(FoundationDbTenantName, ReservationGeneration),
     Exists(FoundationDbTenantName),
     Id(FoundationDbTenantName),
 }
@@ -140,6 +144,16 @@ fn parse_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, Ad
             Some("exists") => Command::Exists(tenant),
             Some("id") => Command::Id(tenant),
             Some("takeover-delete") => Command::TakeoverDelete(tenant),
+            Some("delete-cutoff") => Command::DeleteCutoff(tenant),
+            Some("advance-delete-cutoff") => {
+                let target = args.next().ok_or(AdminToolError::Usage)?;
+                let invalid = ReservationErrorReason::InvalidCutoffTarget;
+                let target = target.to_str().ok_or(invalid)?;
+                Command::AdvanceDeleteCutoff(
+                    tenant,
+                    delete_record::parse_generation(target).ok_or(invalid)?,
+                )
+            }
             _ => return Err(AdminToolError::Usage),
         }
     };
@@ -186,13 +200,25 @@ async fn run(command: Command) -> Result<(), AdminToolError> {
             write_output(state.as_str())
         }
         Command::TakeoverDelete(tenant) => {
-            let control =
-                configured_control_tenant()?.ok_or(AdminToolError::ControlTenantRequired)?;
-            let control = ReservationControlTenant::lookup(&context, control).await?;
+            let control = required_control(&context).await?;
             let outcome = ReservationStore::new(&context, control)
                 .takeover(tenant)
                 .await?;
             write_output(record_state(outcome).as_str())
+        }
+        Command::DeleteCutoff(tenant) => {
+            let control = required_control(&context).await?;
+            let generation = ReservationStore::new(&context, control)
+                .cutoff(tenant)
+                .await?;
+            write_output(generation.value())
+        }
+        Command::AdvanceDeleteCutoff(tenant, target) => {
+            let control = required_control(&context).await?;
+            let generation = ReservationStore::new(&context, control)
+                .advance_cutoff(tenant, target)
+                .await?;
+            write_output(generation.value())
         }
         Command::Exists(tenant) => {
             let exists = admin::tenant_exists(&context, tenant)
@@ -216,17 +242,15 @@ async fn recorded_delete(
     path: &Path,
 ) -> Result<(), AdminToolError> {
     let file = LockedDeleteRecord::open(path)?;
-    let reservation = if let Some(control) = configured_control_tenant()? {
+    let control = if let Some(control) = configured_control_tenant()? {
         if control == tenant {
             return Err(ReservationErrorReason::ControlTenantTarget.into());
         }
-        let control = ReservationControlTenant::lookup(context, control).await?;
-        let operation = ReservationId::generate()?;
-        Some(DeleteReservation { control, operation })
+        Some(ReservationControlTenant::lookup(context, control).await?)
     } else {
         None
     };
-    let record = persist_delete_intent(context, tenant, &file, reservation).await?;
+    let record = persist_delete_intent(context, tenant, &file, control).await?;
     let outcome = if let Some(reservation) = record.reservation {
         ReservationStore::new(context, reservation.control)
             .delete(intent(record, reservation))
@@ -245,16 +269,32 @@ async fn persist_delete_intent(
     context: &FdbContext,
     tenant: FoundationDbTenantName,
     file: &LockedDeleteRecord,
-    reservation: Option<DeleteReservation>,
+    control: Option<ReservationControlTenant>,
 ) -> Result<DeleteRecord, AdminToolError> {
     let cluster = admin::tenant_admin_cluster_id(context)
         .await
         .map_err(|_| AdminToolError::ClusterIdentityUnavailable)?;
-    let original_id = admin::tenant_id(context, tenant)
-        .await
-        .map_err(|_| AdminToolError::IdLookupFailed)?
-        .filter(|id| *id >= 0)
-        .ok_or(AdminToolError::TenantMissing)?;
+    let (original_id, reservation) = if let Some(control) = control {
+        let captured = ReservationStore::new(context, control)
+            .capture_intent(tenant)
+            .await?
+            .ok_or(AdminToolError::TenantMissing)?;
+        (
+            captured.original_id,
+            Some(DeleteReservation {
+                control,
+                operation: captured.operation,
+                generation: captured.generation,
+            }),
+        )
+    } else {
+        let id = admin::tenant_id(context, tenant)
+            .await
+            .map_err(|_| AdminToolError::IdLookupFailed)?
+            .filter(|id| *id >= 0)
+            .ok_or(AdminToolError::TenantMissing)?;
+        (id, None)
+    };
     let record = DeleteRecord {
         cluster,
         tenant,
@@ -347,11 +387,19 @@ fn configured_control_tenant() -> Result<Option<FoundationDbTenantName>, AdminTo
     }
 }
 
+async fn required_control(
+    context: &FdbContext,
+) -> Result<ReservationControlTenant, AdminToolError> {
+    let control = configured_control_tenant()?.ok_or(AdminToolError::ControlTenantRequired)?;
+    Ok(ReservationControlTenant::lookup(context, control).await?)
+}
+
 fn intent(record: DeleteRecord, reservation: DeleteReservation) -> ReservationIntent {
     ReservationIntent {
         tenant: record.tenant,
         original_id: record.original_id,
         operation: reservation.operation,
+        generation: reservation.generation,
     }
 }
 

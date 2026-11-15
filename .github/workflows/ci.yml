@@ -432,6 +432,11 @@ jobs:
             | rg -Fx "$prune_test: test"
           cargo test --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --lib "$prune_test" -- --ignored --exact
+          cutoff_test=fdb::tenant::admin::reservations::cutoff_tests::cutoff_advances_serialize_with_claims_and_retries
+          cargo test --locked -p reallyme-foundationdb-kit --features tenant-admin --lib -- --list \
+            | rg -Fx "$cutoff_test: test"
+          cargo test --locked -p reallyme-foundationdb-kit \
+            --features tenant-admin --lib "$cutoff_test" -- --ignored --exact
           cargo build --locked -p reallyme-foundationdb-kit \
             --features tenant-admin --bin fdb-tenant-admin
           FDB_TENANT_ADMIN_TEST_BIN="${CARGO_TARGET_DIR:-target}/debug/fdb-tenant-admin" \

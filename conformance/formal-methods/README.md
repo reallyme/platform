@@ -346,3 +346,10 @@ the tenant name. An uncommitted attempt can stutter.
 | [Preflight-only admission](TenantReservationCutoffPreflight.cfg) | A prepared resume retakes the slot after an unacknowledged cutoff advance, tombstone reclamation, and a completed operation for the replacement tenant. The runner requires `NoStaleClaimAfterNameReuse` to fail. |
 | [Reclamation before the cutoff](TenantReservationCutoffEarlyReclaim.cfg) | A lost reclaim reply leaves the old operation key missing while its local file is still eligible to claim. The runner requires `NoSameGenerationClaimAfterReclaim` to fail. |
 | [Progress after the cutoff](TenantReservationCutoffProgress.cfg) | The runner requires a witness where a retry observes a later advance, an old reclaim is retried, the stale file expires, and a current-generation operation completes for the replacement. It checks for `NoProgressAfterCutoff` to fail. |
+
+The [Rust adapter](../../kits/foundationdb/src/fdb/tenant/reservation_cutoff.rs)
+captures the generation with the tenant ID and uses the cutoff inside
+acquisition, recovery, and guarded grant transactions. The
+[live cutoff test](../../kits/foundationdb/src/fdb/tenant/reservation_cutoff_tests.rs)
+forces both commit orders between a claim and an advance. It also tests
+a resume racing an advance, an ambiguous advance retry, and name reuse.

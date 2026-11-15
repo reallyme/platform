@@ -31,15 +31,9 @@ pub(super) async fn mapping_matches(
     tenant: FoundationDbTenantName,
     expected: i64,
 ) -> AttemptResult<bool> {
-    let key = tenant_map_key(tenant).map_err(|_| ReservationErrorReason::InvalidRecord)?;
-    let Some(value) = transaction.get(&key, false).await? else {
+    let Some(entry) = read_mapping(transaction, tenant).await? else {
         return Ok(false);
     };
-    let entry: TenantMapEntry = serde_json::from_slice(value.as_ref())
-        .map_err(|_| ReservationErrorReason::InvalidRecord)?;
-    if entry.id < 0 {
-        return Err(ReservationErrorReason::InvalidRecord.into());
-    }
     if entry.id != expected {
         return Ok(false);
     }
@@ -49,6 +43,31 @@ pub(super) async fn mapping_matches(
         return Err(ReservationErrorReason::TenantLocked.into());
     }
     Ok(true)
+}
+
+pub(super) async fn read_target_id(
+    transaction: &Transaction,
+    tenant: FoundationDbTenantName,
+) -> AttemptResult<Option<i64>> {
+    Ok(read_mapping(transaction, tenant)
+        .await?
+        .map(|entry| entry.id))
+}
+
+async fn read_mapping(
+    transaction: &Transaction,
+    tenant: FoundationDbTenantName,
+) -> AttemptResult<Option<TenantMapEntry>> {
+    let key = tenant_map_key(tenant).map_err(|_| ReservationErrorReason::InvalidRecord)?;
+    let Some(value) = transaction.get(&key, false).await? else {
+        return Ok(None);
+    };
+    let entry: TenantMapEntry = serde_json::from_slice(value.as_ref())
+        .map_err(|_| ReservationErrorReason::InvalidRecord)?;
+    if entry.id < 0 {
+        return Err(ReservationErrorReason::InvalidRecord.into());
+    }
+    Ok(Some(entry))
 }
 
 pub(super) async fn stage_clear(
