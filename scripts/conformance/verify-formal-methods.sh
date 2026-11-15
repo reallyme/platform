@@ -52,9 +52,14 @@ if [[ "$mode" != tlc ]]; then
     mkdir -p "$scratch/$(dirname "$source")"
     cp "$repo_root/$source" "$scratch/$source"
   done
-  cp "$repo_root/$model_dir/"{policy_path.rs,route_admission.rs,route_selection.rs,proxy_trust.rs,rate_limit_refill.rs} \
-    "$scratch/$model_dir/"
-  cp "$repo_root/$model_dir/"{grpc_authorization.rs,tenant_keyspace.rs,grpc_deadline.rs,fdb_retry_budget.rs} "$scratch/$model_dir/"
+  kani_harnesses=(
+    policy_path_tests.rs route_admission_tests.rs route_selection_tests.rs proxy_trust_tests.rs
+    rate_limit_refill_tests.rs grpc_authorization_tests.rs tenant_keyspace_tests.rs
+    grpc_deadline_tests.rs fdb_retry_budget_tests.rs
+  )
+  for harness in "${kani_harnesses[@]}"; do
+    cp "$repo_root/$model_dir/$harness" "$scratch/$model_dir/$harness"
+  done
 fi
 if [[ "$mode" != kani ]]; then
   cp "$repo_root/$model_dir/"{TenantDeletion.tla,TenantDeletion.cfg} "$scratch/$model_dir/"
@@ -87,15 +92,9 @@ fi
 
 cd "$scratch/$model_dir"
 if [[ "$mode" != tlc ]]; then
-  timed_check "Kani policy_path.rs" kani --output-format terse policy_path.rs
-  timed_check "Kani route_admission.rs" kani --output-format terse route_admission.rs
-  timed_check "Kani route_selection.rs" kani --output-format terse route_selection.rs
-  timed_check "Kani proxy_trust.rs" kani --output-format terse proxy_trust.rs
-  timed_check "Kani rate_limit_refill.rs" kani --output-format terse rate_limit_refill.rs
-  timed_check "Kani grpc_authorization.rs" kani --output-format terse grpc_authorization.rs
-  timed_check "Kani tenant_keyspace.rs" kani --output-format terse tenant_keyspace.rs
-  timed_check "Kani grpc_deadline.rs" kani --output-format terse grpc_deadline.rs
-  timed_check "Kani fdb_retry_budget.rs" kani --output-format terse fdb_retry_budget.rs
+  for harness in "${kani_harnesses[@]}"; do
+    timed_check "Kani $harness" kani --output-format terse "$harness"
+  done
 fi
 
 run_tlc() {

@@ -24,7 +24,7 @@ counterexample configuration, cancellation or a tool failure fails the run.
 
 ## Listener route policy
 
-[The Kani harness](policy_path.rs) checks the production escape decoder used
+[The Kani harness](policy_path_tests.rs) checks the production escape decoder used
 by the [path canonicalizer](../../kits/server/src/http/layers/route_visibility/policy_path.rs).
 It checks all 65,536 pairs of escape bytes against the decoder's acceptance
 policy, including mixed-case hex digits, malformed escapes, and decoded bytes
@@ -32,7 +32,7 @@ that would introduce another escape, a separator, or NUL.
 [Middleware tests](../../kits/server/src/http/layers/route_visibility/path_canonicalization_tests.rs)
 cover whole paths, including malformed escapes and multibyte UTF-8.
 
-The [route admission harness](route_admission.rs) checks the production
+The [route admission harness](route_admission_tests.rs) checks the production
 [admission decision](../../kits/server/src/http/visibility/admission.rs).
 An explicit rule can admit a request only when both path spellings select
 the same rule and both matches permit the listener. The default can admit
@@ -40,7 +40,7 @@ only two unmatched paths. The proof quantifies over the classifications,
 the default, and rule equality. Rule matching and listener restrictions
 are exercised through the [middleware tests](../../kits/server/src/http/layers/route_visibility/encoded_carve_out_tests.rs).
 
-The [route selection harness](route_selection.rs) checks the production
+The [route selection harness](route_selection_tests.rs) checks the production
 [ranking function](../../kits/server/src/http/visibility/selection.rs) with
 zero, one, or two matching candidates. For two candidates it quantifies over
 all representable lengths and both match kinds. The longer match wins and
@@ -365,7 +365,7 @@ a newer reservation is active and checks that the stale intent expires.
 
 ## Trusted proxy admission
 
-The [Kani harness](proxy_trust.rs) checks the production gate used by HTTP
+The [Kani harness](proxy_trust_tests.rs) checks the production gate used by HTTP
 normalization of forwarded client identity, host, and scheme and by gRPC
 source selection. It checks that an untrusted peer or a disabled field can
 neither supply the result nor invoke the header reader. Transport address
@@ -374,7 +374,7 @@ and [gRPC](../../kits/server/src/grpc/policy_tests.rs) regressions.
 
 ## gRPC principal binding
 
-The [Kani harness](grpc_authorization.rs) checks the production composition
+The [Kani harness](grpc_authorization_tests.rs) checks the production composition
 used by the combined gRPC security interceptor. Authentication failure skips
 authorization. Successful dispatch requires both policy results and carries
 the exact identity supplied to the authorizer. The
@@ -383,7 +383,7 @@ checks that a pre-existing extension cannot substitute a principal.
 
 ## Tenant data keyspace
 
-The [Kani harness](tenant_keyspace.rs) exercises the production predicates
+The [Kani harness](tenant_keyspace_tests.rs) exercises the production predicates
 used by the tenant data capability. It checks that individual keys exclude
 the metadata and system prefixes and that an admitted half-open range
 contains no reserved key. It explores keys up to eight bytes, covering both
@@ -394,7 +394,7 @@ starts after the six-byte prefix that determines namespace membership.
 
 ## Deadline and retry boundaries
 
-The [gRPC deadline harness](grpc_deadline.rs) checks the decoder shared by the
+The [gRPC deadline harness](grpc_deadline_tests.rs) checks the decoder shared by the
 metadata helper and listener policy against the complete wire shape. The
 input is one to eight decimal digits followed by one supported unit. The
 harness includes empty, malformed, and oversized inputs and checks that
@@ -402,7 +402,7 @@ accepted durations are positive and within the protocol maximum. Transport
 tests reject duplicate timeout headers before dispatch.
 [gRPC timeout grammar](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests)
 
-The [FoundationDB retry harness](fdb_retry_budget.rs) checks the production
+The [FoundationDB retry harness](fdb_retry_budget_tests.rs) checks the production
 budget decision and the ambiguous-write retry rule. The adapter checks the
 deadline again after native retry backoff and before submitting a commit.
 The [live regression](../../kits/foundationdb/tests/foundationdb_integration.rs)
@@ -425,7 +425,7 @@ deadline and cancellation behavior.
 
 ## Rate-limit refill
 
-The [Kani harness](rate_limit_refill.rs) checks the arithmetic used by the
+The [Kani harness](rate_limit_refill_tests.rs) checks the arithmetic used by the
 [runtime limiter](../../kits/server/src/runtime/rate_limit/refill.rs).
 Starting within capacity, a refill preserves existing tokens, never
 exceeds the configured capacity, and clears carried credit when it fills
