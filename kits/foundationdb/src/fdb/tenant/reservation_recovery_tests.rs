@@ -3,6 +3,8 @@
 
 use std::cell::Cell;
 
+use zeroize::Zeroizing;
+
 use foundationdb::{Database, tenant::TenantManagement};
 
 use super::{
@@ -60,7 +62,7 @@ fn rejects_corrupt_reservation_rows() {
             ..record
         }
         .encode(),
-        [encoded.as_slice(), &[0]].concat(),
+        Zeroizing::new([encoded.as_slice(), &[0]].concat()),
     ] {
         assert!(matches!(
             StoredReservation::decode(&corrupt),
@@ -97,7 +99,15 @@ fn decodes_legacy_completions_and_rejects_malformed_tombstones() {
             outcome,
         }
         .encode();
-        assert_eq!(compact, [2, tag, 0, 0, 0, 0, 0, 0, 0, 42]);
+        let legacy_compact = [2, tag, 0, 0, 0, 0, 0, 0, 0, 42];
+        assert!(matches!(
+            ReservationRecord::decode(&legacy_compact),
+            Ok(ReservationRecord::Tombstone(CompletionTombstone {
+                original_id: 42,
+                generation: ReservationGeneration::LEGACY,
+                outcome: saved,
+            })) if saved == outcome
+        ));
         assert!(matches!(
             ReservationRecord::decode(&compact),
             Ok(ReservationRecord::Tombstone(CompletionTombstone {
@@ -112,20 +122,24 @@ fn decodes_legacy_completions_and_rejects_malformed_tombstones() {
                 Err(ReservationErrorReason::InvalidRecord)
             ));
         }
-        let mut negative_id = compact.clone();
+        let mut negative_id = legacy_compact;
         negative_id[2] = u8::MAX;
-        let mut active_tag = compact.clone();
+        let mut active_tag = legacy_compact;
         active_tag[1] = 1;
-        let mut unknown_version = compact.clone();
+        let mut unknown_version = legacy_compact;
         unknown_version[0] = u8::MAX;
         for malformed in [
-            negative_id,
-            active_tag,
-            unknown_version,
-            [compact.as_slice(), &[0]].concat(),
+            negative_id.as_slice(),
+            active_tag.as_slice(),
+            unknown_version.as_slice(),
+            &[compact.as_slice(), &[0]].concat(),
+            // An unknown varint field and a repeated original_id are valid
+            // generic protobuf but violate the canonical persisted format.
+            &[compact.as_slice(), &[0x38, 1]].concat(),
+            &[compact.as_slice(), &[0x08, 42]].concat(),
         ] {
             assert!(matches!(
-                ReservationRecord::decode(&malformed),
+                ReservationRecord::decode(malformed),
                 Err(ReservationErrorReason::InvalidRecord)
             ));
         }
@@ -398,6 +412,7 @@ async fn verify_live_pruning() {
 
     let row = store.record_key(tenant, old.operation);
     let attempts = Cell::new(0_u8);
+    let full_size = Cell::new(None);
     let retried = store
         .transact(async |transaction| {
             attempts.set(attempts.get().checked_add(1).expect("count prune attempts"));
@@ -409,7 +424,14 @@ async fn verify_live_pruning() {
                         .get(&row, false)
                         .await?
                         .expect("full completion row");
-                    assert_eq!(value.len(), 42);
+                    assert!(matches!(
+                        ReservationRecord::decode(value.as_ref()),
+                        Ok(ReservationRecord::Full(StoredReservation {
+                            phase: Phase::Complete(TenantDeleteResolution::OriginalAbsent),
+                            ..
+                        }))
+                    ));
+                    full_size.set(Some(value.len()));
                     Ok(())
                 })
                 .await
@@ -442,7 +464,7 @@ async fn verify_live_pruning() {
         .await
         .expect("read completion")
         .expect("same operation key");
-    assert_eq!(compact.len(), 10);
+    assert!(compact.len() < full_size.get().expect("size of the full completion"));
     assert!(matches!(
         ReservationRecord::decode(compact.as_ref()),
         Ok(ReservationRecord::Tombstone(CompletionTombstone { original_id, outcome, generation: ReservationGeneration::LEGACY }))

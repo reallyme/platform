@@ -6,8 +6,8 @@ use reallyme_example_contract::generated::proto::reallyme::example::v1::HelloRes
 use worker::{Response, ResponseBuilder, Result};
 
 use crate::error::{METHOD_NOT_ALLOWED_MESSAGE, WorkerConnectErrorCode, WorkerPublicErrorCode};
-use crate::model::{
-    WorkerConnectErrorBody, WorkerErrorBody, WorkerErrorEnvelope, WorkerHelloResponse,
+use reallyme_app_kit::http_contract::{
+    ConnectErrorBody, HealthStatus, HttpErrorBody, HttpErrorEnvelope, WorkerHealthResponse,
 };
 
 const CACHE_CONTROL_NO_STORE: &str = "no-store";
@@ -23,18 +23,10 @@ pub(crate) enum WorkerRouteResponse {
 impl WorkerRouteResponse {
     pub(crate) fn into_worker_response(self) -> Result<Response> {
         match self {
-            Self::PlainHello(message) => Response::from_json(&WorkerHelloResponse {
-                message: message.trim_end_matches('\n'),
-            }),
+            Self::PlainHello(message) => Response::from_json(&hello_message(message)),
             Self::ConnectHello(message) => Ok(ResponseBuilder::new()
                 .with_header("content-type", "application/proto")?
-                .fixed(
-                    HelloResponse {
-                        message: message.trim_end_matches('\n').to_owned(),
-                        ..Default::default()
-                    }
-                    .encode_to_vec(),
-                )),
+                .fixed(hello_message(message).encode_to_vec())),
         }
     }
 }
@@ -54,8 +46,12 @@ pub(crate) fn connect_error_response(
     message: &'static str,
     status: u16,
 ) -> Result<Response> {
-    Response::from_json(&WorkerConnectErrorBody { code, message })
-        .map(|response| response.with_status(status))
+    Response::from_json(&ConnectErrorBody {
+        code: code.into(),
+        message: message.to_owned(),
+        ..Default::default()
+    })
+    .map(|response| response.with_status(status))
 }
 
 pub(crate) fn connect_unsupported_media_type_response() -> Result<Response> {
@@ -70,10 +66,8 @@ pub(crate) fn stable_error_response(
     message: &'static str,
     status: u16,
 ) -> Result<Response> {
-    Response::from_json(&WorkerErrorEnvelope {
-        error: WorkerErrorBody { code, message },
-    })
-    .map(|response| response.with_status(status))
+    Response::from_json(&http_error_envelope(code, message))
+        .map(|response| response.with_status(status))
 }
 
 pub(crate) fn with_standard_worker_headers(mut response: Response) -> Result<Response> {
@@ -90,4 +84,30 @@ pub(crate) fn with_standard_worker_headers(mut response: Response) -> Result<Res
     headers.set("cache-control", CACHE_CONTROL_NO_STORE)?;
 
     Ok(response)
+}
+
+pub(crate) fn hello_message(message: &str) -> HelloResponse {
+    HelloResponse {
+        message: message.trim_end_matches('\n').to_owned(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn http_error_envelope(code: WorkerPublicErrorCode, message: &str) -> HttpErrorEnvelope {
+    HttpErrorEnvelope {
+        error: HttpErrorBody {
+            code: code.into(),
+            message: message.to_owned(),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn worker_health_response() -> Result<Response> {
+    Response::from_json(&WorkerHealthResponse {
+        status: HealthStatus::Ok.into(),
+        ..Default::default()
+    })
 }

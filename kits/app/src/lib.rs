@@ -22,7 +22,13 @@ pub mod config;
 pub mod contract;
 pub mod descriptor;
 pub mod error;
+#[cfg(feature = "http-contract")]
+#[allow(missing_docs)]
+mod generated;
 pub mod health;
+#[cfg(feature = "http-contract")]
+/// Generated wire models shared by native and edge HTTP adapters.
+pub mod http_contract;
 pub mod lifecycle;
 pub mod metadata;
 pub mod metrics;

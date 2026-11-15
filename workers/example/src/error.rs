@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use example_app::app::ExampleAppErrorKind;
-use serde::Serialize;
+pub(crate) use reallyme_app_kit::http_contract::{
+    ConnectErrorCode as WorkerConnectErrorCode, HttpErrorCode as WorkerPublicErrorCode,
+};
 use thiserror::Error;
 use worker::{Response, Result};
 
@@ -21,26 +23,6 @@ pub(crate) enum ExampleWorkerHostError {
     InvalidConfiguration,
     #[error("example app call failed")]
     App { kind: ExampleAppErrorKind },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WorkerPublicErrorCode {
-    NotFound,
-    MethodNotAllowed,
-    ServiceUnavailable,
-    Forbidden,
-    InternalServerError,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WorkerConnectErrorCode {
-    InvalidArgument,
-    PermissionDenied,
-    ResourceExhausted,
-    DeadlineExceeded,
-    Internal,
 }
 
 pub(crate) fn map_worker_error(error: ExampleWorkerHostError) -> Result<Response> {

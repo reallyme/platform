@@ -15,6 +15,7 @@ use thiserror::Error;
 
 #[path = "data_keyspace.rs"]
 mod keyspace;
+#[cfg(feature = "tenant-admin")]
 pub(super) use keyspace::{RESERVED_METADATA_END, RESERVED_METADATA_START};
 use keyspace::{is_reserved_key, range_overlaps_metadata, versionstamp_range};
 const MAX_TENANT_KEY_BYTES: usize = 10_000;

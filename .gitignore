@@ -101,6 +101,10 @@ proptest-regressions/
 **/src/generated/**
 !apps/example/contract/src/generated/
 !apps/example/contract/src/generated/**
+!kits/app/src/generated/
+!kits/app/src/generated/**
+!kits/foundationdb/src/generated/
+!kits/foundationdb/src/generated/**
 !conformance/contracts/vendor/connectrpc/src/generated/
 !conformance/contracts/vendor/connectrpc/src/generated/**
 **/src/pb

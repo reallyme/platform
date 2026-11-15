@@ -9,7 +9,7 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[dependencies]
+[dev-dependencies]
 reallyme-nats-kit.workspace = true
 reallyme-typesense-kit.workspace = true
 # Deliberately compile both providers: production clients must select ring

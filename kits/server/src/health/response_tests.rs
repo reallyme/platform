@@ -30,3 +30,34 @@ fn readiness_response_maps_not_ready_to_not_serving() {
         GrpcServingStatus::NotServing
     );
 }
+
+#[test]
+fn standalone_probe_values_match_the_protojson_response() {
+    for response in [
+        HealthResponse::for_liveness(LivenessState::Live),
+        HealthResponse::for_readiness(ReadinessState::Ready),
+        HealthResponse::for_readiness(ReadinessState::NotReady),
+    ] {
+        let json = serde_json::to_value(response).expect("health response");
+        assert_eq!(
+            json["kind"],
+            serde_json::to_value(response.kind).expect("health kind")
+        );
+        assert_eq!(
+            json["status"],
+            serde_json::to_value(response.status).expect("health status")
+        );
+        if let Some(liveness) = response.liveness {
+            assert_eq!(
+                json["liveness"],
+                serde_json::to_value(liveness).expect("liveness")
+            );
+        }
+        if let Some(readiness) = response.readiness {
+            assert_eq!(
+                json["readiness"],
+                serde_json::to_value(readiness).expect("readiness")
+            );
+        }
+    }
+}

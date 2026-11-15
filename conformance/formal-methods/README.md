@@ -254,7 +254,7 @@ records the outcome with any metadata write. The model abstracts lease timing
 and repeated delete attempts within an epoch.
 
 The [live transaction test](../../kits/foundationdb/src/fdb/tenant/reservation_tests.rs)
-checks the transaction layout with native FoundationDB clients in
+exercises the reservation transactions with native FoundationDB clients in
 separate processes. A cluster transaction uses `RAW_ACCESS` to read an epoch
 in a dedicated control tenant and clear metadata inside the verified target
 tenant prefix. The second phase reads the reservation key in the transaction
@@ -262,7 +262,8 @@ that checks and clears the tenant-map entry. In each phase the peer commits
 an epoch change before the pending transaction attempts to commit. The test
 requires `not_committed` and checks that FoundationDB reports the reservation
 key in the conflicting range. It also commits both operations at the current
-epoch to verify that each transaction layout can succeed. [FoundationDB conflict ranges](https://apple.github.io/foundationdb/developer-guide.html#conflict-ranges),
+epoch to verify that each transaction can succeed.
+[FoundationDB conflict ranges](https://apple.github.io/foundationdb/developer-guide.html#conflict-ranges),
 [FoundationDB tenant transaction scope](https://apple.github.io/foundationdb/tenants.html#raw-access),
 [FoundationDB 7.3.77 tenant prefix](https://github.com/apple/foundationdb/blob/7.3.77/fdbclient/NativeAPI.actor.cpp#L2747-L2753)
 

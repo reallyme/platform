@@ -14,7 +14,7 @@ trap 'rm -rf "${temporary_dir}"' EXIT
 
 while IFS= read -r generated_dir; do
   case "${generated_dir}" in
-    apps/example/contract/src/generated) ;;
+    apps/example/contract/src/generated | kits/app/src/generated | kits/foundationdb/src/generated) ;;
     *)
       printf 'generated Rust directory is outside an approved contract boundary: %s\n' "${generated_dir}" >&2
       status=1

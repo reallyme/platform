@@ -36,7 +36,9 @@ axum = "0.8.9"
 axum-test = { version = "21", default-features = false }
 bb8 = "0.9.1"
 bb8-postgres = "0.9.0"
-buffa = { package = "reallyme-buffa", version = "=0.1.2", features = ["json"] }
+# Binary-only storage enables cleanup without pulling in the ProtoJSON codec.
+buffa = { package = "reallyme-buffa", version = "=0.1.2" }
+buffa-types = { package = "reallyme-buffa-types", version = "=0.1.2", features = ["json"] }
 # Generated example contracts and ConnectRPC must use the same Buffa traits.
 connectrpc = { path = "conformance/contracts/vendor/connectrpc", version = "=0.9.1", default-features = false }
 foundationdb = { version = "0.11.0", default-features = false }
@@ -55,7 +57,6 @@ metrics-util = "0.20"
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_norway = "0.9.42"
 temp-env = "0.3.6"
 tempfile = "3"
 subtle = { version = "2", default-features = false }
@@ -77,23 +78,21 @@ pin-project-lite = "0.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["gzip", "http2", "json", "query", "rustls-no-provider"] }
 hyper = { version = "1", default-features = false, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
-redis = { version = "1.7.1", default-features = false, features = ["connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
-reallyme-codec = { version = "=0.3.2", default-features = false }
-reallyme-crypto = { version = "=0.3.17", default-features = false, features = ["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"] }
-rustls-native-certs = "0.8.4"
+redis = { version = "1.8.2", default-features = false, features = ["connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
+reallyme-crypto = { version = "=0.4.2", default-features = false, features = ["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"] }
+rustls-native-certs = "0.8.5"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "1.0.9"
+webpki-roots = "1.0.12"
 time = { version = "0.3", default-features = false, features = ["formatting", "macros", "parsing", "std"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
 tower-http = { version = "0.7", features = ["catch-panic", "cors", "limit", "request-id", "timeout", "trace"] }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-toml = "1.1.6"
 url = "2"
 nkeys = "0.4.5"
 uuid = { version = "1", features = ["serde"] }
-worker = { version = "=0.8.7", default-features = false }
+worker = { version = "=0.9.0", default-features = false }
 zeroize = { version = "1", features = ["derive"] }
 
 # Workspace-local crates use the same release version and are declared here so

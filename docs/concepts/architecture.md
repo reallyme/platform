@@ -139,12 +139,16 @@ response, binding, and entrypoint adapters belong to the Worker host.
 
 ## Contracts and Transports
 
-Protocol Buffers are the source of truth for RPC-shaped application contracts.
+Platform follows ReallyMe's
+[engineering philosophy](https://github.com/reallyme/.github/blob/main/ENGINEERING_PHILOSOPHY.md)
+and [architecture standards](https://github.com/reallyme/.github/blob/main/ARCHITECTURE.md).
+
+Protocol Buffers are the source of truth for Platform-owned application data
+contracts, API messages, and persisted record formats.
 Buf supplies schema linting, drives code generation, and provides compatibility
 tooling for breaking-change checks as contracts evolve. Buffa generates Rust
 message and view types, and the Connect generator produces the primary RPC
-bindings. Generated source is isolated in the contract crate and is never
-edited by hand.
+bindings. Generated source lives under the owning crate's generated directory.
 
 Generated messages are wire representations, not domain authority. Transport
 adapters decode external input and perform boundary validation before converting
@@ -156,6 +160,21 @@ unless an application is intentionally HTTP-only. Standalone Tonic gRPC is
 optional and explicit. Each transport calls the same application use cases;
 transport adapters do not implement parallel business logic or depend on one
 another.
+
+Native and Worker HTTP adapters serialize first-party payloads through the
+generated ProtoJSON codecs. The shared HTTP and storage schemas live in
+`apps/platform/contract/proto/`, the Platform contract lane checked by
+Release Readiness. The app kit owns the runtime-neutral HTTP bindings, and
+the FoundationDB kit owns the storage bindings. Lowercase HTTP enum literals
+preserve the established JSON values. The Buf lint exceptions for enum naming
+apply only to that compatibility schema.
+
+`scripts/conformance/verify-protobuf-contract.sh` checks the schemas against
+the last release and the change base, verifies that every repository schema
+has a generation target, regenerates bindings, and compiles the owning Rust
+packages. FoundationDB system records, gRPC health, Prometheus metrics, and
+third-party service protocols use their respective upstream wire formats.
+Operator configuration uses JSONC with typed validation.
 
 When one application calls another, it depends on the target application's
 contract crate while expressing the dependency through an outbound port owned

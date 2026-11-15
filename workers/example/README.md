@@ -15,7 +15,7 @@ Wrangler development dependency:
 
 ```console
 rustup target add wasm32-unknown-unknown
-cargo install worker-build --version 0.8.7 --locked
+cargo install worker-build --version '=0.9.0' --locked
 cd workers/example
 pnpm install --frozen-lockfile
 ```

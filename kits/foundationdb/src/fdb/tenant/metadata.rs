@@ -7,7 +7,14 @@ use std::sync::Arc;
 #[cfg(feature = "tenant-admin")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "tenant-admin")]
+use zeroize::Zeroizing;
+
 use crate::fdb::tenant_name::FoundationDbTenantName;
+use crate::generated::reallyme::platform::storage::v1::{CreationTime, SchemaVersion};
+use crate::persisted_record::decode_record;
+#[cfg(feature = "tenant-admin")]
+use crate::persisted_record::encode_record;
 use bytes::Bytes;
 use foundationdb::FdbError as FdbBindingError;
 #[cfg(feature = "tenant-admin")]
@@ -26,8 +33,8 @@ use crate::fdb::transaction::WriteTxnPolicy;
 use crate::fdb::transaction::{ReadTxnPolicy, TenantTransactionPolicy};
 use crate::keys::{TenantMetadataCreatedAtKey, TenantMetadataSchemaVersionKey, codec::KeyEncoder};
 
-const TENANT_METADATA_SCHEMA_KEY_LENGTH: usize = 4;
-const TENANT_METADATA_CREATED_AT_LENGTH: usize = 8;
+#[cfg(feature = "tenant-admin")]
+type EncodedTenantMetadata = (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
 const CURRENT_TENANT_SCHEMA_VERSION: u32 = 1;
 #[cfg(feature = "tenant-admin")]
 pub(super) const RECONCILE_METADATA_SCAN_LIMIT: i32 = 3;
@@ -140,11 +147,9 @@ pub(super) async fn write_tenant_metadata(
             keys,
             |trx, keys| {
                 Box::pin(async move {
-                    trx.set(
-                        &keys.schema_version_key,
-                        schema_version.to_le_bytes().as_ref(),
-                    );
-                    trx.set(&keys.created_at_key, created_at.to_le_bytes().as_ref());
+                    let (schema, created) = encode_metadata(schema_version, created_at);
+                    trx.set(&keys.schema_version_key, &schema);
+                    trx.set(&keys.created_at_key, &created);
                     Ok(())
                 })
             },
@@ -157,17 +162,13 @@ pub(super) async fn write_tenant_metadata(
 }
 
 fn parse_schema_version(tenant: FoundationDbTenantName, raw: &[u8]) -> FdbResult<u32> {
-    if raw.len() != TENANT_METADATA_SCHEMA_KEY_LENGTH {
-        return Err(FdbError::Tenant {
-            reason: TenantErrorReason::MetadataMalformed {
-                tenant,
-                field: TenantMetadataField::SchemaVersion,
-            },
-        });
-    }
-    let mut version_bytes = [0_u8; TENANT_METADATA_SCHEMA_KEY_LENGTH];
-    version_bytes.copy_from_slice(raw);
-    let parsed = u32::from_le_bytes(version_bytes);
+    let parsed = if let Ok(legacy) = raw.try_into() {
+        u32::from_le_bytes(legacy)
+    } else {
+        let message: SchemaVersion = decode_record(raw)
+            .map_err(|_| malformed_metadata(tenant, TenantMetadataField::SchemaVersion))?;
+        message.version
+    };
     if parsed != CURRENT_TENANT_SCHEMA_VERSION {
         return Err(FdbError::Tenant {
             reason: TenantErrorReason::SchemaVersionUnsupported {
@@ -180,17 +181,25 @@ fn parse_schema_version(tenant: FoundationDbTenantName, raw: &[u8]) -> FdbResult
 }
 
 fn parse_created_at(tenant: FoundationDbTenantName, raw: &[u8]) -> FdbResult<u64> {
-    if raw.len() != TENANT_METADATA_CREATED_AT_LENGTH {
-        return Err(FdbError::Tenant {
-            reason: TenantErrorReason::MetadataMalformed {
-                tenant,
-                field: TenantMetadataField::CreatedAt,
-            },
-        });
+    if let Ok(legacy) = raw.try_into() {
+        return Ok(u64::from_le_bytes(legacy));
     }
-    let mut created_at_bytes = [0_u8; TENANT_METADATA_CREATED_AT_LENGTH];
-    created_at_bytes.copy_from_slice(raw);
-    Ok(u64::from_le_bytes(created_at_bytes))
+    let message: CreationTime = decode_record(raw)
+        .map_err(|_| malformed_metadata(tenant, TenantMetadataField::CreatedAt))?;
+    Ok(message.unix_seconds)
+}
+
+fn malformed_metadata(tenant: FoundationDbTenantName, field: TenantMetadataField) -> FdbError {
+    FdbError::Tenant {
+        reason: TenantErrorReason::MetadataMalformed { tenant, field },
+    }
+}
+
+#[cfg(feature = "tenant-admin")]
+fn encode_metadata(schema_version: u32, created_at: u64) -> EncodedTenantMetadata {
+    let schema = SchemaVersion::default().with_version(schema_version);
+    let created = CreationTime::default().with_unix_seconds(created_at);
+    (encode_record(&schema), encode_record(&created))
 }
 
 #[cfg(feature = "tenant-admin")]
@@ -235,11 +244,9 @@ pub(super) async fn repair_empty_tenant_metadata(
     }
     // This is one transaction: a racing writer conflicts with the empty-range
     // read, so repair cannot silently claim a tenant containing app data.
-    transaction.set(
-        &keys.schema_version_key,
-        schema_version.to_le_bytes().as_ref(),
-    );
-    transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref());
+    let (schema, created) = encode_metadata(schema_version, created_at);
+    transaction.set(&keys.schema_version_key, &schema);
+    transaction.set(&keys.created_at_key, &created);
     transaction
         .commit()
         .await
@@ -270,11 +277,9 @@ pub(super) async fn repair_absent_tenant_metadata(
             reason: TenantErrorReason::AdministrationFailed { tenant },
         });
     }
-    transaction.set(
-        &keys.schema_version_key,
-        schema_version.to_le_bytes().as_ref(),
-    )?;
-    transaction.set(&keys.created_at_key, created_at.to_le_bytes().as_ref())?;
+    let (schema, created) = encode_metadata(schema_version, created_at);
+    transaction.set(&keys.schema_version_key, &schema)?;
+    transaction.set(&keys.created_at_key, &created)?;
     transaction.commit().await
 }
 
@@ -312,10 +317,7 @@ pub(super) fn reconciliation_metadata(
     entries: &FdbValues,
     schema_key: &[u8],
     created_at_key: &[u8],
-) -> FdbResult<(
-    [u8; TENANT_METADATA_SCHEMA_KEY_LENGTH],
-    [u8; TENANT_METADATA_CREATED_AT_LENGTH],
-)> {
+) -> FdbResult<EncodedTenantMetadata> {
     let failed = FdbError::Tenant {
         reason: TenantErrorReason::AdministrationFailed { tenant },
     };
@@ -345,7 +347,7 @@ pub(super) fn reconciliation_metadata(
         metadata.ensure_compatible(tenant)?;
         (metadata.schema_version, metadata.created_at)
     };
-    Ok((schema_version.to_le_bytes(), created_at.to_le_bytes()))
+    Ok(encode_metadata(schema_version, created_at))
 }
 
 #[cfg(test)]

@@ -16,9 +16,12 @@ include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENS
 
 [features]
 default = []
+http-contract = ["dep:buffa", "dep:buffa-types"]
 native-http = ["dep:bytes", "dep:reqwest", "dep:rustls", "dep:rustls-native-certs", "dep:webpki-roots"]
 
 [dependencies]
+buffa = { workspace = true, features = ["json"], optional = true }
+buffa-types = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }

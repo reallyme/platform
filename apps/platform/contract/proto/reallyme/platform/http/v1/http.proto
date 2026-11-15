@@ -1,0 +1,100 @@
+// SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.platform.http.v1;
+
+import "google/protobuf/struct.proto";
+
+// The lowercase enum values are the published JSON spellings.
+enum HealthKind {
+  HEALTH_KIND_UNSPECIFIED = 0;
+  liveness = 1;
+  readiness = 2;
+}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  serving = 1;
+  not_serving = 2;
+  ok = 3;
+}
+
+enum LivenessState {
+  LIVENESS_STATE_UNSPECIFIED = 0;
+  live = 1;
+}
+
+enum ReadinessState {
+  READINESS_STATE_UNSPECIFIED = 0;
+  ready = 1;
+  not_ready = 2;
+}
+
+message HealthResponse {
+  HealthKind kind = 1;
+  HealthStatus status = 2;
+  optional LivenessState liveness = 3;
+  optional ReadinessState readiness = 4;
+}
+
+message WorkerHealthResponse {
+  HealthStatus status = 1;
+}
+
+message VersionResponse {
+  optional string server_name = 1 [json_name = "server_name"];
+  optional string service_version = 2 [json_name = "service_version"];
+  // The HTTP contract always emits these fields, using null when unavailable.
+  google.protobuf.Value git_sha = 3 [json_name = "git_sha"];
+  google.protobuf.Value build_timestamp = 4 [json_name = "build_timestamp"];
+  google.protobuf.Value build_profile = 5 [json_name = "build_profile"];
+  google.protobuf.Value rustc_version = 6 [json_name = "rustc_version"];
+}
+
+enum HttpErrorCode {
+  HTTP_ERROR_CODE_UNSPECIFIED = 0;
+  bad_request = 1;
+  unauthorized = 2;
+  forbidden = 3;
+  not_found = 4;
+  method_not_allowed = 5;
+  conflict = 6;
+  length_required = 7;
+  payload_too_large = 8;
+  uri_too_long = 9;
+  request_header_fields_too_large = 10;
+  request_timeout = 11;
+  too_many_requests = 12;
+  service_unavailable = 13;
+  unsupported_media_type = 14;
+  unprocessable_entity = 15;
+  upgrade_required = 16;
+  internal_server_error = 17;
+}
+
+message HttpErrorBody {
+  HttpErrorCode code = 1;
+  string message = 2;
+  optional string request_id = 3 [json_name = "request_id"];
+}
+
+message HttpErrorEnvelope {
+  HttpErrorBody error = 1;
+}
+
+// Connect defines a separate, unwrapped JSON error shape.
+enum ConnectErrorCode {
+  CONNECT_ERROR_CODE_UNSPECIFIED = 0;
+  invalid_argument = 1;
+  permission_denied = 2;
+  resource_exhausted = 3;
+  deadline_exceeded = 4;
+  internal = 5;
+}
+
+message ConnectErrorBody {
+  ConnectErrorCode code = 1;
+  string message = 2;
+}

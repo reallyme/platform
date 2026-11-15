@@ -207,6 +207,27 @@ Keep the dedicated control tenant and its reservation history available to
 operators. This workflow coordinates commands that use the control tenant on
 the same standalone cluster.
 
+### Upgrade tenant record readers
+
+The kit reads both the historical binary values and the generated protobuf
+values at the existing tenant metadata and control keys. New provisioning,
+repair, and reservation writes use protobuf. Records retain their original
+values until a normal operation replaces them. Snapshot restoration preserves
+the recorded bytes.
+
+The operator CLI also writes protobuf intent files. It can resume all three
+historical text formats and upgrades them when recording a durable outcome.
+
+Upgrade application readers and operator binaries together before allowing
+new writes on a shared cluster. Older binaries cannot read the protobuf
+values or intent files. For future changes to these records, use a new format
+discriminator and keep the prior reader available.
+
+The ReallyMe Buffa bindings use native cleanup and redacted debug output.
+Bounded field decoders handle fragmented input in wiping buffers. The
+record decoder rejects unknown fields, enforces canonical encoding, and
+keeps JSON and borrowed views disabled for these storage messages.
+
 ### Prune completed reservations
 
 After updating the operator binaries that share the control tenant, compact
@@ -228,8 +249,7 @@ distinguish a completed operation from one that never acquired a reservation.
 ### Advance a delete admission cutoff
 
 Upgrade every writer that shares the control tenant before advancing a
-cutoff. The current binary reads existing records as generation zero and
-keeps writing the existing formats while the cutoff is zero.
+cutoff. Historical records without a generation are read as generation zero.
 
 ```sh
 fdb-tenant-admin delete-cutoff example

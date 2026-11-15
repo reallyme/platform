@@ -19,7 +19,6 @@
 mod app_adapter;
 mod entrypoint;
 mod error;
-mod model;
 mod response;
 mod routing;
 

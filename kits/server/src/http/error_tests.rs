@@ -28,6 +28,10 @@ fn public_http_error_uses_stable_status_and_message_mapping() {
         ErrorCode::RequestTimeout.public_message(),
         "Request timeout"
     );
+    assert_eq!(
+        serde_json::to_value(error.code()).expect("public HTTP error code"),
+        serde_json::Value::String("request_timeout".to_owned())
+    );
 }
 
 #[test]

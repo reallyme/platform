@@ -3,6 +3,10 @@
 
 use foundationdb::{Database, FdbError as DriverError, Transaction, options::TransactionOption};
 
+use crate::generated::reallyme::platform::storage::v1::ActiveOperation;
+use crate::persisted_record::{decode_record, encode_record};
+use crate::stored_id::StoredId;
+
 use super::{TENANT_ADMIN_TIMEOUT, TENANT_ADMIN_TIMEOUT_MILLIS, TenantDeleteResolution, tenant_id};
 use crate::{FoundationDbConnector, FoundationDbTenantName};
 
@@ -327,11 +331,16 @@ impl<'a> ReservationStore<'a> {
             .get(&self.active_key(tenant), false)
             .await?
             .map(|value| {
-                let bytes = value
-                    .as_ref()
-                    .try_into()
+                if let Ok(legacy) = value.as_ref().try_into() {
+                    return Ok(ReservationId::from_bytes(legacy));
+                }
+                let record: ActiveOperation = decode_record(value.as_ref())
                     .map_err(|_| ReservationErrorReason::InvalidRecord)?;
-                Ok(ReservationId::from_bytes(bytes))
+                let bytes = record
+                    .operation
+                    .bytes()
+                    .ok_or(ReservationErrorReason::InvalidRecord)?;
+                Ok(ReservationId::from_bytes(*bytes))
             })
             .transpose()
     }
@@ -368,7 +377,9 @@ impl<'a> ReservationStore<'a> {
             &self.record_key(intent.tenant, intent.operation),
             &record.encode(),
         );
-        transaction.set(&self.active_key(intent.tenant), intent.operation.as_bytes());
+        let active =
+            ActiveOperation::default().with_operation(StoredId::new(*intent.operation.as_bytes()));
+        transaction.set(&self.active_key(intent.tenant), &encode_record(&active));
         Ok(())
     }
 }

@@ -3,14 +3,14 @@
 
 #[cfg(feature = "http")]
 use axum::http::StatusCode;
-use serde::Serialize;
+use reallyme_app_kit::http_contract as wire;
+use serde::{Serialize, Serializer};
 
 use super::liveness::LivenessState;
 use super::readiness::ReadinessState;
 
 /// Stable service health status used across transport mappings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
     /// The service should be treated as serving traffic.
     Serving,
@@ -19,8 +19,7 @@ pub enum HealthStatus {
 }
 
 /// Identifies which health surface produced the response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthCheckKind {
     /// Process liveness probe.
     Liveness,
@@ -28,12 +27,42 @@ pub enum HealthCheckKind {
     Readiness,
 }
 
+impl HealthCheckKind {
+    const fn wire_kind(self) -> wire::HealthKind {
+        match self {
+            Self::Liveness => wire::HealthKind::Liveness,
+            Self::Readiness => wire::HealthKind::Readiness,
+        }
+    }
+}
+
+impl Serialize for HealthCheckKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.wire_kind().serialize(serializer)
+    }
+}
+
+impl HealthStatus {
+    const fn wire_status(self) -> wire::HealthStatus {
+        match self {
+            Self::Serving => wire::HealthStatus::Serving,
+            Self::NotServing => wire::HealthStatus::NotServing,
+        }
+    }
+}
+
+impl Serialize for HealthStatus {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.wire_status().serialize(serializer)
+    }
+}
+
 /// Stable response model for health and readiness surfaces.
 ///
 /// The model is transport-neutral and can be reused for HTTP JSON responses,
 /// gRPC health mappings, and operator-facing diagnostics. It intentionally
 /// carries typed health state rather than free-form strings or ad hoc payloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HealthResponse {
     /// Which probe surface produced this response.
     pub kind: HealthCheckKind,
@@ -41,11 +70,9 @@ pub struct HealthResponse {
     pub status: HealthStatus,
     /// Process liveness information when the response came from a liveness
     /// probe.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<LivenessState>,
     /// Traffic-readiness information when the response came from a readiness
     /// probe.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness: Option<ReadinessState>,
 }
 
@@ -86,6 +113,19 @@ impl HealthResponse {
             HealthStatus::Serving => GrpcServingStatus::Serving,
             HealthStatus::NotServing => GrpcServingStatus::NotServing,
         }
+    }
+}
+
+impl Serialize for HealthResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        wire::HealthResponse {
+            kind: self.kind.wire_kind().into(),
+            status: self.status.wire_status().into(),
+            liveness: self.liveness.map(|state| state.wire_state().into()),
+            readiness: self.readiness.map(|state| state.wire_state().into()),
+            ..Default::default()
+        }
+        .serialize(serializer)
     }
 }
 

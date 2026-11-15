@@ -15,7 +15,7 @@ testing = []
 contract = ["reallyme-example-contract/proto"]
 connect = ["contract", "reallyme-example-contract/connect", "dep:connectrpc"]
 connect-axum = ["connect", "connectrpc/axum"]
-http = ["dep:axum", "dep:reallyme-server-kit", "reallyme-server-kit/http"]
+http = ["contract", "dep:axum", "dep:reallyme-server-kit", "reallyme-server-kit/http"]
 native-server = ["http", "dep:reallyme-server-kit"]
 websocket = ["http", "axum/ws", "reallyme-server-kit/websocket", "dep:tokio"]
 

@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeroize::Zeroizing;
+
+use crate::generated::reallyme::platform::storage::v1::{
+    Completion, DeleteOutcome, Reservation, ReservationPhase,
+};
+use crate::persisted_record::{decode_record, encode_record, has_record_kind};
+use crate::stored_id::StoredId;
+
 use super::{
     ReservationErrorReason, ReservationGeneration, ReservationId, ReservationResult,
     TenantDeleteResolution,
@@ -52,25 +60,44 @@ impl ReservationRecord {
             Some(TOMBSTONE_VERSION | STAMPED_TOMBSTONE_VERSION) => {
                 CompletionTombstone::decode(bytes).map(Self::Tombstone)
             }
+            _ if has_record_kind::<Reservation>(bytes) => {
+                StoredReservation::decode_proto(bytes).map(Self::Full)
+            }
+            _ if has_record_kind::<Completion>(bytes) => {
+                CompletionTombstone::decode_proto(bytes).map(Self::Tombstone)
+            }
             _ => Err(ReservationErrorReason::InvalidRecord),
         }
     }
 }
 
 impl CompletionTombstone {
-    pub(super) fn encode(self) -> Vec<u8> {
-        let mut bytes = [0; TOMBSTONE_BYTES];
-        let [version, outcome, id @ ..] = &mut bytes;
-        *version = version_for(
-            self.generation,
-            TOMBSTONE_VERSION,
-            STAMPED_TOMBSTONE_VERSION,
-        );
-        *outcome = encode_outcome(self.outcome);
-        id.copy_from_slice(&self.original_id.to_be_bytes());
-        let mut bytes = bytes.to_vec();
-        append_generation(&mut bytes, self.generation);
-        bytes
+    pub(super) fn encode(self) -> Zeroizing<Vec<u8>> {
+        let outcome = match self.outcome {
+            TenantDeleteResolution::OriginalAbsent => DeleteOutcome::OriginalAbsent,
+            TenantDeleteResolution::MetadataSafe => DeleteOutcome::MetadataSafe,
+        };
+        let message = Completion::default()
+            .with_original_id(self.original_id)
+            .with_generation(self.generation.value())
+            .with_outcome(outcome);
+        encode_record(&message)
+    }
+
+    fn decode_proto(bytes: &[u8]) -> ReservationResult<Self> {
+        let invalid = ReservationErrorReason::InvalidRecord;
+        let message: Completion = decode_record(bytes).map_err(|_| invalid)?;
+        let original_id = message.original_id.filter(|id| *id >= 0).ok_or(invalid)?;
+        let outcome = match message.outcome.as_known() {
+            Some(DeleteOutcome::OriginalAbsent) => TenantDeleteResolution::OriginalAbsent,
+            Some(DeleteOutcome::MetadataSafe) => TenantDeleteResolution::MetadataSafe,
+            _ => return Err(invalid),
+        };
+        Ok(Self {
+            original_id,
+            generation: ReservationGeneration::new(message.generation),
+            outcome,
+        })
     }
 
     fn decode(bytes: &[u8]) -> ReservationResult<Self> {
@@ -92,26 +119,58 @@ impl CompletionTombstone {
 }
 
 impl StoredReservation {
-    pub(super) fn encode(self) -> Vec<u8> {
+    pub(super) fn encode(self) -> Zeroizing<Vec<u8>> {
         let phase = match self.phase {
-            Phase::Deleting => 1,
-            Phase::Recovering => 2,
-            Phase::Complete(outcome) => encode_outcome(outcome),
+            Phase::Deleting => ReservationPhase::Deleting,
+            Phase::Recovering => ReservationPhase::Recovering,
+            Phase::Complete(TenantDeleteResolution::OriginalAbsent) => {
+                ReservationPhase::OriginalAbsent
+            }
+            Phase::Complete(TenantDeleteResolution::MetadataSafe) => ReservationPhase::MetadataSafe,
         };
-        let version = version_for(self.generation, FULL_VERSION, STAMPED_FULL_VERSION);
-        let mut bytes = [
-            &[version, phase][..],
-            &self.original_id.to_be_bytes(),
-            &self.epoch.to_be_bytes(),
-            self.claimant.as_bytes(),
-            &self.expires_at.to_be_bytes(),
-        ]
-        .concat();
-        append_generation(&mut bytes, self.generation);
-        bytes
+        let message = Reservation::default()
+            .with_original_id(self.original_id)
+            .with_generation(self.generation.value())
+            .with_epoch(self.epoch)
+            .with_claimant(StoredId::new(*self.claimant.as_bytes()))
+            .with_expires_at(self.expires_at)
+            .with_phase(phase);
+        encode_record(&message)
+    }
+
+    fn decode_proto(bytes: &[u8]) -> ReservationResult<Self> {
+        let invalid = ReservationErrorReason::InvalidRecord;
+        let message: Reservation = decode_record(bytes).map_err(|_| invalid)?;
+        let original_id = message.original_id.filter(|id| *id >= 0).ok_or(invalid)?;
+        let claimant = message.claimant.bytes().ok_or(invalid)?;
+        if message.epoch == 0 || message.expires_at <= 0 {
+            return Err(invalid);
+        }
+        let phase = match message.phase.as_known() {
+            Some(ReservationPhase::Deleting) if message.epoch == 1 => Phase::Deleting,
+            Some(ReservationPhase::Recovering) => Phase::Recovering,
+            Some(ReservationPhase::OriginalAbsent) => {
+                Phase::Complete(TenantDeleteResolution::OriginalAbsent)
+            }
+            Some(ReservationPhase::MetadataSafe) => {
+                Phase::Complete(TenantDeleteResolution::MetadataSafe)
+            }
+            _ => return Err(invalid),
+        };
+        Ok(Self {
+            original_id,
+            generation: ReservationGeneration::new(message.generation),
+            epoch: message.epoch,
+            claimant: ReservationId::from_bytes(*claimant),
+            expires_at: message.expires_at,
+            phase,
+        })
     }
 
     pub(super) fn decode(bytes: &[u8]) -> ReservationResult<Self> {
+        if has_record_kind::<Reservation>(bytes) {
+            return Self::decode_proto(bytes);
+        }
         let invalid = ReservationErrorReason::InvalidRecord;
         let (bytes, generation) = split_generation(bytes, FULL_VERSION, STAMPED_FULL_VERSION)?;
         let (&[_, phase], bytes) = bytes.split_first_chunk().ok_or(invalid)?;
@@ -140,20 +199,6 @@ impl StoredReservation {
     }
 }
 
-const fn version_for(generation: ReservationGeneration, legacy: u8, stamped: u8) -> u8 {
-    if generation.value() == 0 {
-        legacy
-    } else {
-        stamped
-    }
-}
-
-fn append_generation(bytes: &mut Vec<u8>, generation: ReservationGeneration) {
-    if generation != ReservationGeneration::LEGACY {
-        bytes.extend_from_slice(&generation.value().to_be_bytes());
-    }
-}
-
 fn split_generation(
     bytes: &[u8],
     legacy: u8,
@@ -173,13 +218,6 @@ fn split_generation(
         return Err(invalid);
     }
     Ok((body, generation))
-}
-
-const fn encode_outcome(outcome: TenantDeleteResolution) -> u8 {
-    match outcome {
-        TenantDeleteResolution::OriginalAbsent => ORIGINAL_ABSENT,
-        TenantDeleteResolution::MetadataSafe => METADATA_SAFE,
-    }
 }
 
 const fn decode_outcome(outcome: u8) -> ReservationResult<TenantDeleteResolution> {

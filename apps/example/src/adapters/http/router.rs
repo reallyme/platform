@@ -38,13 +38,13 @@ use reallyme_server_kit::task::ShutdownToken;
 type HttpRouterShutdownToken = ShutdownToken;
 #[cfg(not(feature = "websocket"))]
 type HttpRouterShutdownToken = ();
-use serde::Serialize;
 
 #[cfg(feature = "connect-axum")]
 use crate::adapters::connect::connect_router;
 use crate::app::{ExampleAppContext, ExampleAppError, HelloRequest};
 #[cfg(feature = "connect-axum")]
 use reallyme_example_contract::EXAMPLE_HELLO_CONNECT_RPC_PATH;
+use reallyme_example_contract::generated::proto::reallyme::example::v1::HelloResponse;
 
 /// Axum adapter that exposes example app behavior through HTTP.
 /// Builds the example app HTTP router without WebSocket support.
@@ -131,11 +131,12 @@ async fn connect_http_protocol_policy(request: Request, next: Next) -> axum::res
 
 async fn hello(
     State(state): State<ExampleHttpState>,
-) -> Result<Json<HelloHttpResponse>, JsonErrorResponse> {
+) -> Result<Json<HelloResponse>, JsonErrorResponse> {
     crate::app::hello(state.context(), HelloRequest, None)
         .map(|response| {
-            Json(HelloHttpResponse {
-                message: response.body(),
+            Json(HelloResponse {
+                message: response.body().to_owned(),
+                ..Default::default()
             })
         })
         .map_err(map_app_error)
@@ -221,11 +222,6 @@ fn map_app_error(error: ExampleAppError) -> JsonErrorResponse {
             PublicHttpError::from_code(ErrorCode::ServiceUnavailable),
         ),
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-struct HelloHttpResponse {
-    message: &'static str,
 }
 
 #[derive(Clone)]

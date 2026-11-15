@@ -80,7 +80,7 @@ jobs:
           node-version: "26"
 
       - name: Set up pnpm and Node for Worker validation
-        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3.2.0
         with:
           runtime: node@26
           cache: true
@@ -98,7 +98,7 @@ jobs:
         run: scripts/generation/generate-rust-contracts.sh
 
       - name: Install pinned Worker build tool
-        run: cargo install worker-build --version 0.8.7 --locked
+        run: cargo install worker-build --version '=0.9.0' --locked
 
       - name: Validate Worker deployment bundle
         run: scripts/build/check-worker.sh

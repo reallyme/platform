@@ -1,0 +1,75 @@
+// SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package reallyme.platform.storage.v1;
+
+// Values are persisted in the control tenant. Enum zero is rejected on read.
+enum ReservationPhase {
+  RESERVATION_PHASE_UNSPECIFIED = 0;
+  RESERVATION_PHASE_DELETING = 1;
+  RESERVATION_PHASE_RECOVERING = 2;
+  RESERVATION_PHASE_ORIGINAL_ABSENT = 3;
+  RESERVATION_PHASE_METADATA_SAFE = 4;
+}
+
+enum DeleteOutcome {
+  DELETE_OUTCOME_UNSPECIFIED = 0;
+  DELETE_OUTCOME_ORIGINAL_ABSENT = 1;
+  DELETE_OUTCOME_METADATA_SAFE = 2;
+}
+
+message Reservation {
+  optional int64 original_id = 1;
+  uint64 generation = 2;
+  uint64 epoch = 3;
+  bytes claimant = 4 [debug_redact = true];
+  int64 expires_at = 5;
+  ReservationPhase phase = 6;
+}
+
+message Completion {
+  optional int64 original_id = 1;
+  uint64 generation = 2;
+  DeleteOutcome outcome = 3;
+}
+
+message ActiveOperation {
+  bytes operation = 1 [debug_redact = true];
+}
+
+message GenerationCutoff {
+  uint64 generation = 1;
+}
+
+message SchemaVersion {
+  uint32 version = 1;
+}
+
+message CreationTime {
+  uint64 unix_seconds = 1;
+}
+
+// The operator persists this intent before starting a delete transaction.
+enum OperatorDeleteState {
+  OPERATOR_DELETE_STATE_UNSPECIFIED = 0;
+  OPERATOR_DELETE_STATE_PENDING = 1;
+  OPERATOR_DELETE_STATE_ORIGINAL_ABSENT = 2;
+  OPERATOR_DELETE_STATE_METADATA_SAFE = 3;
+}
+
+message OperatorDeleteRecord {
+  bytes cluster_uid = 1 [debug_redact = true];
+  string tenant_name = 2 [debug_redact = true];
+  optional int64 original_id = 3;
+  OperatorDeleteState state = 4;
+  OperatorDeleteReservation reservation = 5;
+}
+
+message OperatorDeleteReservation {
+  string control_name = 1 [debug_redact = true];
+  optional int64 control_id = 2;
+  bytes operation = 3 [debug_redact = true];
+  uint64 generation = 4;
+}

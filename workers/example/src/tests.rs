@@ -6,14 +6,14 @@ use crate::error::{
     ExampleWorkerHostError, WorkerConnectErrorCode, WorkerPublicErrorCode,
     classify_worker_connect_error, classify_worker_error,
 };
-use crate::model::{WorkerErrorBody, WorkerErrorEnvelope, WorkerHelloResponse};
-use crate::response::WorkerRouteResponse;
+use crate::response::{WorkerRouteResponse, hello_message, http_error_envelope};
 use crate::routing::{
     allowed_method_for_path, allowed_origin, is_connect_content_type, is_known_app_path,
     is_known_operational_path, is_valid_hello_request, parse_connect_timeout_values,
     route_example_app, route_example_app_with_deadline, valid_operational_probe_header,
     valid_operational_probe_token,
 };
+use buffa::Enumeration;
 use example_app::app::{ExampleAppConfig, new_context};
 use example_app::ports::ExamplePorts;
 use serde::Deserialize;
@@ -62,17 +62,11 @@ fn worker_matches_shared_host_parity_cases() {
             }
             (HostParityTransport::HttpHello, Err(error)) => {
                 let (code, _message, status) = classify_worker_error(error);
-                (
-                    status,
-                    Some(serde_json::to_value(code).expect("public code serializes")),
-                )
+                (status, Some(serde_json::Value::from(code.proto_name())))
             }
             (HostParityTransport::ConnectHello, Err(error)) => {
                 let (code, _message, status) = classify_worker_connect_error(error);
-                (
-                    status,
-                    Some(serde_json::to_value(code).expect("connect code serializes")),
-                )
+                (status, Some(serde_json::Value::from(code.proto_name())))
             }
             _ => unreachable!("shared parity case did not reach its intended route"),
         };
@@ -248,10 +242,8 @@ fn worker_configuration_failure_maps_to_internal_http_and_connect_errors() {
 
 #[test]
 fn worker_host_hello_response_is_json_dto() {
-    let encoded = serde_json::to_value(WorkerHelloResponse {
-        message: "hello from example-app",
-    })
-    .expect("worker hello response should serialize");
+    let encoded = serde_json::to_value(hello_message("hello from example-app"))
+        .expect("worker hello response should serialize");
 
     assert_eq!(
         encoded,
@@ -263,12 +255,10 @@ fn worker_host_hello_response_is_json_dto() {
 
 #[test]
 fn worker_host_error_response_shape_is_stable() {
-    let encoded = serde_json::to_value(WorkerErrorEnvelope {
-        error: WorkerErrorBody {
-            code: WorkerPublicErrorCode::NotFound,
-            message: "Not found",
-        },
-    })
+    let encoded = serde_json::to_value(http_error_envelope(
+        WorkerPublicErrorCode::NotFound,
+        "Not found",
+    ))
     .expect("worker error envelope should serialize");
 
     assert_eq!(

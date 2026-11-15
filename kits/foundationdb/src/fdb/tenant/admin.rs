@@ -33,6 +33,11 @@ const METADATA_RESTORE_ATTEMPTS: usize = 3;
 const TENANT_MAP_PREFIX: &[u8] = b"\xff\xff/management/tenant/map/";
 const TENANT_MAP_DELETE_RETRIES: i32 = 2;
 
+/// Storage codec shared with the companion operator binary.
+#[doc(hidden)]
+#[path = "delete_intent.rs"]
+pub mod delete_intent;
+
 #[path = "recorded_delete.rs"]
 mod recorded_delete;
 pub use recorded_delete::{

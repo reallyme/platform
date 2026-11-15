@@ -20,7 +20,7 @@ use crate::error::{
     NOT_FOUND_MESSAGE, UNAVAILABLE_MESSAGE, WorkerConnectErrorCode, WorkerPublicErrorCode,
     map_worker_connect_error, map_worker_error,
 };
-use crate::model::WorkerHealthResponse;
+use crate::response::worker_health_response;
 use crate::response::{
     WorkerRouteResponse, connect_error_response, connect_unsupported_media_type_response,
     method_not_allowed_response, stable_error_response,
@@ -311,12 +311,12 @@ fn route_operational(req: &Request, env: &Env) -> Result<Response> {
     }
 
     match (method, path.as_str()) {
-        (Method::Get, "/healthz") => Response::from_json(&WorkerHealthResponse::serving()),
+        (Method::Get, "/healthz") => worker_health_response(),
         (Method::Get, "/readyz") => match example_context(env) {
             Ok(context)
                 if example_app::app::app_health(context).status() == AppHealthStatus::Ready =>
             {
-                Response::from_json(&WorkerHealthResponse::serving())
+                worker_health_response()
             }
             Ok(_) | Err(_) => stable_error_response(
                 WorkerPublicErrorCode::ServiceUnavailable,

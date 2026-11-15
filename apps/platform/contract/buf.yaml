@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    ENUM_VALUE_PREFIX:
+      - proto/reallyme/platform/http/v1/http.proto
+    ENUM_VALUE_UPPER_SNAKE_CASE:
+      - proto/reallyme/platform/http/v1/http.proto
+breaking:
+  use:
+    - FILE

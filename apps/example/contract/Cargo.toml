@@ -11,15 +11,15 @@ publish = false
 
 [features]
 default = []
-proto = ["dep:buffa"]
+proto = ["dep:buffa", "dep:serde"]
 connect = ["proto", "dep:connectrpc"]
 generated = ["connect"]
 
 [dependencies]
-buffa = { workspace = true, optional = true }
+buffa = { workspace = true, features = ["json"], optional = true }
 connectrpc = { workspace = true, optional = true }
 reallyme-app-kit.workspace = true
-serde.workspace = true
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [lints]

@@ -7,8 +7,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
-if ! command -v worker-build >/dev/null 2>&1; then
-  printf 'worker-build 0.8.7 is required to validate the Worker bundle\n' >&2
+if ! worker_build_version="$(worker-build --version 2>/dev/null)" ||
+  [[ "${worker_build_version}" != 0.9.0 ]]; then
+  printf 'worker-build 0.9.0 is required to validate the Worker bundle\n' >&2
   exit 1
 fi
 

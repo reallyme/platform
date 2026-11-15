@@ -17,6 +17,7 @@ build = "build.rs"
 autobins = false
 
 [dependencies]
+buffa = { workspace = true, features = ["zeroize"] }
 bytes = { workspace = true }
 foundationdb = { workspace = true, features = ["embedded-fdb-include", "fdb-7_3", "tenant-experimental"] }
 # Keep the C API version aligned with the Rust binding. Recovery needs the
@@ -29,6 +30,7 @@ serde_json = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+zeroize.workspace = true
 
 [dev-dependencies]
 temp-env = { workspace = true }

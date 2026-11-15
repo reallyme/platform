@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+version: v2
+plugins:
+  - local: protoc-gen-reallyme-buffa
+    out: kits/app/src/generated
+    strategy: all
+    opt: [json=true, views=false, deny_unknown_json_fields=true]
+  - local: protoc-gen-reallyme-buffa-packaging
+    out: kits/app/src/generated
+    strategy: all

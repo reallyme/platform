@@ -10,7 +10,7 @@ use foundationdb::{Database, options::TransactionOption, tenant::TenantManagemen
 
 use crate::{
     DeleteRecord, DeleteRecordState, FdbConfig, FdbContext, FoundationDbTenantName,
-    LockedDeleteRecord, admin, persist_delete_intent,
+    LockedDeleteRecord, ReservationGeneration, admin, persist_delete_intent,
 };
 
 const NAME: &str = "kit-durable-delete-test";
@@ -320,10 +320,11 @@ async fn reserved_delete_reconciles_across_processes() {
         "{}",
         String::from_utf8_lossy(&deleted.stderr)
     );
-    assert!(
-        fs::read_to_string(&completed)
-            .expect("read new intent")
-            .starts_with("fdb-tenant-delete-v3\n")
+    let encoded = fs::read(&completed).expect("read new intent");
+    let saved = DeleteRecord::decode_protobuf(&encoded).expect("decode generated record");
+    assert_eq!(
+        saved.reservation.expect("control reservation").generation,
+        ReservationGeneration::new(1)
     );
     TenantManagement::create_tenant(&database, tenant.as_bytes())
         .await

@@ -27,6 +27,12 @@ pub mod fdb;
 /// Validated key construction helpers shared by FoundationDB adapters.
 pub mod keys;
 
+#[allow(missing_docs)]
+mod generated;
+mod persisted_record;
+mod stored_id;
+mod stored_tenant_name;
+
 pub use fdb::config::{FdbConfig, FdbConfigInput};
 pub use fdb::connector::{FdbContext, FdbHealthReport, FoundationDbConnector};
 pub use fdb::error::{

@@ -20,10 +20,10 @@ RELEASE_READINESS_PUBLIC_REPO=true npm exec --yes --allow-git=root \
   -- reallyme-release-readiness
 cargo fmt --all -- --check
 if [[ "${contracts_are_generated}" != true ]]; then
-  scripts/generation/generate-rust-contracts.sh
+  scripts/conformance/verify-protobuf-contract.sh
 fi
 generated_status="$(git status --porcelain=v1 --untracked-files=all -- \
-  apps/example/contract/src/generated)"
+  apps/example/contract/src/generated kits/app/src/generated kits/foundationdb/src/generated)"
 if [[ -n "${generated_status}" ]]; then
   printf '%s\n' "${generated_status}" >&2
   printf 'committed generated contract sources are stale; regenerate and commit the result\n' >&2

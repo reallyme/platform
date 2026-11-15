@@ -23,6 +23,7 @@ const {
   assertCargoWorkspacePolicy,
   assertContains,
   assertNodeWorkflowJobsPinNode,
+  assertProtobufFirstPolicy,
   assertRepositoryShapePolicy,
   assertReallyMeReleasePackagePolicy,
   assertRustReleasePolicy,
@@ -76,6 +77,8 @@ assertRustSourcePolicy({
   roots: ["."],
   generatedPrefixes: [
     "apps/example/contract/src/generated",
+    "kits/app/src/generated",
+    "kits/foundationdb/src/generated",
     "conformance/contracts/vendor/connectrpc/src/generated",
   ],
   baselinePath: null,
@@ -98,6 +101,8 @@ assertSpdxHeaders({
       path: "apps/example/contract/src/generated",
       reason: "generated",
     },
+    { path: "kits/app/src/generated", reason: "generated" },
+    { path: "kits/foundationdb/src/generated", reason: "generated" },
     {
       path: "conformance/contracts/vendor/connectrpc",
       reason: "vendored",
@@ -137,7 +142,7 @@ assertRepositoryShapePolicy({
   exceptions: [],
   crates: [{ path: "crates/platform", role: "facade" }],
   subLanes: {
-    apps: ["example"],
+    apps: ["example", "platform"],
     kits: [
       "app",
       "foundationdb",
@@ -185,4 +190,19 @@ assertTextPolicy({
       forbidden: ['default = ["native-server"]'],
     },
   ],
+});
+
+assertProtobufFirstPolicy({
+  contractPath: "docs/concepts/architecture.md",
+  schemaPaths: [
+    "apps/example/contract/proto/reallyme/example/v1/example.proto",
+    "apps/platform/contract/proto/reallyme/platform/http/v1/http.proto",
+    "apps/platform/contract/proto/reallyme/platform/storage/v1/tenant.proto",
+  ],
+  verification: {
+    workflow: ".github/workflows/protobuf-ci.yml",
+    job: "contracts",
+    step: "Verify protobuf contracts",
+    run: "scripts/conformance/verify-protobuf-contract.sh",
+  },
 });

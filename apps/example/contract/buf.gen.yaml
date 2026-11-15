@@ -5,7 +5,7 @@ version: v2
 plugins:
   - local: protoc-gen-reallyme-buffa
     out: src/generated/buffa
-    opt: [views=true, json=true]
+    opt: [views=true, json=true, deny_unknown_json_fields=true]
   - local: protoc-gen-reallyme-buffa-packaging
     out: src/generated/buffa
     strategy: all

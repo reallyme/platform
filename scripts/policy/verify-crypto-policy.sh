@@ -22,18 +22,19 @@ fail_matches() {
   fi
 }
 
-if ! rg -n '^reallyme-crypto = \{ version = "=0\.3\.17", default-features = false, features = \["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"\] \}' Cargo.toml >/dev/null; then
-  printf 'workspace reallyme-crypto dependency must stay pinned to crates.io version 0.3.17 with the audited platform feature set\n' >&2
+if ! rg -n '^reallyme-crypto = \{ version = "=0\.4\.2", default-features = false, features = \["native", "dispatch", "ed25519", "hmac", "jwk", "p256", "rsa", "sha2"\] \}' Cargo.toml >/dev/null; then
+  printf 'workspace reallyme-crypto dependency must stay pinned to crates.io version 0.4.2 with the audited platform feature set\n' >&2
   status=1
 fi
 
-if ! rg -n '^reallyme-codec = \{ version = "=0\.3\.2", default-features = false \}' Cargo.toml >/dev/null; then
-  printf 'workspace reallyme-codec dependency must stay pinned to crates.io version 0.3.2\n' >&2
+if rg -q '^reallyme-codec\s*=' Cargo.toml &&
+  ! rg -q '^reallyme-codec = \{ version = "=0\.4\.3", default-features = false \}' Cargo.toml; then
+  printf 'workspace reallyme-codec dependency must use the audited crates.io version 0.4.3\n' >&2
   status=1
 fi
 
 fail_matches \
-  'do not depend directly on split reallyme-crypto primitive crates; use crates.io reallyme-crypto 0.3.17 via workspace dependency' \
+  'use the crates.io reallyme-crypto workspace dependency for primitive cryptographic operations' \
   'reallyme-crypto-(core|ed25519|hmac|p256|sha2-256)' \
   --glob Cargo.toml
 

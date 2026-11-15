@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+version: v2
+plugins:
+  - local: protoc-gen-reallyme-buffa
+    out: kits/foundationdb/src/generated
+    strategy: all
+    opt:
+      - views=false
+      - zeroize=true
+      - unknown_fields=false
+      - bytes_type_custom_in=.=crate::stored_id::StoredId
+      - bytes_type_custom_in=.reallyme.platform.storage.v1.OperatorDeleteRecord.cluster_uid=crate::stored_id::StoredClusterId
+      - string_type_custom_in=.=crate::stored_tenant_name::StoredTenantName
+  - local: protoc-gen-reallyme-buffa-packaging
+    out: kits/foundationdb/src/generated
+    strategy: all

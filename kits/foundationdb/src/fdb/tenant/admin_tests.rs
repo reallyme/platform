@@ -36,6 +36,7 @@ async fn tenant_delete_recovery_live_cases() {
     // the connector is dropped before this test process exits.
     #[allow(unsafe_code)]
     let connector = unsafe { FoundationDbConnector::connect(&config) }.expect("live FDB connector");
+    tenant_readiness_accepts_legacy_metadata(&connector).await;
     failed_second_delete_phase_restores_metadata_after_concurrent_write(&connector).await;
     interrupted_delete_recovery_restores_metadata_even_with_application_data(&connector).await;
     tokio::time::timeout(
@@ -58,6 +59,42 @@ async fn tenant_delete_recovery_live_cases() {
     .expect("tenant-map delete fixture completed");
     restore_write_conflicts_with_in_flight_clear(&connector).await;
     interrupted_creation_requires_explicit_empty_tenant_repair(&connector).await;
+}
+
+async fn tenant_readiness_accepts_legacy_metadata(connector: &FoundationDbConnector) {
+    let tenant =
+        FoundationDbTenantName::new("kit-legacy-metadata-test").expect("fixed tenant name");
+    TenantManagement::create_tenant(connector.database(), tenant.as_bytes())
+        .await
+        .expect("create legacy tenant fixture");
+    let raw_tenant = connector
+        .database()
+        .open_tenant(tenant.as_bytes())
+        .expect("open raw legacy tenant");
+    let [schema, created_at] = metadata_keys(tenant).expect("metadata keys");
+    let transaction = raw_tenant
+        .create_trx()
+        .expect("legacy metadata transaction");
+    transaction.set(&schema, &1_u32.to_le_bytes());
+    transaction.set(&created_at, &1_700_000_000_u64.to_le_bytes());
+    transaction.commit().await.expect("seed legacy metadata");
+    connector
+        .open_tenant(tenant)
+        .await
+        .expect("legacy metadata allows readiness");
+    delete_tenant(connector, tenant)
+        .await
+        .expect("delete legacy tenant");
+    ensure_tenant(connector, tenant)
+        .await
+        .expect("provision replacement using protobuf");
+    connector
+        .open_tenant(tenant)
+        .await
+        .expect("generated metadata allows readiness");
+    delete_tenant(connector, tenant)
+        .await
+        .expect("delete replacement tenant");
 }
 
 async fn recovery_stays_bound_when_a_tenant_name_is_reused(connector: &FoundationDbConnector) {

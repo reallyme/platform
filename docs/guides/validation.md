@@ -6,18 +6,19 @@ Run the repository release-readiness entrypoint before submitting a change:
 scripts/release-readiness/check.sh
 ```
 
-That command runs the shared ReallyMe repository gate, contract generation,
-repository policy, feature separation, Rust formatting, workspace checks,
-tests, documentation tests, Clippy, Rustdoc, and release-tool tests. It also
-checks the facade without default features and builds the Worker bundle.
+That command runs the shared ReallyMe repository gate, Buf lint and breaking
+checks, contract generation and coverage checks, repository policy, feature
+separation, Rust formatting, workspace checks, tests, documentation tests,
+Clippy, Rustdoc, and release-tool tests. It also checks the facade without
+default features and builds the Worker bundle.
 
 Install the pinned Rust toolchain from `rust-toolchain.toml`, Node 26, pnpm
-12.18.0, Buf 1.75.0, the `reallyme-protoc-gen-buffa` and
+12.21.0, Buf 1.75.0, the `reallyme-protoc-gen-buffa` and
 `reallyme-protoc-gen-buffa-packaging` packages at exactly 0.1.2,
-`connectrpc-codegen` 0.9.0, and `worker-build` 0.8.7. The FoundationDB crate
-requires the FoundationDB 7.3.77 C client library. Repository policy checks
-require Ripgrep. The gate downloads the pinned shared release-readiness package
-and Worker tooling, so a cold environment requires network access.
+`connectrpc-codegen` 0.9.0, and `worker-build` 0.9.0. The FoundationDB crate
+requires the FoundationDB 7.3.77 C client library. Repository checks require
+Ripgrep and jq. The gate downloads the pinned shared release-readiness
+package and Worker tooling, so a cold environment requires network access.
 
 The script runs `cargo deny`, `cargo audit`, and `cargo machete` only when those
 tools are installed and reports each skipped check. CI additionally requires
@@ -37,6 +38,7 @@ For a faster development loop, select the narrowest applicable gate:
 ```console
 scripts/policy/verify-workspace-standards.sh
 scripts/policy/verify-contract-boundaries.sh
+scripts/conformance/verify-protobuf-contract.sh
 scripts/conformance/verify-example-app-feature-separation.sh
 scripts/conformance/verify-server-kit-feature-separation.sh
 scripts/build/check-worker.sh
@@ -44,6 +46,11 @@ scripts/build/check-worker.sh
 
 The formal verification lane runs Kani proofs and TLA+ model checks against
 the same verified commit. See the [formal verification checks](../../conformance/formal-methods/README.md).
+
+The native and Worker adapters share the
+[host-parity fixture](../../conformance/host-parity/cases.json) for API success
+and failure cases. Package preflight inspects each crate's explicit source
+allowlist and verifies workspace dependency order.
 
 The workspace-standards gate enforces inherited lints, package visibility,
 SPDX headers, generated-code placement, the ban on wildcard Rust imports, and a

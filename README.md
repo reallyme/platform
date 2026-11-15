@@ -20,29 +20,31 @@ gRPC, or Cloudflare Workers adapters as required by the host.
 
 ## Getting started
 
+Platform 0.4.0 requires Rust 1.100.0 or newer.
+
 Add the facade crate to use Platform's host-neutral application contracts:
 
 ```console
-cargo add reallyme-platform
+cargo add reallyme-platform@0.4.0
 ```
 
 Infrastructure integrations are opt-in features:
 
 ```console
-cargo add reallyme-platform --features postgres,nats
+cargo add reallyme-platform@0.4.0 --features postgres,nats
 ```
 
 The native runtime is also opt-in:
 
 ```console
-cargo add reallyme-platform --features native-server
+cargo add reallyme-platform@0.4.0 --features native-server
 ```
 
 Native application adapters that need the bounded, zeroizing HTTPS transport
 can depend on the application kit directly:
 
 ```console
-cargo add reallyme-app-kit --features native-http
+cargo add reallyme-app-kit@0.4.0 --features native-http
 ```
 
 Clone the repository and run the reference native server:
@@ -244,6 +246,12 @@ Platform is actively developed and used in production at ReallyMe.
 Releases follow semantic versioning. Before 1.0, public APIs may evolve between
 minor releases; compatibility-impacting changes are documented in the
 [changelog](CHANGELOG.md).
+
+## Contributing
+
+See the [architecture guide](docs/concepts/architecture.md) for crate boundaries
+and the [validation guide](docs/guides/validation.md) for local checks. Report
+suspected vulnerabilities through the [security policy](.github/SECURITY.md).
 
 ## License
 

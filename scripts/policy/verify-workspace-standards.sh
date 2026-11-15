@@ -24,7 +24,8 @@ while IFS= read -r generated_path; do
     continue
   fi
   case "${generated_path}" in
-    apps/example/contract/src/generated/* | conformance/contracts/vendor/connectrpc/src/generated/*) ;;
+    apps/example/contract/src/generated/* | kits/app/src/generated/* | \
+    kits/foundationdb/src/generated/* | conformance/contracts/vendor/connectrpc/src/generated/*) ;;
     *)
       printf 'generated Rust source is outside an approved source tree: %s\n' \
         "${generated_path}" >&2
@@ -33,11 +34,13 @@ while IFS= read -r generated_path; do
   esac
 done < <(git ls-files | rg '/src/generated/|/generated/(buffa|connect|grpc)/')
 
-generated_directory="apps/example/contract/src/generated"
-if ! git ls-files -- "${generated_directory}" | rg -q .; then
-  printf 'contract generated source must be tracked: %s\n' "${generated_directory}" >&2
-  status=1
-fi
+for generated_directory in apps/example/contract/src/generated kits/app/src/generated \
+  kits/foundationdb/src/generated; do
+  if ! git ls-files -- "${generated_directory}" | rg -q .; then
+    printf 'contract generated source must be tracked: %s\n' "${generated_directory}" >&2
+    status=1
+  fi
+done
 
 while IFS= read -r rust_file; do
   # `git ls-files` retains paths deleted by an unstaged crate extraction. There
@@ -113,7 +116,8 @@ done < <(find apps crates kits servers workers -name Cargo.toml -type f | sort)
 
 while IFS= read -r rust_path; do
   case "${rust_path}" in
-    apps/example/contract/src/generated/*) continue ;;
+    apps/example/contract/src/generated/* | kits/app/src/generated/* | \
+    kits/foundationdb/src/generated/*) continue ;;
     */tests/* | */tests.rs | *_tests.rs) maximum_lines="${test_maximum_lines}" ;;
     *) maximum_lines="${production_maximum_lines}" ;;
   esac
@@ -138,7 +142,9 @@ while IFS= read -r wildcard_import; do
   status=1
 done < <(rg -n '^[[:space:]]*(pub[[:space:]]+)?use[[:space:]][^;]*::[*][[:space:]]*;' \
   apps crates kits servers workers --glob '*.rs' \
-  --glob '!apps/example/contract/src/generated/**' || true)
+  --glob '!apps/example/contract/src/generated/**' \
+  --glob '!kits/app/src/generated/**' \
+  --glob '!kits/foundationdb/src/generated/**' || true)
 
 if ! scripts/policy/verify-crypto-policy.sh; then
   status=1

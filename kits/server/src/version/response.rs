@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use serde::Serialize;
+use buffa_types::Value;
+use reallyme_app_kit::http_contract as wire;
+use serde::{Serialize, Serializer};
 
 use super::BuildInfo;
 
@@ -10,7 +12,7 @@ use super::BuildInfo;
 /// This type exists so HTTP transport helpers can expose a deliberate response
 /// contract without relying on direct serialization of internal structs by
 /// convention alone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionResponse {
     server_name: String,
     service_version: &'static str,
@@ -61,6 +63,23 @@ impl VersionResponse {
     /// Returns the safe build metadata Rust compiler/toolchain version, if available.
     pub const fn rustc_version(&self) -> Option<&'static str> {
         self.rustc_version
+    }
+}
+
+impl Serialize for VersionResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Existing clients distinguish an explicit null from an absent property.
+        let nullable = |value: Option<&str>| value.map_or_else(Value::null, Value::from);
+        wire::VersionResponse {
+            server_name: Some(self.server_name.clone()),
+            service_version: Some(self.service_version.to_owned()),
+            git_sha: nullable(self.git_sha).into(),
+            build_timestamp: nullable(self.build_timestamp).into(),
+            build_profile: nullable(self.build_profile).into(),
+            rustc_version: nullable(self.rustc_version).into(),
+            ..Default::default()
+        }
+        .serialize(serializer)
     }
 }
 

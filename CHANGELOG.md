@@ -5,6 +5,12 @@
 - Generate and run the example protobuf contracts with ReallyMe Buffa 0.1.2.
   The native example uses a vendored ConnectRPC transport with matching
   owned-view lifetime bounds. Protobuf field numbers and RPC paths are unchanged.
+- Generate ProtoJSON for the native and Worker HTTP responses while preserving
+  published JSON shapes. CI checks Buf lint, schema compatibility, and
+  regeneration coverage.
+- Write protobuf tenant metadata, reservation records, and durable delete
+  intents. The new kit reads historical formats. Upgrade application readers
+  and operator binaries together before enabling writes from 0.4.0.
 - Add Kani checks for request admission, gRPC identity and deadlines, rate
   limiting, and FoundationDB tenant data boundaries. Add TLA+ models for
   server shutdown and FoundationDB deletion, retry, and recovery protocols.
@@ -19,6 +25,8 @@
   matches must handle the new variants.
 - Align the workspace MSRV, stable toolchain, CI checks, and example server
   Docker builder on Rust 1.100.0.
+- Refresh both Rust lockfiles and update ReallyMe Crypto to 0.4.2, the Worker
+  runtime and build tool to 0.9.0, pnpm to 12.21.0, and Wrangler to 4.162.0.
 
 ## 0.3.5
 

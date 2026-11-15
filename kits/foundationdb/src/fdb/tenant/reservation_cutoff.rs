@@ -5,6 +5,9 @@ use std::cmp::Ordering;
 
 use foundationdb::Transaction;
 
+use crate::generated::reallyme::platform::storage::v1::GenerationCutoff;
+use crate::persisted_record::{decode_record, encode_record};
+
 use super::{
     AttemptResult, NAMESPACE, ReservationErrorReason, ReservationGeneration, ReservationId,
     ReservationIntent, ReservationResult, ReservationStore, transactions::read_target_id,
@@ -82,7 +85,8 @@ impl ReservationStore<'_> {
         if self.active_id(transaction, tenant).await?.is_some() {
             return Err(ReservationErrorReason::Busy.into());
         }
-        transaction.set(&self.cutoff_key(tenant), &target.value().to_be_bytes());
+        let cutoff = GenerationCutoff::default().with_generation(target.value());
+        transaction.set(&self.cutoff_key(tenant), &encode_record(&cutoff));
         Ok(target)
     }
 
@@ -109,11 +113,14 @@ impl ReservationStore<'_> {
         let Some(value) = transaction.get(&self.cutoff_key(tenant), false).await? else {
             return Ok(ReservationGeneration::LEGACY);
         };
-        let bytes = value
-            .as_ref()
-            .try_into()
-            .map_err(|_| ReservationErrorReason::InvalidRecord)?;
-        let generation = ReservationGeneration::new(u64::from_be_bytes(bytes));
+        let generation = if let Ok(legacy) = value.as_ref().try_into() {
+            u64::from_be_bytes(legacy)
+        } else {
+            let record: GenerationCutoff =
+                decode_record(value.as_ref()).map_err(|_| ReservationErrorReason::InvalidRecord)?;
+            record.generation
+        };
+        let generation = ReservationGeneration::new(generation);
         if generation == ReservationGeneration::LEGACY {
             return Err(ReservationErrorReason::InvalidRecord.into());
         }

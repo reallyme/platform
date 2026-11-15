@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use axum::http::StatusCode;
-use serde::Serialize;
+use reallyme_app_kit::http_contract::HttpErrorCode;
+use serde::{Serialize, Serializer};
 
 use super::response::JsonErrorResponse;
 
 /// Stable error codes exposed by infrastructure endpoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     /// The request payload or parameters are invalid.
     BadRequest,
@@ -46,7 +46,35 @@ pub enum ErrorCode {
     InternalServerError,
 }
 
+impl Serialize for ErrorCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.wire_code().serialize(serializer)
+    }
+}
+
 impl ErrorCode {
+    pub(super) const fn wire_code(self) -> HttpErrorCode {
+        match self {
+            Self::BadRequest => HttpErrorCode::BadRequest,
+            Self::Unauthorized => HttpErrorCode::Unauthorized,
+            Self::Forbidden => HttpErrorCode::Forbidden,
+            Self::NotFound => HttpErrorCode::NotFound,
+            Self::MethodNotAllowed => HttpErrorCode::MethodNotAllowed,
+            Self::Conflict => HttpErrorCode::Conflict,
+            Self::LengthRequired => HttpErrorCode::LengthRequired,
+            Self::PayloadTooLarge => HttpErrorCode::PayloadTooLarge,
+            Self::UriTooLong => HttpErrorCode::UriTooLong,
+            Self::RequestHeaderFieldsTooLarge => HttpErrorCode::RequestHeaderFieldsTooLarge,
+            Self::RequestTimeout => HttpErrorCode::RequestTimeout,
+            Self::TooManyRequests => HttpErrorCode::TooManyRequests,
+            Self::ServiceUnavailable => HttpErrorCode::ServiceUnavailable,
+            Self::UnsupportedMediaType => HttpErrorCode::UnsupportedMediaType,
+            Self::UnprocessableEntity => HttpErrorCode::UnprocessableEntity,
+            Self::UpgradeRequired => HttpErrorCode::UpgradeRequired,
+            Self::InternalServerError => HttpErrorCode::InternalServerError,
+        }
+    }
+
     /// Returns the stable HTTP status associated with this public error code.
     pub const fn http_status(self) -> StatusCode {
         match self {

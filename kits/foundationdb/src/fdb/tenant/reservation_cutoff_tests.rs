@@ -127,6 +127,17 @@ async fn verify_cutoff() {
     let grant = winner.get().expect("winning grant");
     store
         .transact(async |transaction| {
+            // Simulate an existing cluster whose active slot and cutoff
+            // were committed by the previous writer.
+            transaction.set(&store.active_key(tenant), current.operation.as_bytes());
+            transaction.set(&store.cutoff_key(tenant), &first.value().to_be_bytes());
+            Ok(())
+        })
+        .await
+        .expect("seed the historical active slot and cutoff");
+    assert_eq!(store.cutoff(tenant).await, Ok(first));
+    store
+        .transact(async |transaction| {
             store.check_grant(transaction, grant).await?;
             super::stage_clear(transaction, tenant, current.original_id).await
         })

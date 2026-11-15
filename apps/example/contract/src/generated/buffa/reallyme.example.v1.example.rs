@@ -4,6 +4,7 @@
 
 /// HelloRequest intentionally carries no fields; example app behavior remains static.
 #[derive(Clone, PartialEq, Default, ::serde::Serialize, ::serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HelloRequest {
     #[serde(skip)]
     #[doc(hidden)]
@@ -103,6 +104,7 @@ pub const __HELLO_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry =
     };
 /// HelloResponse carries the example greeting returned by the app core.
 #[derive(Clone, PartialEq, Default, ::serde::Serialize, ::serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HelloResponse {
     /// Human-readable greeting for local smoke validation.
     ///

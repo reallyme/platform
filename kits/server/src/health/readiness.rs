@@ -1,18 +1,33 @@
 // SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use serde::Serialize;
+use reallyme_app_kit::http_contract as wire;
+use serde::{Serialize, Serializer};
 use tokio::sync::watch;
 
 /// Typed readiness state used to decide whether a service should receive new
 /// traffic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadinessState {
     /// The service is ready to receive traffic.
     Ready,
     /// The service should not receive traffic.
     NotReady,
+}
+
+impl ReadinessState {
+    pub(super) const fn wire_state(self) -> wire::ReadinessState {
+        match self {
+            Self::Ready => wire::ReadinessState::Ready,
+            Self::NotReady => wire::ReadinessState::NotReady,
+        }
+    }
+}
+
+impl Serialize for ReadinessState {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.wire_state().serialize(serializer)
+    }
 }
 
 /// Shared readiness controller.

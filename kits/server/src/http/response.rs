@@ -4,21 +4,30 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use reallyme_app_kit::http_contract as wire;
+use serde::{Serialize, Serializer};
 
 use super::error::{ErrorCode, PublicHttpError};
 use crate::transport::RequestId;
 
 /// Machine- and human-readable error body returned by JSON endpoints.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonErrorBody {
     code: ErrorCode,
     message: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<RequestId>,
 }
 
 impl JsonErrorBody {
+    fn wire_message(&self) -> wire::HttpErrorBody {
+        wire::HttpErrorBody {
+            code: self.code.wire_code().into(),
+            message: self.message.to_owned(),
+            request_id: self.request_id.map(|id| id.to_string()),
+            ..Default::default()
+        }
+    }
+
     /// Returns the stable machine-readable public code.
     pub const fn code(&self) -> ErrorCode {
         self.code
@@ -36,7 +45,7 @@ impl JsonErrorBody {
 }
 
 /// Stable JSON error envelope returned by infrastructure endpoints.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonErrorEnvelope {
     error: JsonErrorBody,
 }
@@ -45,6 +54,22 @@ impl JsonErrorEnvelope {
     /// Returns the enclosed error body.
     pub const fn error(&self) -> &JsonErrorBody {
         &self.error
+    }
+}
+
+impl Serialize for JsonErrorBody {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.wire_message().serialize(serializer)
+    }
+}
+
+impl Serialize for JsonErrorEnvelope {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        wire::HttpErrorEnvelope {
+            error: self.error.wire_message().into(),
+            ..Default::default()
+        }
+        .serialize(serializer)
     }
 }
 

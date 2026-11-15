@@ -29,6 +29,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -62,13 +63,24 @@ jobs:
           cargo install reallyme-protoc-gen-buffa-packaging --version "=$BUFFA_VERSION" --locked
           cargo install connectrpc-codegen --version "=$CONNECTRPC_CODEGEN_VERSION" --locked
 
-      - name: Generate Rust contracts
-        run: scripts/generation/generate-rust-contracts.sh
+      - name: Verify protobuf contracts
+        env:
+          CONTRACT_BASELINE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: scripts/conformance/verify-protobuf-contract.sh
 
-      - name: Verify generated contracts are current
+      - name: Verify the imported ConnectRPC source
+        shell: bash
         run: |
-          git diff --exit-code -- apps/example/contract/src/generated
-          test -z "$(git ls-files --others --exclude-standard apps/example/contract/src/generated)"
+          archive="$RUNNER_TEMP/connectrpc-0.9.1.crate"
+          curl --fail-with-body --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors --output "$archive" \
+            https://static.crates.io/crates/connectrpc/connectrpc-0.9.1.crate
+          scripts/generation/import-connectrpc-source.sh --check "$archive"
+
+      - name: Test the pinned ConnectRPC transport
+        run: >-
+          cargo +1.100.0 test --locked --all-features --lib
+          --manifest-path conformance/contracts/vendor/connectrpc/Cargo.toml
 
       - name: Record verified source
         id: verified

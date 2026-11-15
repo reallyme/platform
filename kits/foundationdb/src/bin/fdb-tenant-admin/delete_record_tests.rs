@@ -82,17 +82,9 @@ fn reserved_record_round_trips_control_identity_and_operation() {
     let directory = tempfile::tempdir().expect("temporary state directory");
     let control_name =
         FoundationDbTenantName::new("operator-control").expect("fixture control name");
-    for (name, version, generation) in [
-        (
-            "legacy",
-            "fdb-tenant-delete-v2",
-            ReservationGeneration::LEGACY,
-        ),
-        (
-            "stamped",
-            "fdb-tenant-delete-v3",
-            ReservationGeneration::new(u64::MAX),
-        ),
+    for (name, generation) in [
+        ("generation-zero", ReservationGeneration::LEGACY),
+        ("stamped", ReservationGeneration::new(u64::MAX)),
     ] {
         let path = directory.path().join(name);
         let file = LockedDeleteRecord::open(&path).expect("lock record");
@@ -106,11 +98,13 @@ fn reserved_record_round_trips_control_identity_and_operation() {
             ..fixture_record()
         };
         file.create(record).expect("write reserved record");
+        let encoded = fs::read(&path).expect("read generated record bytes");
         assert!(
-            fs::read_to_string(&path)
-                .expect("read record bytes")
-                .starts_with(version)
+            DeleteRecord::decode_protobuf(&encoded).expect("decode generated record") == record
         );
+        let mut invalid = encoded;
+        invalid.extend_from_slice(&[0x38, 0x01]);
+        assert!(DeleteRecord::decode_protobuf(&invalid).is_err());
         assert!(file.load().expect("read reserved record") == record);
         file.complete(record, DeleteRecordState::MetadataSafe)
             .expect("complete reserved record");
@@ -118,6 +112,48 @@ fn reserved_record_round_trips_control_identity_and_operation() {
             file.load().expect("read completed record")
                 == DeleteRecord {
                     state: DeleteRecordState::MetadataSafe,
+                    ..record
+                }
+        );
+    }
+}
+
+#[test]
+fn reads_all_historical_versions_and_upgrades_on_completion() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let path = directory.path().join("intent");
+    let file = LockedDeleteRecord::open(&path).expect("acquire record lock");
+    for (version, reservation_fields, generation) in [
+        ("v1", "", None),
+        (
+            "v2",
+            "operator-control\n11\nabababababababababababababababab\n",
+            Some(ReservationGeneration::LEGACY),
+        ),
+        (
+            "v3",
+            "operator-control\n11\nabababababababababababababababab\n7\n",
+            Some(ReservationGeneration::new(7)),
+        ),
+    ] {
+        let legacy = format!(
+            "fdb-tenant-delete-{version}\n0123456789abcdef0123456789abcdef\ncatalog\n42\npending\n\
+             {reservation_fields}"
+        );
+        fs::write(&path, legacy).expect("write historical record");
+        let record = file.load().expect("read historical intent");
+        assert!(record.state == DeleteRecordState::Pending);
+        assert_eq!(
+            record.reservation.map(|reserved| reserved.generation),
+            generation
+        );
+        file.complete(record, DeleteRecordState::OriginalAbsent)
+            .expect("persist the reconciled outcome");
+        let encoded = fs::read(&path).expect("read upgraded record");
+        assert!(
+            DeleteRecord::decode_protobuf(&encoded).expect("decode upgraded file")
+                == DeleteRecord {
+                    state: DeleteRecordState::OriginalAbsent,
                     ..record
                 }
         );

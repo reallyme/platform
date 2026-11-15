@@ -15,16 +15,16 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 buffa.workspace = true
 futures-util.workspace = true
-reallyme-app-kit.workspace = true
+reallyme-app-kit = { workspace = true, features = ["http-contract"] }
 example-app = { workspace = true, default-features = false, features = ["contract"] }
 reallyme-example-contract = { workspace = true, features = ["proto"] }
-serde.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 worker.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]
