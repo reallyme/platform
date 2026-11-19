@@ -1,14 +1,11 @@
-# Security Policy
+# Reporting a vulnerability
 
-ReallyMe Platform is security-sensitive infrastructure. Please do not disclose
-a suspected vulnerability in a public issue, discussion, or pull request.
-
-Report vulnerabilities through
+Report suspected vulnerabilities through
 [GitHub private vulnerability reporting](https://github.com/reallyme/platform/security/advisories/new).
-Include the affected crate and version, the conditions required to reproduce
-the issue, its likely impact, and a minimal reproduction when it is safe to do
-so. Do not include live credentials, personal data, or production secrets.
+Do not disclose them in a public issue, discussion, or pull request.
 
-Security fixes are made against the current release line. Users should run the
-latest published patch release; pre-release code and older patch releases do
-not receive separate security maintenance.
+Include the affected crate and version, reproduction conditions, likely impact,
+and a safe minimal reproduction. Do not include live credentials or personal data.
+
+Security fixes target the current release line. Use the latest patch release;
+older patches and prerelease versions do not receive separate maintenance.

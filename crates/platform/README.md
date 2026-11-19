@@ -1,10 +1,14 @@
-# ReallyMe Platform facade
+# reallyme-platform
 
-`reallyme-platform` is the least-dependency public facade for ReallyMe's
-host-neutral application contracts and opt-in runtime integrations.
+The facade re-exports app-kit and selected runtime and infrastructure kits.
+Its default feature set is empty.
 
-The default feature set is empty. Enable `native-server` or an infrastructure
-feature explicitly when the consuming application needs that integration.
+```sh
+cargo add reallyme-platform
+cargo add reallyme-platform --features native-server
+cargo add reallyme-platform --features postgres,nats
+```
 
-Repository architecture, validation, and security policy are documented in the
-[Platform repository](https://github.com/reallyme/platform).
+Use `server-connect` and `server-websocket` for those native transports. S3 client
+features are `s3-native-client` and `s3-worker-client`; `s3` alone exposes contracts.
+See the [Platform repository](https://github.com/reallyme/platform) for examples.

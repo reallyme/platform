@@ -2,55 +2,34 @@
 
 ## 0.4.0
 
-- Generate and run the example protobuf contracts with ReallyMe Buffa 0.1.2.
-  The native example uses a vendored ConnectRPC transport with matching
-  owned-view lifetime bounds. Protobuf field numbers and RPC paths are unchanged.
-- Generate ProtoJSON for the native and Worker HTTP responses while preserving
-  published JSON shapes. CI checks Buf lint, schema compatibility, and
-  regeneration coverage.
-- Write protobuf tenant metadata, reservation records, and durable delete
-  intents. The new kit reads historical formats. Upgrade application readers
-  and operator binaries together before enabling writes from 0.4.0.
-- Add Kani checks for request admission, gRPC identity and deadlines, rate
-  limiting, and FoundationDB tenant data boundaries. Add TLA+ models for
-  server shutdown and FoundationDB deletion, retry, and recovery protocols.
-- Add durable tenant deletion and recovery to `fdb-tenant-admin`, with
-  control-tenant reservations, ownership takeover, and tombstone reclamation.
-  Deletion and recovery retries verify the original tenant ID to protect
-  replacements after name reuse.
-- Enforce FoundationDB transaction budgets before starting callbacks and
-  submitting commits. Duplicate gRPC timeout metadata is rejected.
-- Add `ClusterIdentityUnavailable` to `FdbSetupErrorReason` and
-  `DuplicateTimeout` to `GrpcDeadlineErrorReason`. Downstream exhaustive
-  matches must handle the new variants.
-- Align the workspace MSRV, stable toolchain, CI checks, and example server
-  Docker builder on Rust 1.100.0.
-- Refresh both Rust lockfiles and update ReallyMe Crypto to 0.4.2, the Worker
-  runtime and build tool to 0.9.0, pnpm to 12.21.0, and Wrangler to 4.162.0.
+- Use ReallyMe Buffa 0.1.2 for generated contracts and the example Connect
+  transport. Protobuf field numbers and RPC paths are unchanged.
+- Encode native and Worker HTTP responses with ProtoJSON while preserving
+  published JSON shapes.
+- Write protobuf tenant metadata, reservations, and deletion intents while
+  retaining readers for historical formats. Upgrade application readers and
+  operator binaries together before enabling 0.4.0 writes on a shared cluster.
+- Add durable deletion, recovery, takeover, and tombstone reclamation to
+  `fdb-tenant-admin`. Recovery verifies the original tenant ID after name reuse.
+- Enforce transaction budgets before callbacks and commit submission. Reject
+  duplicate gRPC timeout metadata.
+- Add `FdbSetupErrorReason::ClusterIdentityUnavailable` and
+  `GrpcDeadlineErrorReason::DuplicateTimeout`; update exhaustive matches.
+- Require Rust 1.100.0. Update ReallyMe Crypto to 0.4.2 and Worker runtime/build
+  tools to 0.9.0.
 
 ## 0.3.5
 
-- Validate the Platform kits against NATS 2.15.2, PostgreSQL 18, Typesense
-  30.2, and Valkey 9.1.3 using immutable container image digests.
-- Support Typesense 30 collection schema responses, omit absent default sort
-  fields from collection creation, and exercise collection creation, document
-  import, and search in the live compatibility test.
-- Update release readiness to v0.7.0, move CI and release workflows to Node 26,
-  update Wrangler to 4.159.0 with its reviewed transitive runtime set, and
-  update the pinned GitHub Actions installer.
-- Refresh all compatible Rust dependencies and pin the example server's Docker
-  frontend, Rust builder, and distroless runtime images by digest.
+- Support Typesense 30 collection schema responses and omit absent default sort
+  fields from collection creation.
+- Test service compatibility with NATS 2.15.2, PostgreSQL 18, Typesense 30.2,
+  and Valkey 9.1.3.
+- Refresh compatible Rust dependencies and Worker tooling.
 
 ## 0.3.4
 
-- Update the ReallyMe codec and crypto crates to 0.3.2 and 0.3.17,
-  refresh compatible Rust dependencies, and move the workspace toolchain and
-  MSRV to Rust 1.99.1.
-- Update the shared release-readiness policy to v0.6.9.
-- Update Worker and CI tooling to current reviewed releases, including pnpm
-  12.18.0, Wrangler 4.158.0, and Buf 1.75.0.
-- Update first-party copyright-holder and trademark-owner references to
-  ReallyMe Technologies Limited.
+- Update ReallyMe Codec to 0.3.2 and Crypto to 0.3.17.
+- Require Rust 1.99.1 and refresh compatible dependencies.
 
 ## 0.3.3
 
@@ -58,150 +37,86 @@
 
 ## 0.3.2
 
-- Preserve the 0.3.1 `websocket_same_origin` call signature while keeping the
-  URI-aware check available through `websocket_same_origin_with_external_origin`.
-- Release each gRPC listener's per-connection Tonic future when its socket
-  closes, so rapid TCP connection churn does not retain server futures until
-  the connection-age deadline.
-- Inbound gRPC request and trace IDs are regenerated at the listener boundary;
-  callers must read the server-generated IDs from responses and logs.
-- Refresh compatible Rust dependencies and the workspace lockfile, and update
-  Worker tooling to pnpm 12.9.1.
-- Rate-limit source churn no longer grants a fresh token while existing buckets
-  retain debt. New sources use fixed overflow shards with a separate, bounded
-  allowance of twice the tier's burst and refill budget. A low-cardinality
-  counter reports allowed and rejected overflow decisions. A bounded candidate
-  search admits newcomers when a refilled
-  bucket follows an older source that still owes tokens. Overcommitted source
-  caps are reported at registry construction and partitioned across tiers so
-  one tier cannot consume another tier's reserved source slots.
-- HTTP/2 WebSocket upgrades survive HTTP keep-alive retirement; an idle
-  connection sends GOAWAY while an active upgrade may finish within its age
-  bound. Slow response readers continue while socket writes progress.
-  Flow-control stalls receive a longer protocol allowance and GOAWAY with
-  bounded drain.
-- Native gRPC keepalive, first-request, idle, connection-age, and age-grace
-  deadlines can be configured per listener. Connection age and idle retirement
-  send HTTP/2 GOAWAY and allow in-flight streams to drain. The age-grace limit
-  remains a hard cap if a stream does not finish.
-- Keep the Axum WebSocket decoder on the compatible Tungstenite version line
-  verified by the live protocol close-code test, preserving typed 1002, 1007,
-  and 1009 responses without exact dependency pins.
-- The reference Worker's oversized Connect request response matches native
-  Connect's 413 status and resource-exhausted error envelope.
-- Route visibility requires the raw and decoded path to select the same rule:
-  ordinary escaped characters are accepted, while encoded separators, percent
-  signs, NUL, and dot segments receive a bad-request response. Malformed paths
-  use their own rejection metric label instead of route-visibility blocking.
-- Over-cap sockets no longer pause the listener's shared accept loop. Trusted
-  proxy client chains accept port forms, multiple field lines, and unspecified
-  identities; malformed addresses are rejected. The nearest proxy field line
-  controls the external host and scheme.
-- FoundationDB delete attempts bounded metadata restoration after any failed
-  phase. Operators can recreate missing metadata with `recover-delete` only
-  when they supply a previously recorded tenant ID and the entire reserved
-  metadata namespace is empty; application data may remain. The
-  `fdb-tenant-admin id` command prints that ID before deletion. Recovery records
-  a new metadata creation time. Tenant creation and metadata initialization
-  remain separate FoundationDB operations; an interrupted `ensure` requires
-  explicit repair of an empty tenant.
-  Application transactions opened with a read policy reject mutations.
-- Explicit plaintext NATS connections ignore discovered servers. Native TLS
-  clients use host certificate roots when available, with bundled public roots
-  only as a fallback. A host store containing only a private CA therefore no
-  longer also trusts public roots unless the store includes them. App-kit HTTPS,
-  S3, Typesense, and NATS clients also accept explicit nonempty custom root
-  stores that exclude both host and bundled public roots. HTTP clients offer
-  HTTP/2 and HTTP/1.1 through ALPN.
-- HTTP transport deadlines are configurable through validated server settings.
-  JSONC rejects bare CR line endings to avoid ambiguous comment boundaries.
-- Valkey TLS again installs the ring crypto provider when the host has not
-  selected a process-wide provider, preserving the 0.3.1 default behavior.
-- Service locators and Tailscale resolver configuration continue to require
-  HTTPS; an unverified private transport cannot enable plain HTTP endpoints.
-  Tailscale resolver suffixes also accept validated custom DNS domains, while
-  single-label suffixes are rejected to prevent search-path resolution.
-- Fast shutdown selects the listener drain budget from the active shutdown
-  mode, keeping listener cancellation inside its shorter task deadline.
-- Overcommitted rate-limit tiers share source slots independently of
-  registration order and use the full configured registry capacity.
-- Preserve the 0.3.1 FoundationDB data-error enum and `clear` signatures while
-  aborting any read-policy transaction that attempts a mutation, including
-  when a callback ignores the method result.
-- HTTP listeners answer liveness requests while application critical tasks are
-  still becoming ready. App routes and `/metrics` may also respond during this
-  interval; `/readyz` remains unavailable until startup completes. Overdue
-  HTTP connection tasks are cancelled and joined before application cleanup
-  starts. A saturated gRPC method responds with
-  `RESOURCE_EXHAUSTED` instead of reaching the first-request transport deadline.
-- WebSocket message handlers have a configurable bounded execution deadline
-  that excludes bounded outbound socket writes. Browser Connect
-  preflight permits protocol and timeout headers on both reference hosts.
-- The reference Worker loads protobuf DTOs without the native Connect router
-  dependency. Authenticated Typesense integration coverage exercises a collection
-  read in addition to its public health endpoint.
+- Preserve the 0.3.1 `websocket_same_origin` signature; use
+  `websocket_same_origin_with_external_origin` for URI-aware checks.
+- Release closed gRPC connection tasks promptly. Regenerate inbound gRPC request
+  and trace IDs; callers must read server-generated IDs from responses or logs.
+- Bound rate-limit source churn without resetting existing token debt. New
+  sources share bounded overflow allowances. Overcommitted tiers share the
+  registry capacity independently of registration order.
+- Preserve active HTTP/2 WebSockets during keep-alive retirement and permit
+  progressing socket writes. Validate configurable HTTP transport deadlines.
+- Add per-listener gRPC keepalive, first-request, idle, age, and age-grace
+  deadlines. Retirement sends GOAWAY and permits draining until the grace cap.
+- Preserve typed WebSocket close codes 1002, 1007, and 1009. Add a bounded
+  message-handler deadline separate from outbound socket-write limits.
+- Align Worker Connect oversized-body responses with native status 413 and
+  resource-exhausted errors. Permit browser Connect preflight headers.
+- Require raw and decoded paths to select the same route-visibility rule;
+  reject ambiguous separators, percent signs, NUL, dot segments, and malformed
+  escapes. Accept validated forwarded-client chains with ports and unspecified
+  identities; use the nearest proxy's external host and scheme.
+- Close over-cap sockets without blocking the listener accept loop.
+- Add `fdb-tenant-admin id` and `recover-delete`. Deletion attempts metadata
+  restoration on failure; manual recovery requires a trusted recorded tenant ID
+  and an empty reserved metadata namespace. Interrupted provisioning still
+  requires explicit repair of an empty tenant.
+- Reject read-policy mutations even when the callback ignores the returned
+  error, while preserving the existing data-error enum and `clear` signatures.
+- Ignore discovered servers for explicit plaintext NATS connections. Native TLS
+  clients use host roots, falling back to bundled roots only when the host store
+  is empty. App-kit HTTPS, S3, Typesense, and NATS accept exclusive custom roots.
+- Install ring for Valkey TLS when the host has not selected a crypto provider.
+- Require HTTPS for service locators and Tailscale resolution. Accept validated
+  multi-label custom DNS suffixes. Reject bare CR line endings in JSONC.
+- Use the active shutdown mode's listener drain budget. Join overdue HTTP
+  connection tasks before app cleanup.
+- Serve HTTP during critical-task startup; `/readyz` remains unavailable until
+  startup completes. Liveness, app routes, and `/metrics` can respond meanwhile.
+  Saturated gRPC methods return `RESOURCE_EXHAUSTED`.
+- Load Worker protobuf DTOs without the native Connect router dependency and
+  refresh compatible dependencies.
 
 ## 0.3.1
 
-- Trusted proxies and local sidecars no longer share the per-source TCP connection cap.
-  Both TCP admission limits can be configured per listener; the global limit still applies.
-- Full listeners promptly close excess sockets instead of leaving clients in the accept
-  backlog. Idle HTTP and gRPC connections retire after 60 seconds, and stalled HTTP writes
-  fail after 30 seconds; active streams retain their drain window.
-- Full rate-limit source tables use indexed eviction of their least recently admitted
-  source while keeping a bounded table and capacity for existing tiers. A replacement receives one
-  initial token rather than a fresh burst. Per-source tiers can configure IPv6 source
-  grouping from `/48` through `/128`; the default remains `/64`.
-- WebSocket connections without a known source IP use the configured route-wide limit
-  instead of a shared 64-connection source bucket.
-- A failed HTTP connection task no longer terminates its listener. HTTP connection age
-  now uses a graceful protocol shutdown; WebSockets retain their close-frame policy.
-- Ambiguous HTTP paths are rejected before route visibility and resource policies run.
-  The selected `Forwarded` header family rejects multiple field lines from trusted peers.
-- FoundationDB tenant deletion clears kit metadata before deleting an empty tenant and
-  reports application data that prevents deletion.
-- The example Worker reads ordinary headers through the supported `Headers.get` API.
-- Published crate archives include both license texts.
+- Exempt trusted proxies and loopback sidecars from the per-source TCP cap while
+  retaining the global cap. Make both limits configurable per listener.
+- Close excess sockets promptly. Retire idle HTTP/gRPC connections after 60
+  seconds and stalled HTTP writes after 30 seconds, retaining the drain window.
+- Bound rate-limit source tables and configure IPv6 grouping from `/48` through
+  `/128`, with `/64` as the default.
+- Use route-wide admission for WebSockets without a source IP. A failed HTTP
+  connection task no longer terminates its listener; age retirement drains
+  connections gracefully.
+- Reject ambiguous paths and multiple `Forwarded` field lines from trusted peers.
+- Refuse FoundationDB deletion when application data remains and clear kit
+  metadata before removing an empty tenant.
+- Use the supported Worker header API and include both licenses in crate archives.
 
 ## 0.3.0
 
-### Breaking API and feature changes
-
-- The `reallyme-platform` facade starts with no default integrations. Its `s3` feature
-  exposes S3 contracts; native and Worker clients require `s3-native-client` and
-  `s3-worker-client`, respectively. `native-server` no longer enables Connect or
-  WebSocket support; select `server-connect` or `server-websocket` explicitly.
-- FoundationDB connection initialization is now `unsafe` because callers must keep
-  the process-wide network runtime alive. The raw administrative database accessor
-  was removed from the tenant API.
-- Server-kit `CorsConfig` changed from a public enum to a validated type.
-  Construct it with its methods and inspect it through accessors instead of
-  matching variants. Non-loopback HTTP CORS origins are now rejected.
-- App-kit `AppPortError` is non-exhaustive and no longer carries provider-specific
-  variants. Native HTTP integration requires the `native-http` feature, so app
-  cores can build without a native HTTP client dependency.
-- Typesense callers construct a `TypesenseConnector` from validated config;
-  direct `TypesenseClient::new` use is no longer public. Search builders use
-  `SearchFields`, `SearchQueryWeights`, and `CollectionName`, while bounded
-  multi-search and filter combinators return typed results.
-- S3 native client construction is fallible, and signed requests borrow their
-  validated inputs. Native S3 and Typesense clients require usable certificate
-  roots when constructing TLS clients. The S3 facade separates contracts from
-  native and Worker clients, so select the intended client feature.
-- NATS test helpers require the `testing` feature. The TLS policy and credential
-  configuration are validated at the connector boundary.
-- FoundationDB tenant administration is isolated behind `tenant-admin`; data
-  access uses validated tenant keys and ranges instead of a raw database handle.
-- The minimum supported Rust version is 1.99.0.
-
-### Behavior changes
-
-- NATS now requires TLS by default. Explicit plaintext opt-in is limited to local
-  development endpoints; the `testing` module requires its feature flag.
-- Native TLS clients load trust roots from the operating system. Minimal container
-  images need a CA bundle or an appropriate `SSL_CERT_FILE` configuration.
-- HTTP listeners reject gRPC and gRPC-Web content types; use a gRPC listener for
-  those transports.
-- Server listeners gained global and per-source TCP admission limits, first-request
-  deadlines, and stricter forwarded-header and route visibility policies.
-- `/healthz` is served only after critical application startup tasks are ready.
+- The facade has no default integrations. Select `server-connect` and
+  `server-websocket` separately from `native-server`. `s3` exposes contracts;
+  clients require `s3-native-client` or `s3-worker-client`.
+- FoundationDB connection initialization is `unsafe`: retain the network
+  runtime for all handles and drop them before process exit. Application
+  transactions use validated keys/ranges; tenant administration requires
+  `tenant-admin`, and the raw database accessor is removed.
+- Construct server-kit `CorsConfig` through its methods rather than matching
+  enum variants. Non-loopback HTTP origins are rejected.
+- `AppPortError` is non-exhaustive and no longer carries provider-specific
+  variants. App-kit HTTPS requires `native-http`.
+- Construct Typesense clients through validated `TypesenseConnector` config.
+  Search builders use `SearchFields`, `SearchQueryWeights`, and `CollectionName`;
+  multi-search and filter combinators are fallible.
+- Native S3 client construction is fallible. Signed requests borrow validated
+  inputs. Native S3 and Typesense require usable TLS trust roots.
+- NATS requires TLS by default; plaintext opt-in is limited to local development.
+  Test helpers require `testing`. Minimal native containers need a CA bundle or
+  `SSL_CERT_FILE`.
+- HTTP listeners reject gRPC and gRPC-Web content types; use a gRPC listener.
+  Add global/per-source TCP caps, first-request deadlines, and stricter proxy
+  and route policies.
+- `/healthz` waits for critical application startup. Version 0.3.2 changes this
+  behavior; use `/readyz` to gate traffic.
+- Require Rust 1.99.0.

@@ -1,66 +1,51 @@
-# Validating Platform Changes
+# Building and testing
 
-Run the repository release-readiness entrypoint before submitting a change:
+Install the toolchain in `rust-toolchain.toml` and the FoundationDB 7.3.77 C
+client library. Contract and Worker checks also require Node 26, pnpm 12.21.0,
+Buf 1.75.0, Ripgrep, jq, and these Cargo tools:
 
-```console
+```sh
+cargo install reallyme-protoc-gen-buffa --version '=0.1.2' --locked
+cargo install reallyme-protoc-gen-buffa-packaging --version '=0.1.2' --locked
+cargo install connectrpc-codegen --version '=0.9.0' --locked
+cargo install worker-build --version '=0.9.0' --locked
+rustup target add wasm32-unknown-unknown
+```
+
+From the repository root, run:
+
+```sh
 scripts/release-readiness/check.sh
 ```
 
-That command runs the shared ReallyMe repository gate, Buf lint and breaking
-checks, contract generation and coverage checks, repository policy, feature
-separation, Rust formatting, workspace checks, tests, documentation tests,
-Clippy, Rustdoc, and release-tool tests. It also checks the facade without
-default features and builds the Worker bundle.
+This runs the shared repository policy, protobuf checks and regeneration,
+feature checks, Worker bundle build, release-tool tests, Cargo checks, unit
+and documentation tests, Rustdoc, and Clippy. It requires network access for
+uncached tools and packages. `cargo deny`, `cargo audit`, and `cargo machete`
+run only if installed; the script reports skipped checks.
 
-Install the pinned Rust toolchain from `rust-toolchain.toml`, Node 26, pnpm
-12.21.0, Buf 1.75.0, the `reallyme-protoc-gen-buffa` and
-`reallyme-protoc-gen-buffa-packaging` packages at exactly 0.1.2,
-`connectrpc-codegen` 0.9.0, and `worker-build` 0.9.0. The FoundationDB crate
-requires the FoundationDB 7.3.77 C client library. Repository checks require
-Ripgrep and jq. The gate downloads the pinned shared release-readiness
-package and Worker tooling, so a cold environment requires network access.
+For individual checks:
 
-The script runs `cargo deny`, `cargo audit`, and `cargo machete` only when those
-tools are installed and reports each skipped check. CI additionally requires
-locked dependency and license checks, vulnerability checks, published-API
-compatibility against the latest release tag, all-feature tests at each
-published crate's declared minimum Rust version, and default/no-default feature
-test runs. The manually dispatched Live infrastructure tests workflow starts
-disposable services and runs the ignored service tests.
-
-Crates Package Preflight requires the release version and full current
-`main` SHA. It verifies Required CI for that SHA, inspects the crate archives,
-and uploads them with the release attestation. Its summary includes a command
-to dispatch publication for the verified version and SHA.
-
-For a faster development loop, select the narrowest applicable gate:
-
-```console
+```sh
 scripts/policy/verify-workspace-standards.sh
 scripts/policy/verify-contract-boundaries.sh
 scripts/conformance/verify-protobuf-contract.sh
 scripts/conformance/verify-example-app-feature-separation.sh
 scripts/conformance/verify-server-kit-feature-separation.sh
 scripts/build/check-worker.sh
+cargo check --locked -p reallyme-platform --no-default-features
 ```
 
-The formal verification lane runs Kani proofs and TLA+ model checks against
-the same verified commit. See the [formal verification checks](../../conformance/formal-methods/README.md).
+CI also checks dependencies and licenses, known dependency vulnerabilities,
+API compatibility against the latest release tag, each published crate at its
+minimum Rust version, and default/no-default feature combinations.
 
-The native and Worker adapters share the
-[host-parity fixture](../../conformance/host-parity/cases.json) for API success
-and failure cases. Package preflight inspects each crate's explicit source
-allowlist and verifies workspace dependency order.
+Run live service tests through the manually dispatched
+[Live infrastructure tests workflow](../../.github/workflows/live-infrastructure.yml).
+Ordinary `cargo test` runs leave these tests ignored. Instructions for Kani
+and TLA+ are in [Running formal checks](../../conformance/formal-methods/README.md).
 
-The workspace-standards gate enforces inherited lints, package visibility,
-SPDX headers, generated-code placement, the ban on wildcard Rust imports, and a
-hard 500-line ceiling for hand-written production Rust files. Test-only modules
-retain their separate 800-line ceiling.
-
-The facade must always be checked without default features because adding a
-runtime or infrastructure dependency to its default graph is a compatibility
-and portability regression:
-
-```console
-cargo check -p reallyme-platform --no-default-features
-```
+Crates Package Preflight requires the release version and full current `main`
+SHA. It verifies Required CI, checks crate archives and dependency order, and
+uploads the archives with an attestation. Use its summary command to dispatch
+publication for the verified version and SHA.

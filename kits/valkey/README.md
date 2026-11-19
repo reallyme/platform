@@ -1,38 +1,16 @@
 # reallyme-valkey-kit
 
-First-class Valkey database connector for native ReallyMe services.
+Valkey connections, namespaced keys, expiring values, leases, and counters.
 
 TLS connections preserve a rustls process crypto provider selected by the host.
 If none is installed, the kit installs ring because the Redis driver uses the
 process provider to construct its TLS client. Connection setup returns a typed
 error if no provider is available after installation.
 
-The kit owns:
-
-- TLS-required-by-default endpoint configuration with redacted credentials.
-- Programmatic and environment-prefix configuration shared by every app host.
-- An eagerly connected, reconnecting multiplexed client.
-- Readiness checks with a bounded, low-cardinality health report.
-- Explicit connection, response, retry, concurrency, and pipeline bounds.
-- Binary namespaced keys and values with fixed size ceilings.
-- Generic typed commands and transactional/non-transactional pipelines for
-  app-owned hashes, sets, sorted sets, lists, streams, and scripts.
-- Mandatory, bounded TTLs for cache values and leases.
-- Atomic acquire/release lease operations.
-- Atomic counters whose expiration is set only when the counter is created.
-- Typed, low-cardinality errors that never retain server diagnostics, keys,
-  values, or credentials.
-
-Application crates keep cache serialization and cache meaning in app-owned
-adapters. For example, a search app owns how a response is encoded and uses
-this kit only for Valkey connection and command behavior.
-
-## Native composition
+## Connect
 
 ```rust,no_run
-use reallyme_valkey_kit::{
-    ValkeyConfig, ValkeyConnector, ValkeyResult,
-};
+use reallyme_valkey_kit::{ValkeyConfig, ValkeyConnector, ValkeyResult};
 
 async fn connect_valkey() -> ValkeyResult<ValkeyConnector> {
     let config = ValkeyConfig::from_env_prefix("EXAMPLE_SEARCH")?;
@@ -42,15 +20,12 @@ async fn connect_valkey() -> ValkeyResult<ValkeyConnector> {
 }
 ```
 
-Production composition should retain the default `RequireTls` policy.
-`AllowPlaintextForDevelopment` exists only for explicit local test
-composition. The config intentionally accepts host, port, database, username,
-and password as separate fields instead of a URI so credentials are never
-embedded in an endpoint string.
+Keep `RequireTls` in production. `AllowPlaintextForDevelopment` permits explicit
+local test connections. Supply host, port, database, username, and password as
+separate fields.
 
-The connector uses RESP3 and an authenticated initial connection. A successful
-`connect` call proves initial reachability; subsequent connection loss is
-handled by the bounded reconnect policy configured on the connection manager.
+The connector uses RESP3 and connects before returning. Configure bounded
+connection/response timeouts, retries, concurrency, and pipeline size.
 
 For a prefix such as `EXAMPLE_SEARCH`, native composition reads:
 
@@ -86,15 +61,9 @@ translated into `ValkeyError` before crossing the connector boundary.
 
 Command names must remain compile-time application code. User input is allowed
 only as an encoded argument. Application keys must be passed through
-`ValkeyConnector::namespaced_key`; the connector deliberately does not attempt
+`ValkeyConnector::namespaced_key`; the connector does not attempt
 to guess which arbitrary command arguments are keys. Pipelines are non-atomic
 unless the app explicitly calls `atomic()`.
-
-This generic boundary supports Valkey hashes, lists, sets, sorted sets, streams,
-consumer groups, transactions, and fixed scripts without placing app schema or
-payload semantics in the platform kit. The typed convenience methods remain the
-preferred surface for ordinary expiring values, distributed leases, and fixed
-window counters.
 
 ## Lease behavior
 

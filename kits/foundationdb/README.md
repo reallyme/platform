@@ -1,346 +1,180 @@
 # reallyme-foundationdb-kit
 
-Production FoundationDB connector primitives for ReallyMe services.
+FoundationDB connections, tenant handles, transactions, and operator commands.
+Requires the FoundationDB 7.3 C client; CI uses 7.3.77 with API version `730`.
+FoundationDB 7.3 and foundationdb-rs label tenant support experimental. Test
+upgrades, restores, and rollback procedures before using tenants in production.
 
-This kit is the infrastructure boundary for:
+## Connect and configure
 
-- validated client configuration;
-- process-scoped C client/network lifecycle;
-- bounded cluster readiness probes;
-- typed, non-sensitive errors;
-- tenant provisioning validation and tenant-scoped handles;
-- explicit read/write transaction policies and retry semantics;
-- key/range/tuple construction helpers; and
-- low-cardinality optional metrics.
+Construct one `FoundationDbConnector` per process and share it through clones.
+`connect` creates a lazy database handle. Call `connect_and_check`,
+`health_check`, or `verify_ready` before accepting traffic. `verify_ready`
+also checks that required tenants exist and have compatible metadata;
+application startup never creates tenants.
 
-Business schemas, graph behavior, transport adapters, server lifecycle, and
-application readiness ownership do not belong here. Applications own their
-schemas and map their domain concepts to validated FoundationDB tenant names.
+`connect` and `connect_and_check` are unsafe: drop all tenant handles and
+connector clones before normal process exit. Do not call `std::process::exit`
+while they are live. The FoundationDB client cannot restart after shutdown.
 
-## Upstream production constraint
+`FdbConfig::from_env_prefix("EXAMPLE")` reads:
 
-This kit makes the client boundary production-grade, but it cannot promote an
-upstream experimental database feature. FoundationDB 7.3 and foundationdb-rs
-still label tenant support experimental. ReallyMe currently requires tenants by
-architecture, so deploying this path requires an explicit platform risk
-acceptance, representative upgrade/restore testing, and a rollback plan. The
-kit fails closed on absent or incompatible tenants; it does not make upstream
-tenant lifecycle guarantees stronger than FoundationDB provides.
+| Variable | Value |
+| --- | --- |
+| `EXAMPLE_FDB_CLUSTER_FILE` | Optional readable cluster file; otherwise use the client default. |
+| `EXAMPLE_FDB_API_VERSION` | `730`; other versions are rejected. |
+| `EXAMPLE_FDB_HEALTH_CHECK_TIMEOUT_MILLIS` | Default `5000`, maximum `60000`. |
 
-## Production startup
+Without a prefix, the loader uses `FDB_*`. Prefixes accept uppercase ASCII
+letters, digits, and underscores. Cluster-file paths are redacted in diagnostics.
 
-FoundationDB permits one client API and network initialization per process.
-Construct one connector, retain it for the full process lifetime, and clone the
-connector when multiple adapters need it:
+## Transactions
 
-```rust,no_run
-use reallyme_foundationdb_kit::{
-    FdbConfig, FoundationDbConnector, FoundationDbTenantName, verify_ready,
-};
+Open a provisioned tenant with `open_tenant`. Callbacks receive a
+`TenantDataTransaction` and use `TenantDataKey` or `TenantDataRange`; application
+keys cannot address system keys or the reserved `__meta` namespace.
+Versionstamped-key atomic mutations are unsupported.
 
-# async fn start() -> Result<(), reallyme_foundationdb_kit::FdbError> {
-let config = FdbConfig::from_env_prefix("HANDLE")?;
-// SAFETY: the process owner drops the tenant and connector before normal exit.
-let connector = unsafe { FoundationDbConnector::connect(&config) }?;
-let tenant_name = FoundationDbTenantName::new("handle");
-let Ok(tenant_name) = tenant_name else {
-    return Ok(());
-};
-let _health = verify_ready(&connector, &[tenant_name]).await?;
+Use `ReadTxnPolicy`/`idempotent_read_option` for reads and
+`WriteTxnPolicy`/`mutation_option` for writes. Read-policy transactions reject
+mutations, including when the callback ignores the method's error.
 
-let tenant = connector.open_tenant(tenant_name).await?;
-# drop(tenant);
-# drop(connector);
-# Ok(())
-# }
-```
+Retry limits include the initial attempt. Callbacks may run more than once.
+The C API timeout bounds database operations; the adapter checks its budget
+before callbacks and commit submission. Callbacks must enforce cancellation
+and deadlines for their own asynchronous work. An already submitted commit
+can finish after a timeout, leaving an uncertain outcome. Non-idempotent writes
+do not automatically retry `maybe_committed`; callers must resolve that outcome
+using their operation IDs or reconciliation procedure.
 
-`connect` validates and boots the local client but FoundationDB database handles
-are lazy. A production process must call `connect_and_check`, `health_check`, or
-`verify_ready` before accepting traffic. `verify_ready` additionally proves that
-all required tenants exist and have compatible metadata.
+## Tenant administration
 
-The connector is cloneable because its database and network-lifecycle guard are
-owned together. Calling `connect` a second time returns a typed setup error
-instead of allowing the upstream binding's duplicate-initialization panic to
-cross the kit boundary.
-
-`connect` and `connect_and_check` are unsafe because FoundationDB requires the
-network guard to be dropped before normal process exit. The process owner must
-drop all tenant handles and connector clones before exiting and must not call
-`std::process::exit` while any are live.
-
-## Configuration
-
-The workspace uses foundationdb-rs `0.11.0` with default recipe/UUID features
-disabled and the explicit `fdb-7_3`, embedded-header, and tenant features. CI
-installs the pinned FoundationDB 7.3.77 client package and verifies its SHA-256
-before installation.
-
-The conventional environment loader reads:
-
-- `FDB_CLUSTER_FILE` (optional; the client default is used when absent);
-- `FDB_API_VERSION` (default and required value `730`); and
-- `FDB_HEALTH_CHECK_TIMEOUT_MILLIS` (default `5000`, maximum `60000`).
-
-`FdbConfig::from_env_prefix("HANDLE")` reads the same settings as
-`HANDLE_FDB_*`. Prefixes must be uppercase ASCII plus digits and underscores.
-Invalid Unicode is rejected instead of being treated as an absent value.
-The API version is intentionally exact: tenant-management behavior is selected
-at compile time by foundationdb-rs, so accepting a different runtime API would
-make the configured behavior disagree with the generated 7.3 bindings.
-
-Configured cluster-file paths are bounded, must identify a readable regular
-file, and are redacted from `Debug` output. Configuration types never retain or
-surface cluster-file contents.
-
-## Readiness and health
-
-`health_report` is bounded by the configured deadline and performs two checks:
-
-1. a local no-op proves the FoundationDB client network thread is processing;
-2. obtaining a read version proves real cluster reachability without reading
-   application keys.
-
-The returned report contains only the selected API version, observed read
-version, and optional client main-thread busyness. Health errors distinguish a
-local network failure, cluster unavailability, and deadline expiry without
-retaining driver diagnostics or topology.
-
-`verify_ready` then opens every declared logical tenant and validates its
-versioned metadata. Tenant creation is never implicit on an application path.
-
-## Tenant lifecycle
-
-Tenant names are deployment-owned identifiers. The kit validates a neutral,
-bounded `FoundationDbTenantName`; applications own the mapping from product
-concepts to those names.
-
-Provisioning is an explicit operator action:
+Build the operator binary separately from application binaries:
 
 ```sh
-cargo run -p reallyme-foundationdb-kit \
-  --bin fdb-tenant-admin --features tenant-admin -- ensure example
+cargo build -p reallyme-foundationdb-kit --bin fdb-tenant-admin --features tenant-admin
 ```
 
-Supported actions are `ensure`, `repair`, `recover-delete`, `exists`, `id`, and `delete`. Record
-the numeric output of `id <tenant>` before deletion in a trusted operator record. Existing
-tenants with missing or incompatible metadata fail closed under `ensure`.
-If provisioning was interrupted after tenant creation, an operator may run
-`repair` after verifying the intended tenant name; it writes metadata only
-when the tenant is empty. `delete` first checks that no application data remains,
-then clears only the kit metadata keys in a tenant transaction. It deletes the
-empty tenant in a second operation. Every deletion attempt checks the original
-ID and clears the matching tenant-map entry in the same transaction. A retry
-completes without a clear if the name is absent or has a different ID. The
-adapter attempts metadata restoration after an unconfirmed clear or a failed
-delete. Each restore attempt verifies the handle used for its write against
-the original tenant ID saved with the metadata. It always writes the saved
-values so a pending clear conflicts if it tries to commit afterward, even when
-the values already match. Between the two phases,
-concurrent opens fail closed and a concurrent writer can leave data in the
-tenant. If an outage prevents automatic restoration,
-`recover-delete <tenant> <expected-tenant-id>`
-recreates both metadata keys only when the entire reserved metadata namespace
-is absent. It permits application data and requires a trusted tenant ID
-recorded before the interrupted deletion. Recovery checks the resolved ID on
-the same tenant handle that creates the metadata transaction. Name reuse
-cannot redirect that transaction to a replacement tenant. This recovery
-records a new metadata creation time.
-Application data present before deletion produces a typed empty-tenant error
-without clearing metadata.
+Run `target/debug/fdb-tenant-admin`, or put the binary on `PATH` for the commands
+below. Set `FDB_*` for the intended cluster. With `tenant-admin`, use a native client library compatible
+with that cluster; the operator does not use multiversion client switching.
 
-For crash recovery, run the operator binary with a durable record path:
+```sh
+fdb-tenant-admin ensure example
+fdb-tenant-admin exists example
+fdb-tenant-admin id example
+```
+
+`ensure` provisions a tenant and metadata. An existing tenant with missing or
+incompatible metadata is rejected. For interrupted provisioning, `repair example`
+initializes metadata only when the tenant is empty.
+
+### Delete and resume
+
+Record the output of `id example` before deletion. Deletion refuses application
+data. Clearing kit metadata and removing the tenant are separate commits;
+interruption can leave a surviving tenant without usable metadata. Use a durable
+record for recovery:
 
 ```sh
 fdb-tenant-admin delete example --record /var/lib/fdb-operator/example-delete.intent
 fdb-tenant-admin resume-delete /var/lib/fdb-operator/example-delete.intent
 ```
 
-Use a new path per deletion in an existing operator-owned directory on a
-local filesystem that supports file locks, atomic rename, and directory
-sync. The `.lock` extension is reserved. Keep the record and its sibling lock
-file in place through reconciliation. The CLI persists the cluster UID,
-tenant name, and original tenant ID before changing metadata. A lock serializes cooperating
-processes on the same path. Use that path to resume an interrupted delete
-before starting another lifecycle operation for the same tenant.
+Use a new record path in an existing operator-owned directory on a local
+filesystem supporting file locks, atomic rename, and directory sync. The `.lock`
+extension is reserved. Retain the record and sibling lock file until
+reconciliation completes. Resume an interrupted deletion before starting another
+lifecycle operation for that tenant.
 
-`resume-delete` prints `original-absent` if the original ID no longer owns
-the name. If the original survives, it verifies the repair handle, then
-initializes an empty metadata namespace or rewrites the two compatible
-values unchanged to conflict with a pending clear. It prints `metadata-safe`
-after that transaction commits and the record update is durable. Incompatible
-or partial metadata and unavailable lookups leave the record pending for
-review or another resume. A different cluster UID causes resume to fail.
-Completed records return their saved outcome on subsequent resumes.
+`resume-delete` rejects a different cluster UID. It returns `original-absent`
+when the recorded tenant ID no longer owns the name, or `metadata-safe` after
+repairing the surviving original. Partial or incompatible metadata and
+unavailable lookups leave the record pending for review or retry. Completed
+records replay their saved outcome.
 
-### Coordinate deletes across hosts
+For a deletion without a durable record, `recover-delete <tenant> <expected-tenant-id>`
+requires a trusted ID recorded before deletion. It recreates metadata only when
+the reserved namespace is empty, permits existing application data, and records
+a new metadata creation time. It rejects a replacement tenant with another ID.
 
-Provision a dedicated control tenant once on the same FoundationDB cluster.
-Configure the same control tenant for every operator that deletes tenants on
-that cluster.
+### Coordinate operators across hosts
+
+Use one dedicated control tenant on the same standalone cluster for all
+cooperating operators:
 
 ```sh
 fdb-tenant-admin ensure operator-control
 export FDB_TENANT_ADMIN_CONTROL_TENANT=operator-control
 fdb-tenant-admin delete example --record /var/lib/fdb-operator/example-delete.intent
 fdb-tenant-admin resume-delete /var/lib/fdb-operator/example-delete.intent
-# On another host with the same control tenant configured and no local record:
+# Another host can recover an expired operation without its local record:
 fdb-tenant-admin takeover-delete example
 ```
 
-With the control tenant configured, `delete` requires `--record`. Resume a
-pending legacy record with the setting unset before enabling coordination.
-New records include the control tenant ID and operation ID, so they can be
-resumed without the setting and cannot be redirected to a recreated control
+With the control tenant configured, `delete` requires `--record`. Resume pending
+legacy records with the setting unset before enabling coordination. New records
+retain the control tenant and operation IDs and can resume without the setting.
+
+Resume a failed operation or take it over after reservation expiry. The lease
+expires after 15 million read versions, about 15 seconds under normal version
+advancement. Takeover reconciles the original tenant ID; it does not start a new
+delete against a replacement. Keep the control tenant and reservation records
+available to operators. Coordination applies only to commands using that control
 tenant.
 
-Only one recorded operation can hold the reservation for a tenant name. If an
-operation errors or is interrupted, resume it or take it over after expiry.
-The lease uses FoundationDB read versions and allows takeover after 15 million
-versions, about 15 seconds during normal version advancement. Takeover advances
-the epoch and reconciles the original ID. A stale epoch cannot commit a
-metadata clear, tenant-map delete, or recovery. Recovery commits the metadata
-and recorded outcome together, or records `original-absent` when the original
-ID no longer owns the name. The local record can later read the saved outcome.
-Keep the dedicated control tenant and its reservation history available to
-operators. This workflow coordinates commands that use the control tenant on
-the same standalone cluster.
+### Upgrade record readers
 
-### Upgrade tenant record readers
+Version 0.4.0 reads historical binary records and writes protobuf at the existing
+metadata and control keys. The CLI reads all three historical text-intent formats
+and upgrades them when recording an outcome. Snapshot restoration preserves the
+saved bytes.
 
-The kit reads both the historical binary values and the generated protobuf
-values at the existing tenant metadata and control keys. New provisioning,
-repair, and reservation writes use protobuf. Records retain their original
-values until a normal operation replaces them. Snapshot restoration preserves
-the recorded bytes.
+Upgrade application readers and operator binaries together before allowing new
+writes on a shared cluster. Older binaries cannot read protobuf records or
+intent files.
 
-The operator CLI also writes protobuf intent files. It can resume all three
-historical text formats and upgrades them when recording a durable outcome.
+### Compact and reclaim completed records
 
-Upgrade application readers and operator binaries together before allowing
-new writes on a shared cluster. Older binaries cannot read the protobuf
-values or intent files. For future changes to these records, use a new format
-discriminator and keep the prior reader available.
-
-The ReallyMe Buffa bindings use native cleanup and redacted debug output.
-Bounded field decoders handle fragmented input in wiping buffers. The
-record decoder rejects unknown fields, enforces canonical encoding, and
-keeps JSON and borrowed views disabled for these storage messages.
-
-### Prune completed reservations
-
-After updating the operator binaries that share the control tenant, compact
-a completed cluster record using its recorded delete path.
+After upgrading every operator sharing the control tenant, compact a completed
+reservation:
 
 ```sh
 fdb-tenant-admin prune-delete /var/lib/fdb-operator/example-delete.intent
 ```
 
-The command prints the saved outcome and leaves the local file intact. It
-also accepts a pending local file if the cluster has already recorded
-completion. The adapter replaces the full record with a tombstone at the
-same key. The tombstone keeps the original tenant ID and outcome and allows
-retries to return that outcome after a lost reply or tenant name reuse.
-Active and missing reservations are rejected. Keep each tombstone until the
-admission cutoff excludes its generation so a stale local file can still
-distinguish a completed operation from one that never acquired a reservation.
+This retains a tombstone with the tenant ID and outcome. Pending local records
+can replay a cluster completion; active or missing reservations cannot be
+pruned. Keep tombstones until the admission cutoff excludes their generation.
 
-### Advance a delete admission cutoff
-
-Upgrade every writer that shares the control tenant before advancing a
-cutoff. Historical records without a generation are read as generation zero.
+Upgrade every writer before advancing the cutoff. Historical records without a
+generation use zero:
 
 ```sh
 fdb-tenant-admin delete-cutoff example
 fdb-tenant-admin advance-delete-cutoff example 1
 ```
 
-Pass the explicit next generation. If the reply is lost, retry the same
-target. Advancing requires an empty active reservation slot. The command
-returns the current generation when the requested target has already been
-reached. New delete files capture the tenant ID and generation together.
-An older pending file can replay a retained completion, and an older
-pending file with no cluster record reports that the intent expired.
-
-Use `fdb-tenant-admin reclaim-delete <record-path>` to remove a compacted
-tombstone after the cutoff has passed its generation. The command returns
-`retired` and can be retried with the same record. A completed local file
-still reports its saved outcome. A pending file whose tombstone was
-reclaimed reports expiry, so save any outcome required for audit before
-reclaiming it.
-
-The `tenant-admin` feature should be enabled only for operator tooling. Runtime
-code receives `TenantHandle`, whose transaction helpers remain scoped to the
-selected tenant.
-With this feature the connector uses the native FoundationDB client directly.
-Multi-version client switching can reopen a tenant by name, which would
-invalidate the identity verified by recovery. Use a client library compatible
-with the target cluster for operator tooling.
-
-## Transaction policy
-
-Use `ReadTxnPolicy`/`idempotent_read_option` for read-only operations and
-`WriteTxnPolicy`/`mutation_option` for mutations.
-Application transaction views reject all mutation methods when opened with a
-read policy, even if a caller ignores the returned error.
-
-- Retry limits cap total attempts, including the initial attempt, matching
-  foundationdb-rs `TransactOption` semantics.
-- The C API timeout bounds FoundationDB operations. The adapter also checks
-  the elapsed budget before starting a callback and before submitting its
-  commit, including after retry backoff.
-- Application callbacks own cancellation for their own asynchronous work.
-  A timeout can leave the outcome of an already submitted commit uncertain.
-- Retry limits are also installed in the C API, not only checked between Rust
-  retry-loop iterations.
-- Non-retryable errors are returned immediately.
-- A non-idempotent mutation never retries `maybe_committed`; callers must resolve
-  uncertain outcomes with an operation-specific idempotency invariant.
-- Closure data may be replayed and must not assume one execution.
-- All key lengths and offsets must continue to use checked arithmetic.
-
-The kit does not make an arbitrary business mutation idempotent. Apps own
-operation IDs, deduplication records, and reconciliation policy.
-
-Application transaction callbacks receive a `TenantDataTransaction` view. Every
-key-bearing operation requires a `TenantDataKey` or `TenantDataRange`, which
-rejects the kit's `__meta` metadata namespace, system keys, and ranges that
-span metadata. Values and range result counts are bounded before reaching the
-FoundationDB client. Only the kit's private metadata operations receive raw
-tenant transactions. Operator-only administration remains behind the
-`tenant-admin` feature and does not expose the connector's database handle.
-The versionstamped-key atomic mutation is rejected because it changes a key
-after namespace validation.
-
-## Metrics
-
-Enable the `metrics` feature to record low-cardinality connector telemetry:
-
-- `reallyme_fdb_health_checks_total{result}`;
-- `reallyme_fdb_health_check_latency_seconds`;
-- transaction attempts and retries by declared tenant and operation class;
-- transaction conflicts by declared tenant and operation class;
-- commit latency by declared tenant and operation class; and
-- tenant-open failures by declared tenant.
-
-No key, user, request, raw error, cluster path, or arbitrary metadata is used as
-a label.
-
-## Validation
-
-The crate's unit tests do not initialize the process-global FoundationDB client.
-This keeps test ordering deterministic and allows configuration, key, metadata,
-and policy behavior to run without a cluster.
-
-Required local validation:
+Advancement requires an empty active slot. If the reply is lost, retry the same
+target generation. Older pending files can replay retained completions; without
+a cluster record they report expiry.
 
 ```sh
-cargo fmt -p reallyme-foundationdb-kit -- --check
-cargo check -p reallyme-foundationdb-kit --all-features
-cargo test -p reallyme-foundationdb-kit --all-features
-cargo clippy -p reallyme-foundationdb-kit --all-targets --all-features -- -D warnings
+fdb-tenant-admin reclaim-delete /var/lib/fdb-operator/example-delete.intent
 ```
 
-Cluster integration tests should run in an isolated process/container because
-the FoundationDB client cannot be restarted in-process after shutdown.
+Reclamation removes an eligible tombstone and returns `retired`. Retrying the
+same record is supported. Completed local files keep their outcome, but pending
+files whose tombstones were reclaimed report expiry. Save any required operator
+outcome before reclamation.
+
+## Metrics and tests
+
+Enable `metrics` for health counts/latency, transaction attempts/retries/conflicts,
+commit latency, and tenant-open failures. Use fixed declared tenant names;
+user, request, and key identifiers must not become labels.
+
+Unit tests run without a cluster. Run cluster tests in separate processes or
+containers because the FoundationDB client cannot restart in one process.
+See [Building and testing](../../docs/guides/validation.md) for the workspace and
+live-service checks.

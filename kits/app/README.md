@@ -1,113 +1,50 @@
 # reallyme-app-kit
 
-`reallyme-app-kit` defines host-neutral app contracts and conventions for
-ReallyMe app crates.
+App-kit provides host-neutral configuration, metadata, lifecycle contributions,
+permissions, port descriptors, and metric naming. Use
+[`apps/example`](../../apps/example/) for a working application and
+[the architecture guide](../../docs/concepts/architecture.md) for crate boundaries.
 
-It is intentionally not a server runtime. It does not bind listeners, initialize
-Tokio, mount Axum routes, register tonic services, install tracing, or own
-shutdown. Those responsibilities belong to host runtimes such as
-`reallyme-server-kit` or the reference Cloudflare Worker host.
+## Configuration
 
-App crates use this kit for reusable, typed conventions:
+The standard JSONC envelope accepts:
 
-- app metadata and registration descriptors
-- app-owned config validation interface
-- standard app JSONC config envelope parsing and validation
-- health contribution contracts
-- startup check, cleanup hook, and background task contracts
-- app permission naming primitives
-- app metric namespace/name validation
-- host/transport adapter and port naming conventions
+- `public_base_url` and `cors.allowed_origins`;
+- `cookies.secure`, `cookies.domain`, and `cookies.same_site_policy`;
+- `reflection_enabled`, which must be `false`;
+- `downstream.<port_name>.base_url`, `endpoints`, `endpoint_selection`, and `locator`.
 
-App event metrics accept stable namespace/name pairs and register at most 1,024
-distinct pairs per process. Once that budget is full, events for new pairs
-increment the unlabelled `reallyme_app_metric_series_rejected_total` counter;
-previously registered pairs continue to work. Use fixed names for app-level
-events, never user, request, or object identifiers.
+Supply custom fields through the application's typed configuration. Hosts load
+and validate the document before passing it to the application. The reference
+native server selects a checked-in profile with `application_profile`; it does
+not parse `apps[].config_path` or `apps[].config_inline_jsonc`.
 
-Native application adapters that send sensitive request bodies may opt into
-the `native-http` feature. It provides a reusable HTTPS client constrained to
-one validated origin. The client rejects redirects, plaintext HTTP, authority
-changes, ambiguous relative targets, excessive timeouts, oversized request
-bodies, oversized response bodies, and oversized selected response headers.
-Encoded request targets are bounded at 8 KiB so reviewed percent-expanded
-relative targets fit without permitting unbounded request lines.
-Request copies and returned response data use zeroizing owners; debug output
-reports only safe metadata and byte counts. Failures distinguish validation or
-construction errors that are proven not dispatched from failures where the
-remote outcome is unknown.
+Each downstream target uses a singleton `base_url`, a static `endpoints` list,
+or a host-resolved `locator`. Native hosts can resolve
+`locator.mode = "tailscale_service"` through Tailscale Services/MagicDNS.
+Configuration cannot enable gRPC/Connect schema introspection.
 
-The transport deliberately does not define product routes, authentication
-protocols, status-code meaning, retries, or response parsing. Those policies
-belong in the owning application's adapter. In particular, callers must not
-retry a failure with an unknown remote outcome unless their operation has an
-application-owned idempotency guarantee.
+## Native HTTPS client
 
-Connect/gRPC-shaped app contracts use Buf/protobuf as the canonical schema
-source. Per the Connect Rust guide, product apps must use `buf generate` for
-Rust RPC generation before Rust formatting and checks. Do not hide generation
-behind Cargo `build.rs`. Generated output belongs only in the owning contract
-crate and must be checked in so published crates and clean source checkouts are
-reproducible. The standard Connect generation path uses `protoc-gen-buffa` for
-message/view types, `protoc-gen-connect-rust` for Connect service stubs, and
-`protoc-gen-buffa-packaging` for module trees.
-App Connect adapters should expose Tower-native `connectrpc::Router` or
-`tower::Service` values. Axum, Hyper, Workers, or other hosts adapt those
-routers at the host/adapter boundary; app core logic must not depend on a
-specific native HTTP framework.
+Enable `native-http` to use `BoundedHttpsClient`. Requests are constrained to one
+validated HTTPS origin. Redirects, authority changes, ambiguous relative targets,
+and requests or responses beyond the configured bounds are rejected. Encoded
+request targets are limited to 8 KiB. Owned request copies and returned response
+bytes use zeroizing buffers.
 
-In Connect/protobuf terminology, a `service` is the generated Rust trait for
-one RPC surface. In ReallyMe architecture, an app may contain one or more of
-these RPC services. The protobuf service is not the deployed server process,
-runtime, listener owner, container, or lifecycle unit.
-
-New applications should use `apps/example` as the maintained reference for
-app-kit contracts, generated contract ownership, and host-neutral core logic.
-
-The standard app JSONC envelope is owned by app-kit:
-
-- `public_base_url`
-- `cors.allowed_origins`
-- `cookies.secure`
-- `cookies.domain`
-- `cookies.same_site_policy`
-- `reflection_enabled`
-- `downstream.<port_name>.base_url`
-- `downstream.<port_name>.endpoints`
-- `downstream.<port_name>.endpoint_selection`
-- `downstream.<port_name>.locator`
-
-Apps may add custom top-level properties through typed custom config, but they
-should not redefine the standard envelope.
-
-Downstream endpoint config supports a singleton `base_url`, a static
-`endpoints` list, or a host-resolved `locator`. Native server hosts can resolve
-`locator.mode = "tailscale_service"` through Tailscale Services/MagicDNS
-without app core depending on server-kit or Tailscale APIs.
-
-Each enabled app should have exactly one explicit app config source. A product
-server host may select an app-owned JSONC document or inject one through its
-own typed composition API. The reference `servers/example` host uses its
-`application_profile` field; it does not parse `apps[].config_path` or
-`apps[].config_inline_jsonc`. The server JSONC owns process/runtime concerns;
-the app JSONC owns app behavior.
-
-`reflection_enabled` must be `false`. App-kit validation rejects `true`;
-configuration cannot enable gRPC/Connect schema introspection.
-
-The native `BoundedHttpsClient` uses operating-system certificate roots, with
-bundled public roots only if the host store is empty. For a private service CA,
+The default client uses operating-system certificate roots, falling back to
+bundled public roots only if the host store is empty. For a private CA,
 `BoundedHttpsClient::new_with_custom_tls_roots` accepts a nonempty
 `rustls::RootCertStore` and trusts only those roots.
 
-The dependency boundaries are:
+The caller supplies routes, authentication, response parsing, and retry policy.
+Errors distinguish requests proven not dispatched from failures with an unknown
+remote outcome. Retry an unknown outcome only when the operation has an
+application-level idempotency guarantee.
 
-- app core depends on `reallyme-app-kit`, its app-owned domain, and app-owned ports
-- server adapters bridge app behavior into `reallyme-server-kit`
-- app Workers adapters bridge the same app behavior into concrete Worker hosts
-- product/domain semantics stay in their owning application or product repository
+## Metrics
 
-This crate must not depend on `reallyme-server-kit`, Axum, Tonic, Tokio runtime
-ownership, database clients, Cloudflare APIs, or process lifecycle concepts.
-Concrete Worker host crates under `workers/` own `workers-rs`, `wrangler.jsonc`,
-and Wasm build/runtime concerns.
+Use fixed namespace/name pairs. The process accepts at most 1,024 distinct
+pairs. Further new pairs increment the unlabelled
+`reallyme_app_metric_series_rejected_total` counter; existing pairs continue to
+work. Do not put user, request, or object identifiers in metric names.

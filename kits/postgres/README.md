@@ -1,27 +1,11 @@
 # reallyme-postgres-kit
 
-Shared PostgreSQL configuration and pooling primitives for ReallyMe services.
-
-The kit is the first-class PostgreSQL infrastructure adapter for native
-ReallyMe platform apps. It owns:
-
-- Redacted PostgreSQL connection configuration.
-- Environment-prefix loading for app hosts.
-- Certificate-validated Rustls transport, required by default.
-- `bb8`/`tokio-postgres` pool construction and bounded server-side timeouts.
-- Readiness reports with pool occupancy and active TLS state.
-- Explicit transaction isolation/read-only policies.
-- Typed begin/commit/rollback helpers that preserve retry-relevant failure
-  classes without retaining server diagnostics.
-- Transaction-scoped advisory locking for app-owned schema migrations.
-- Typed, low-cardinality errors.
-- Stable SQLSTATE classification and conservative retry hints; raw PostgreSQL
-  error messages never cross the kit boundary.
+PostgreSQL connection pools, transactions, readiness checks, and migration locks
+using `bb8` and `tokio-postgres`. TLS with certificate validation is the default.
 
 ## Use from a native adapter
 
-Application core crates should expose repository ports and remain independent
-of PostgreSQL. A native host or infrastructure adapter owns the pool:
+Construct the pool in a native host or database adapter:
 
 ```rust,no_run
 use reallyme_postgres_kit::{PostgresConfig, PostgresPool, PostgresResult};
@@ -34,10 +18,8 @@ async fn connect_postgres() -> PostgresResult<PostgresPool> {
 }
 ```
 
-`PostgresPool::connect` eagerly establishes the configured minimum connection
-count (one by default), so successful construction is a real reachability and
-TLS/authentication gate. Setting the minimum to zero is supported for explicit
-lazy test fixtures, but is not the production default.
+`PostgresPool::connect` establishes the configured minimum connections before
+returning. The minimum defaults to one; zero is rejected.
 
 The environment prefix is restricted to uppercase ASCII letters, digits, and
 underscores. Environment values with invalid encoding fail closed rather than
@@ -64,22 +46,17 @@ export EXAMPLE_SERVICE_POSTGRES_IDLE_TRANSACTION_TIMEOUT_MILLIS="10000"
 
 `POSTGRES_TLS_MODE` defaults to `require` and overrides a conflicting
 `sslmode` in the connection URI. Plaintext is available only through the exact
-value `allow-plaintext-development`; production configuration must never use
-that mode. A custom CA and plaintext mode are rejected as contradictory.
+value `allow-plaintext-development` for loopback targets. Do not use it in
+production. A custom CA and plaintext mode are rejected as contradictory.
 
 The URI remains wrapped in `secrecy::SecretString`, and `Debug` output redacts
 both credentials and private CA paths. Session-level statement, lock, and idle
 transaction timeouts are bounded and applied to every pooled connection.
 
-## Ownership boundary
+## Transactions and retries
 
-App crates keep schema and repository semantics in app-owned adapters while
-using this kit for connection lifecycle, transaction policy, migration
-coordination, and readiness. FoundationDB and PostgreSQL remain peer storage
-adapters behind app-owned repository ports; this kit does not invent a false
-common transaction model for databases with different semantics.
-
-Apps should translate `PostgresError` into their own port error at the adapter
-boundary. `PostgresQueryErrorReason::retry_hint` is intentionally conservative:
-it never removes the caller's obligation to prove idempotency and enforce a
-bounded retry/deadline policy.
+Choose transaction isolation and read-only policy explicitly. Use a
+transaction-scoped advisory lock for application migrations.
+`PostgresQueryErrorReason::retry_hint` classifies failures without retaining
+server diagnostics. Before retrying, establish idempotency and set an attempt
+limit and deadline.

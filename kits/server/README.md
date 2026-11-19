@@ -1,46 +1,63 @@
 # reallyme-server-kit
 
-Native server runtime primitives for ReallyMe Platform. The kit owns listener
-admission, HTTP and optional gRPC serving, shutdown and readiness, tracing,
-metrics, and managed task supervision. Applications own their routes and
-business behavior.
+Native HTTP, Connect RPC, optional gRPC, readiness, shutdown, tracing, metrics,
+and managed tasks. Run the [example server](../../servers/example/) for a
+listener-backed application.
 
-## Features
+Default features enable HTTP, Connect, WebSockets, and metrics. `tonic-grpc`
+adds a separate gRPC listener; `testing` adds test helpers. The facade's
+`native-server` feature does not enable Connect or WebSockets: select those
+facade features separately.
 
-The default features enable HTTP, Connect, WebSocket support, and metrics.
-`tonic-grpc` enables a separate native gRPC listener. The `testing` feature
-adds server test helpers. Select features explicitly when a small dependency
-graph or a transport-specific build is required.
+## Listener configuration
 
-The public facade crate has no default integrations. Its `native-server`
-feature does not select Connect or WebSocket support; choose the corresponding
-facade features explicitly.
+Set allowed hosts, trusted proxy ranges, route visibility, body limits, and
+rate limits before accepting external traffic. Non-loopback binds in the
+reference server require a host allowlist. Its JSONC accepts `allowed_hosts`,
+`trusted_proxy_ranges`, `external_origin_policy`, and
+`connection_limits` with `max_live` and `max_per_source`.
 
-## Listener security
+`ConnectionLimitConfig` defaults to 2,048 live TCP connections and 64 per source.
+Trusted proxies and loopback peers are exempt from the per-source cap, but not
+from the global cap. Excess sockets are closed.
 
-Configure listener visibility, trusted proxy ranges, route visibility, body
-limits, and rate-limit tiers before opening sockets. The connection limits
-bound global and untrusted per-source occupancy. Trusted proxies and loopback
-peers are exempt only from the per-source connection cap; the global cap still
-applies. Request-level rate limits use validated forwarded client identity.
+Select one forwarded-header family: `X-Forwarded-*` by default, or `Forwarded`.
+Configure trusted peer ranges before enabling forwarded host or scheme handling.
+Use normalized request extensions in app handlers; raw forwarded headers are
+not a trusted client identity. Strict consistency mode rejects mixed families.
 
-HTTP connection age, drain grace, idle, and stalled-write deadlines are
-validated through `HttpTransportTimeouts` and set on `HttpServerConfig` with
-`with_transport_timeouts`. Long-lived streams need explicit timeouts suited to
-their workload. After a response body finishes, idle retirement allows at least
-the stalled-write deadline for bytes queued to a slow reader. The server closes
-excess sockets promptly and reports public HTTP errors in the stable JSON
-envelope.
+Keep the sum of rate-limit tier `max_distinct_sources` at or below 25,000 per
+listener. Overcommitted tiers share that fixed capacity; excess identities use
+bounded overflow allowances. The `reallyme_rate_limit_overflow_decisions_total`
+counter records allowed and rejected overflow decisions. IPv6 grouping defaults
+to `/64`; `with_ipv6_source_prefix_len` accepts `/48` through `/128`.
 
-Native gRPC listeners accept validated `GrpcTransportTimeouts` through
-`GrpcServerSpec::with_transport_timeouts`. The settings cover keepalive,
-first-request, idle, age, and age-grace deadlines. Tonic 0.14.6 forcefully
-retires a connection at the age-grace limit after an earlier GOAWAY; clients
-should retry idempotent calls after transport failure. The correlation
-interceptor replaces inbound request and trace IDs with server-generated values.
+## Timeouts and readiness
 
-## Validation
+Use `HttpServerConfig::with_transport_timeouts` with validated
+`HttpTransportTimeouts`. Defaults include 60-second idle and 30-second
+stalled-write limits. Configure connection age and drain grace for long-lived
+streams. After a response body finishes, idle retirement allows at least the
+stalled-write deadline to flush queued bytes.
 
-Run the workspace formatting, check, test, doctest, and Clippy gates before
-publishing. Single-feature builds should also be checked for `http`, `connect`,
-`tonic-grpc`, and `testing`.
+For gRPC, `GrpcServerSpec::with_transport_timeouts` accepts keepalive,
+first-request, idle, age, and age-grace limits. The age-grace deadline can
+terminate unfinished calls. Retry only operations that are safe to replay.
+Read request and trace IDs from server responses; the listener replaces inbound
+correlation IDs.
+
+Route traffic using `/readyz`. HTTP listeners can respond while startup checks
+are still running, and readiness is withdrawn before shutdown drains requests.
+HTTP/3 is unsupported. Hosts terminate TLS outside the native HTTP listener.
+
+## Examples and tests
+
+The composition-only example constructs routes and shuts down its task; it does
+not bind a socket:
+
+```sh
+cargo run -p reallyme-server-kit --example minimal_server
+scripts/conformance/verify-server-kit-feature-separation.sh
+```
+
+See [Building and testing](../../docs/guides/validation.md) for workspace checks.

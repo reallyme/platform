@@ -1,82 +1,50 @@
 # reallyme-nats-kit
 
-Reusable NATS and JetStream transport primitives for ReallyMe services and queue
-consumers.
+NATS connections, JetStream publishers, and durable pull consumers.
 
-This kit owns:
-- Validated NATS connection, stream, consumer, and subject configuration.
-- NATS connection construction with typed credentials and a TLS policy.
-- JetStream context construction with explicit request and ack timeouts.
-- A JetStream publisher: bounded payloads, publish acks, deterministic dedupe.
-- A durable JetStream pull consumer: consumer create/caching, reconnect
-  invalidation, delivery ack/nak/term.
-- Small fakes for app and queue-consumer tests.
-
-This kit does not own:
-- JetStream stream provisioning. The stream must already exist; the kit looks
-  it up and creates only the durable consumer.
-- Subject names or payload schemas. Payloads are opaque bytes and applications
-  own their event contracts.
-- App business logic, product message routing, or service runtime wiring.
-- Dashboard or public API contracts.
-
-## Module map
-
-- [src/config.rs](src/config.rs): URL/credential/TLS validation, connection and context helpers
-- [src/publisher.rs](src/publisher.rs): JetStream publisher and publish-ack type
-- [src/consumer.rs](src/consumer.rs): durable pull consumer, delivery stream, ack flows
-- [src/message_id.rs](src/message_id.rs): deterministic message-id helpers for dedupe
-- [src/error.rs](src/error.rs): `JetStreamError` and the low-cardinality `JetStreamErrorReason`
-- [src/testing.rs](src/testing.rs): in-memory fake publisher/consumer backends
+Provision the JetStream stream before connecting; the kit creates durable
+consumers but does not provision streams. Applications choose subjects and
+payload formats.
 
 ## Publishing
 
-`JetStreamPublisherConfig::new` validates the URL, stream, and subject, and
-derives the TLS policy from the URL scheme. Configs return `JetStreamError`;
-model the error rather than unwrapping (the crate denies `unwrap`/`expect` in
-non-test code).
-
-The `Disabled` TLS policy is an explicit plaintext opt-in for local NATS
-connections. It does not follow server-advertised addresses, so a local seed
-cannot redirect credentials to another host. Use `Required` for non-local
-deployments.
+`JetStreamPublisherConfig::new` validates the URL, stream, subject, timeout,
+and payload limit. Its convenience constructor allows plaintext for loopback
+endpoints. Use `Required` TLS for non-local connections. Explicit plaintext
+connections ignore server-advertised addresses.
 
 ```rust
-use std::time::Duration;
 use reallyme_nats_kit::config::JetStreamPublisherConfig;
-use reallyme_nats_kit::publisher::JetStreamPublisher;
 use reallyme_nats_kit::error::JetStreamError;
+use reallyme_nats_kit::publisher::JetStreamPublisher;
+use std::time::Duration;
 
 const JOB_REQUESTS_SUBJECT: &str = "example.jobs.requests.v1";
 
-async fn publish(payload: Vec<u8>) -> Result<(), JetStreamError> {
+async fn publish(
+    payload: Vec<u8>,
+    message_id: &str,
+) -> Result<reallyme_nats_kit::publisher::JetStreamPublishAck, JetStreamError> {
     let config = JetStreamPublisherConfig::new(
-        true,                               // enabled
+        true,
         "nats://127.0.0.1:4222",
-        "EXAMPLE_JOBS",                     // pre-existing stream
+        "EXAMPLE_JOBS",
         JOB_REQUESTS_SUBJECT,
-        Duration::from_secs(5),             // publish + ack timeout
-        64 * 1024,                          // max payload bytes
+        Duration::from_secs(5),
+        64 * 1024,
     )?;
-
     let publisher = JetStreamPublisher::connect(config).await?;
-    publisher.validate_startup().await?;    // confirms the stream is reachable
-
-    // Explicit dedupe key:
-    let ack = publisher.publish_bytes(payload.clone(), Some("request-42")).await?;
-    if ack.duplicate() {
-        // JetStream already had this message id; safe to ignore.
-    }
-
-    // Or let the kit derive a deterministic id from subject + payload bytes:
-    let _ack = publisher.publish_bytes_deduplicated(payload).await?;
-    Ok(())
+    publisher.validate_startup().await?;
+    publisher.publish_bytes(payload, Some(message_id)).await
 }
 ```
 
 Payloads accept `impl Into<Bytes>` (`Vec<u8>`, `Bytes`, `&'static [u8]`).
 Payloads larger than `max_payload_bytes` are rejected with
 `JetStreamError::PayloadTooLarge` before any network call.
+Use an operation-specific message ID for deduplication. The acknowledgement's
+`duplicate()` flag reports a broker duplicate. `publish_bytes_deduplicated`
+derives an ID from subject and payload bytes.
 
 ## Consuming
 
@@ -85,14 +53,14 @@ name, and filter subject) and invalidates the cache on reconnect. `pull`
 returns a lazy stream so payloads are not all buffered at once.
 
 ```rust
-use std::time::Duration;
-use futures_util::StreamExt;
 use async_nats::jetstream::consumer::{DeliverPolicy, ReplayPolicy};
+use futures_util::StreamExt;
 use reallyme_nats_kit::config::{
     JetStreamConsumerConfig, JetStreamConsumerConfigInput, JetStreamTlsPolicy,
 };
 use reallyme_nats_kit::consumer::JetStreamPullConsumer;
 use reallyme_nats_kit::error::JetStreamError;
+use std::time::Duration;
 
 const JOB_REQUESTS_SUBJECT: &str = "example.jobs.requests.v1";
 
@@ -102,15 +70,13 @@ enum DeliveryDisposition {
     Reject,
 }
 
-async fn consume(
-    on_payload: impl Fn(&[u8]) -> DeliveryDisposition,
-) -> Result<(), JetStreamError> {
+async fn consume(on_payload: impl Fn(&[u8]) -> DeliveryDisposition) -> Result<(), JetStreamError> {
     let config = JetStreamConsumerConfig::new(JetStreamConsumerConfigInput {
         enabled: true,
         nats_url: "nats://127.0.0.1:4222",
         stream_name: "EXAMPLE_JOBS",
-        consumer_name: "job-consumer",      // durable name
-        subject: JOB_REQUESTS_SUBJECT,       // filter subject
+        consumer_name: "job-consumer", // durable name
+        subject: JOB_REQUESTS_SUBJECT, // filter subject
         operation_timeout: Duration::from_secs(5),
         ack_timeout: Duration::from_secs(30),
         max_ack_pending: 256,
@@ -148,13 +114,13 @@ Credentials in the raw URL are rejected. Pass them through the typed enum and
 build the config with `*_with_credentials`:
 
 ```rust
-use std::time::Duration;
-use secrecy::SecretString;
 use reallyme_nats_kit::config::{
     JetStreamCredentials, JetStreamPublisherConfig, JetStreamPublisherConfigInput,
     JetStreamTlsPolicy,
 };
 use reallyme_nats_kit::error::JetStreamError;
+use secrecy::SecretString;
+use std::time::Duration;
 
 fn secure_config(token: SecretString) -> Result<JetStreamPublisherConfig, JetStreamError> {
     JetStreamPublisherConfig::new_with_credentials(
@@ -203,16 +169,16 @@ async fn publish_with_fake(config: JetStreamPublisherConfig) -> Result<(), JetSt
     let backend = FakeJetStreamPublisherBackend::default();
     backend.push_success_ack("EXAMPLE_JOBS", 1, false)?;
     let publisher = JetStreamPublisher::new_with_backend(config, backend);
-    let ack = publisher.publish_bytes(vec![1_u8], Some("request-42")).await?;
+    let ack = publisher
+        .publish_bytes(vec![1_u8], Some("request-42"))
+        .await?;
     assert_eq!(ack.sequence(), 1);
     Ok(())
 }
 ```
 
-`FakeJetStreamConsumerBackend` accepts queued `FakeJetStreamDelivery` values and
-records the ack/nak/term disposition of each, so consumer logic can be tested
-deterministically. A fake publisher with no queued result returns an explicit
-error rather than a synthetic success.
+`FakeJetStreamConsumerBackend` queues deliveries and records ack/nak/term
+results. Queue publisher results explicitly; an empty fake returns an error.
 
 ## Integration tests
 
@@ -233,17 +199,6 @@ REALLYME_RUN_NATS_INTEGRATION=1 cargo test -p reallyme-nats-kit --features testi
   consumer::tests::real_publish_consume_and_ack_round_trip -- --ignored --exact
 ```
 
-## Observability
-
-Connect, startup-validate, publish, pull, and ack paths emit `tracing` spans
-and `metrics` counters/histograms. Error labels use the low-cardinality
-`JetStreamErrorReason`, never raw error strings, so dashboards and alerts stay
-bounded.
-
-## Quality gates
-
-```bash
-cargo fmt --check
-cargo clippy -p reallyme-nats-kit --all-targets -- -D warnings
-cargo test -p reallyme-nats-kit
-```
+The kit emits tracing spans and metrics for connections, publishing, pulling,
+and acknowledgements. Failure labels use `JetStreamErrorReason`. For workspace
+checks, see [Building and testing](../../docs/guides/validation.md).

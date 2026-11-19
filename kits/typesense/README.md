@@ -1,33 +1,17 @@
 # reallyme-typesense-kit
 
-First-class Typesense connector and protocol primitives for native ReallyMe
-services.
+Typesense connections, collection schemas, search/multi-search, and JSONL bulk
+import. Construct a `TypesenseConnector` from validated configuration and use
+its client for requests. Applications supply collection definitions and document
+types. Tenant filters are never inserted automatically.
 
-This kit owns the infrastructure boundary shared by every Typesense-backed app:
+Responses are limited to 16 MiB after decompression. Split larger operations
+into batches. Redirects are rejected. Timeouts apply to each attempt; include
+retry attempts and backoff when setting an application deadline. Server retry
+delays above the configured maximum return a rate-limit error without an early
+retry. Jitter stays within that maximum.
 
-- validated HTTP/HTTPS endpoints and secret API-key configuration;
-- pooled HTTP connector construction;
-- reusable readiness checks against Typesense's health endpoint;
-- bounded request deadlines, retry backoff, jitter, and endpoint failover;
-- typed collection schemas and lifecycle operations;
-- typed search and multi-search requests;
-- bounded pagination, filters, field names, and sorting;
-- typed JSONL bulk import results; and
-- low-cardinality errors and metrics that do not retain documents or API keys.
-
-Apps own their index schemas, document semantics, ranking policy, and conversion
-to public response DTOs. Tenant filters are app policy and are never inserted
-implicitly by this kit. Applications import this kit directly at their
-infrastructure adapter boundary.
-
-Responses are limited to 16 MiB after decompression, including search results and
-JSONL import results. Split larger operations into bounded batches. HTTP redirects
-are rejected to keep API keys confined to the configured endpoint. Server-provided
-retry delays beyond the configured maximum return the rate-limit error without
-retrying early. Retry jitter stays within that maximum.
-
-`TypesenseConnector::connect` uses operating-system certificate roots, with
+The default connector uses operating-system certificate roots, falling back to
 bundled public roots only when the host store is empty. For a private CA,
-`TypesenseConnector::connect_with_custom_tls_roots` accepts a nonempty
-`rustls::RootCertStore` and trusts only those roots. Its configured endpoints
-must all use HTTPS.
+`TypesenseConnector::connect_with_custom_tls_roots` requires a nonempty
+`rustls::RootCertStore` and HTTPS endpoints and trusts only those roots.
