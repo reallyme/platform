@@ -29,7 +29,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/reallyme/platform"
 
 [workspace.dependencies]
-async-nats = { version = "0.52.0", default-features = false, features = ["jetstream", "nuid", "ring"] }
+async-nats = { version = "0.53.0", default-features = false, features = ["jetstream", "nuid", "ring"] }
 # The WebSocket close-code mapper downcasts Axum's decoder error. Review the
 # paired tungstenite version and live decoder test before changing this version.
 axum = "0.8.9"
